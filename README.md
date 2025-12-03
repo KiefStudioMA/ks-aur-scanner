@@ -458,6 +458,9 @@ Suspicious patterns that warrant careful review.
 | `OBF-002` | Eval usage | Dynamic code execution | CWE-95 |
 | `OBF-003` | Hex-encoded payload | `\xNN` escape sequences | CWE-506 |
 | `OBF-005` | Gzip decode execution | Decompress and execute | CWE-94 |
+| `CHK-001` | No checksums | Sources without any checksums | CWE-354 |
+| `CHK-005` | All sources SKIP | All non-VCS sources use SKIP checksum | CWE-354 |
+| `CHK-006` | Checksum mismatch | Checksum count doesn't match source count | - |
 | `URL-001` | Raw IP in URL | URLs with IP addresses instead of domains | - |
 | `URL-002` | URL shortener | bit.ly, tinyurl, etc. | - |
 | `URL-003` | Dynamic DNS domain | duckdns, no-ip, etc. | - |
@@ -475,11 +478,14 @@ Security concerns that should be reviewed but may be legitimate.
 
 | Code | Name | Description | CWE |
 |------|------|-------------|-----|
-| `CHKSUM-001` | MD5 checksum | Using broken MD5 algorithm | CWE-328 |
-| `CHKSUM-002` | SHA1 checksum | Using weak SHA1 algorithm | CWE-328 |
+| `CHK-002` | MD5 checksum | Using broken MD5 algorithm | CWE-328 |
+| `CHK-003` | SHA1 checksum | Using weak SHA1 algorithm | CWE-328 |
+| `CHK-004` | Partial SKIP checksums | Some non-VCS sources use SKIP | CWE-354 |
 | `NET-001` | HTTP source URL | Downloading sources over HTTP | CWE-319 |
 | `SRC-001` | Suspicious git source | Git from non-standard hosting | - |
 | `OBF-004` | String concatenation | Obfuscating commands via concatenation | - |
+
+> **Note:** VCS sources (git, svn, hg, bzr) legitimately use `SKIP` checksums since their content changes with each clone. The scanner only flags `SKIP` checksums on non-VCS sources (tarballs, patches, etc.).
 
 ### Low/Informational
 

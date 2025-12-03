@@ -92,20 +92,25 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
             });
         }
 
-        // Check for SKIP checksums (all sources should have real checksums)
-        let skip_count = self.count_skip_checksums(checksums);
+        // Check for SKIP checksums
+        // VCS sources (git, svn, hg, bzr) legitimately use SKIP since their content changes
         let source_count = context.pkgbuild.source.len();
+        let vcs_count = self.count_vcs_sources(&context.pkgbuild.source);
+        let non_vcs_count = source_count - vcs_count;
+        let (skip_count, vcs_skip_count) =
+            self.count_skip_checksums_detailed(checksums, &context.pkgbuild.source);
+        let non_vcs_skip_count = skip_count - vcs_skip_count;
 
-        if skip_count > 0 && skip_count < source_count {
-            // Some sources have SKIP - this is concerning
+        if non_vcs_skip_count > 0 && non_vcs_skip_count < non_vcs_count {
+            // Some non-VCS sources have SKIP - this is concerning
             findings.push(Finding {
                 id: "CHK-004".to_string(),
                 severity: Severity::Medium,
                 category: Category::Cryptography,
                 title: "Some sources have SKIP checksum".to_string(),
                 description: format!(
-                    "{} of {} sources use SKIP instead of real checksums",
-                    skip_count, source_count
+                    "{} of {} non-VCS sources use SKIP instead of real checksums",
+                    non_vcs_skip_count, non_vcs_count
                 ),
                 location: Location {
                     file: context.file_path.clone(),
@@ -113,31 +118,36 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
                     column: None,
                     snippet: None,
                 },
-                recommendation: "Provide real checksums for all sources where possible".to_string(),
+                recommendation: "Provide real checksums for all non-VCS sources".to_string(),
                 cwe_id: Some("CWE-354".to_string()),
                 metadata: serde_json::json!({
-                    "skip_count": skip_count,
-                    "total_sources": source_count,
+                    "skip_count": non_vcs_skip_count,
+                    "total_non_vcs_sources": non_vcs_count,
+                    "vcs_sources": vcs_count,
                 }),
             });
-        } else if skip_count == source_count && source_count > 0 {
-            // All sources use SKIP - highly suspicious
+        } else if non_vcs_skip_count == non_vcs_count && non_vcs_count > 0 {
+            // All non-VCS sources use SKIP - highly suspicious
             findings.push(Finding {
                 id: "CHK-005".to_string(),
                 severity: Severity::High,
                 category: Category::Cryptography,
-                title: "All sources use SKIP checksum".to_string(),
-                description: "No integrity verification is performed on any source".to_string(),
+                title: "All non-VCS sources use SKIP checksum".to_string(),
+                description: format!(
+                    "No integrity verification is performed on {} non-VCS source(s)",
+                    non_vcs_count
+                ),
                 location: Location {
                     file: context.file_path.clone(),
                     line: None,
                     column: None,
                     snippet: None,
                 },
-                recommendation: "Provide real checksums for sources".to_string(),
+                recommendation: "Provide real checksums for non-VCS sources".to_string(),
                 cwe_id: Some("CWE-354".to_string()),
                 metadata: serde_json::json!({
-                    "source_count": source_count,
+                    "non_vcs_source_count": non_vcs_count,
+                    "vcs_source_count": vcs_count,
                 }),
             });
         }
@@ -178,25 +188,62 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
 }
 
 impl ChecksumAnalyzer {
-    /// Count SKIP entries in checksums
-    fn count_skip_checksums(&self, checksums: &crate::parser::Checksums) -> usize {
-        let mut count = 0;
+    /// Count VCS sources (git, svn, hg, bzr) which legitimately use SKIP
+    fn count_vcs_sources(&self, sources: &[crate::parser::SourceEntry]) -> usize {
+        use crate::parser::Protocol;
+        sources
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.protocol,
+                    Protocol::Git | Protocol::Svn | Protocol::Hg | Protocol::Bzr
+                )
+            })
+            .count()
+    }
 
-        // Check all checksum arrays for None entries (SKIP)
-        for sums in [
+    /// Count SKIP entries in checksums, returning (total_skips, vcs_skips)
+    fn count_skip_checksums_detailed(
+        &self,
+        checksums: &crate::parser::Checksums,
+        sources: &[crate::parser::SourceEntry],
+    ) -> (usize, usize) {
+        use crate::parser::Protocol;
+
+        // Get the first non-empty checksum array
+        let sums = [
             &checksums.sha256sums,
             &checksums.sha512sums,
             &checksums.b2sums,
             &checksums.sha1sums,
             &checksums.md5sums,
-        ] {
-            if !sums.is_empty() {
-                count = sums.iter().filter(|s| s.is_none()).count();
-                break; // Only count from one array
+        ]
+        .into_iter()
+        .find(|s| !s.is_empty());
+
+        let Some(sums) = sums else {
+            return (0, 0);
+        };
+
+        let mut total_skips = 0;
+        let mut vcs_skips = 0;
+
+        for (i, sum) in sums.iter().enumerate() {
+            if sum.is_none() {
+                total_skips += 1;
+                // Check if corresponding source is VCS
+                if let Some(source) = sources.get(i) {
+                    if matches!(
+                        source.protocol,
+                        Protocol::Git | Protocol::Svn | Protocol::Hg | Protocol::Bzr
+                    ) {
+                        vcs_skips += 1;
+                    }
+                }
             }
         }
 
-        count
+        (total_skips, vcs_skips)
     }
 
     /// Get the number of checksums defined
@@ -269,5 +316,75 @@ md5sums=('abc123')
 
         let findings = analyzer.analyze(&context).await.unwrap();
         assert!(findings.iter().any(|f| f.id == "CHK-002"));
+    }
+
+    #[tokio::test]
+    async fn test_vcs_source_skip_allowed() {
+        let analyzer = ChecksumAnalyzer::new();
+
+        // Git source with SKIP is legitimate - should not trigger CHK-004 or CHK-005
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+source=("git+https://github.com/user/repo.git")
+sha256sums=('SKIP')
+"#,
+        );
+
+        let findings = analyzer.analyze(&context).await.unwrap();
+        // Should NOT have CHK-004 or CHK-005 for VCS sources
+        assert!(
+            !findings.iter().any(|f| f.id == "CHK-004" || f.id == "CHK-005"),
+            "VCS source with SKIP should not trigger checksum warnings"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mixed_vcs_and_regular_source() {
+        let analyzer = ChecksumAnalyzer::new();
+
+        // Git source with SKIP + regular source with checksum - should be fine
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+source=("git+https://github.com/user/repo.git"
+        "https://example.com/file.tar.gz")
+sha256sums=('SKIP'
+            'abc123def456')
+"#,
+        );
+
+        let findings = analyzer.analyze(&context).await.unwrap();
+        // Should NOT have CHK-004 or CHK-005
+        assert!(
+            !findings.iter().any(|f| f.id == "CHK-004" || f.id == "CHK-005"),
+            "Mixed VCS+regular sources with appropriate checksums should not trigger warnings"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_non_vcs_skip_still_detected() {
+        let analyzer = ChecksumAnalyzer::new();
+
+        // Regular HTTP source with SKIP - should trigger CHK-005
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+source=("https://example.com/file.tar.gz")
+sha256sums=('SKIP')
+"#,
+        );
+
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(
+            findings.iter().any(|f| f.id == "CHK-005"),
+            "Non-VCS source with SKIP should trigger CHK-005"
+        );
     }
 }
