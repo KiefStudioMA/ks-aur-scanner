@@ -866,7 +866,9 @@ The AUR is an inherently trust-based system where users are expected to verify p
 
 ## Links
 
+- **AUR Package:** [aur-scanner-git](https://aur.archlinux.org/packages/aur-scanner-git)
 - **Repository:** [https://github.com/KiefStudioMA/ks-aur-scanner](https://github.com/KiefStudioMA/ks-aur-scanner)
+- **Crates.io:** [aur-scanner-core](https://crates.io/crates/aur-scanner-core)
 - **Homepage:** [https://kief.studio](https://kief.studio)
 - **Issues:** [https://github.com/KiefStudioMA/ks-aur-scanner/issues](https://github.com/KiefStudioMA/ks-aur-scanner/issues)
-- **License:** [Polyform Noncommercial 1.0.0](LICENSE)
+- **License:** [GPL-3.0-or-later](LICENSE)
