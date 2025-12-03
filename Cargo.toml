@@ -14,6 +14,10 @@ authors = ["Kief Studio <packages@kief.studio>"]
 license = "LicenseRef-Polyform-Noncommercial"
 repository = "https://github.com/KiefStudioMA/ks-aur-scanner"
 homepage = "https://kief.studio"
+documentation = "https://github.com/KiefStudioMA/ks-aur-scanner#readme"
+readme = "README.md"
+keywords = ["aur", "arch-linux", "security", "malware-detection", "pkgbuild"]
+categories = ["command-line-utilities", "development-tools"]
 description = "Security scanner for Arch Linux AUR packages"
 
 [workspace.dependencies]

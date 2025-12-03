@@ -4,7 +4,13 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Pacman hook for AUR package security scanning"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Pacman hook for AUR package security scanning - blocks malicious packages during transactions"
+readme = "../../README.md"
 
 [[bin]]
 name = "aur-scan-hook"

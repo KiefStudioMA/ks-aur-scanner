@@ -4,7 +4,13 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "AUR helper plugin for security scanning"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "AUR helper plugin for security scanning - wrapper for yay/paru with automatic scanning"
+readme = "../../README.md"
 
 [lib]
 name = "aur_scanner_plugin"

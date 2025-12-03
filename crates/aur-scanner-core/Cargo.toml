@@ -4,7 +4,13 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Core library for AUR package security scanning"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories = ["development-tools", "parser-implementations"]
+description = "Core library for AUR package security scanning - PKGBUILD parser, rule engine, and security analyzers"
+readme = "../../README.md"
 
 [dependencies]
 tokio.workspace = true
