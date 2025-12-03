@@ -1,0 +1,22 @@
+[package]
+name = "aur-scanner-plugin"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AUR helper plugin for security scanning"
+
+[lib]
+name = "aur_scanner_plugin"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aur-scan-wrap"
+path = "src/bin/wrapper.rs"
+
+[dependencies]
+aur-scanner-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+colored.workspace = true
+anyhow.workspace = true

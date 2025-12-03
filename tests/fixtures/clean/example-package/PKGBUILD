@@ -1,0 +1,33 @@
+# Maintainer: Good Developer <dev@example.com>
+# This is a clean, legitimate PKGBUILD
+
+pkgname=example-package
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="An example clean package"
+arch=('x86_64' 'aarch64')
+url="https://github.com/example/example-package"
+license=('MIT')
+depends=('glibc' 'openssl')
+makedepends=('cmake' 'ninja')
+source=("https://github.com/example/example-package/archive/v${pkgver}.tar.gz")
+sha256sums=('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+
+build() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+    cmake -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr
+    ninja -C build
+}
+
+check() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+    ninja -C build test
+}
+
+package() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+    DESTDIR="${pkgdir}" ninja -C build install
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

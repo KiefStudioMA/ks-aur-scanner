@@ -1,0 +1,34 @@
+# Maintainer: Good Developer <dev@example.com>
+# This is a clean git-based PKGBUILD
+
+pkgname=git-package-git
+pkgver=r100.abc1234
+pkgrel=1
+pkgdesc="An example git package"
+arch=('x86_64')
+url="https://github.com/example/git-package"
+license=('GPL3')
+depends=('qt6-base')
+makedepends=('git' 'cmake')
+provides=('git-package')
+conflicts=('git-package')
+source=("git+https://github.com/example/git-package.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "${srcdir}/git-package"
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd "${srcdir}/git-package"
+    cmake -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr
+    cmake --build build
+}
+
+package() {
+    cd "${srcdir}/git-package"
+    DESTDIR="${pkgdir}" cmake --install build
+}

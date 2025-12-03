@@ -1,0 +1,23 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Package build artifacts (makepkg)
+*.tar.gz
+*.pkg.tar.zst
+/pkg/
+/src/
+
+# Test artifacts
+*.log

