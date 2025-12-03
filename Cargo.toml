@@ -63,7 +63,7 @@ sha2 = "0.10"
 base64 = "0.22"
 
 # Internal crates
-aur-scanner-core = { path = "crates/aur-scanner-core" }
+aur-scanner-core = { version = "0.1.0", path = "crates/aur-scanner-core" }
 
 [profile.release]
 lto = true
