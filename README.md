@@ -12,6 +12,26 @@ A comprehensive security scanner for Arch Linux AUR packages that analyzes PKGBU
 
 ---
 
+## TL;DR
+
+```bash
+# Install
+paru -S aur-scanner-git
+# or
+yay -S aur-scanner-git
+
+# Scan a package before installing
+aur-scan check <package-name>
+
+# Scan a local PKGBUILD
+aur-scan scan ./PKGBUILD
+
+# Scan all installed AUR packages
+aur-scan system
+```
+
+---
+
 ## Table of Contents
 
 - [Why This Exists](#why-this-exists)
