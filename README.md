@@ -764,36 +764,25 @@ The test suite includes:
 
 ## License
 
-This software is licensed under the **Polyform Noncommercial License 1.0.0**.
+This software is licensed under the **GNU General Public License v3.0 or later** (GPL-3.0-or-later).
 
-### Permitted Use (Free)
+You are free to use, modify, and distribute this software under the terms of the GPL-3.0. See the [LICENSE](LICENSE) file for the complete license text.
 
-- Personal use
-- Academic and research use
-- Non-profit organizations
-- Government institutions
-- Evaluation and testing
+### Commercial Use and Attribution
 
-### Commercial Use
+Commercial use is permitted under the GPL-3.0 license. However, commercial users are kindly requested to:
 
-**Commercial use requires a paid license.**
+- Provide attribution to **Kief Studio** with a do-follow link to [https://kief.studio](https://kief.studio)
+- Consider supporting continued development of this project
 
-Organizations using this software for commercial purposes must obtain a commercial license from Kief Studio LLC. This includes but is not limited to:
-- Companies using the scanner in their development workflow
-- Managed service providers offering security scanning
-- Organizations integrating the scanner into commercial products
-- Commercial security auditing services
+This attribution request is not a legal requirement but is appreciated and helps sustain open source security tooling for the Arch community.
 
-### Obtain a Commercial License
+### Commercial Support
 
-For commercial licensing inquiries:
+For commercial support, custom development, or enterprise licensing inquiries:
 
 - **Website:** [https://kief.studio](https://kief.studio)
-- **Email:** licensing@kief.studio
-
-Commercial licenses help support continued development and maintenance of this project.
-
-See the [LICENSE](LICENSE) file for the complete license text.
+- **Email:** packages@kief.studio
 
 ---
 
