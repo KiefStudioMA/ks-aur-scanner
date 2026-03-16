@@ -11,6 +11,7 @@ pub mod aur;
 pub mod cache;
 pub mod error;
 pub mod parser;
+pub mod paru;
 pub mod rules;
 pub mod threat_intel;
 pub mod types;

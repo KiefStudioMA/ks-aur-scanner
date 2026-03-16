@@ -28,6 +28,10 @@ aur-scan scan ./PKGBUILD
 
 # Scan all installed AUR packages
 aur-scan system
+
+# Use as paru's FileManager (add to paru.conf)
+# [bin]
+# FileManager = aur-scan fm
 ```
 
 ---
@@ -52,6 +56,7 @@ aur-scan system
   - [Level 2: Shell Integration](#level-2-shell-integration-recommended)
   - [Level 3: Wrapper Binary](#level-3-wrapper-binary)
   - [Level 4: Pacman Hook](#level-4-pacman-hook)
+  - [Level 5: Paru FileManager](#level-5-paru-filemanager)
 - [Detection Rules Reference](#detection-rules-reference)
   - [Critical Severity](#critical-severity)
   - [High Severity](#high-severity)
@@ -406,6 +411,78 @@ Exec = /usr/bin/aur-scan-hook
 AbortOnFail
 NeedsTargets
 ```
+
+### Level 5: Paru FileManager
+
+The most seamless integration for paru users. The scanner acts as paru's
+FileManager, automatically scanning PKGBUILDs during the native review step.
+
+**Setup** — Add to `~/.config/paru/paru.conf`:
+
+```ini
+[bin]
+FileManager = aur-scan fm
+```
+
+> **Note:** Make sure `SkipReview` is **not** set in your paru config,
+> otherwise the FileManager will never be invoked.
+
+**How it works:**
+
+When you run `paru -Sua` or `paru -S <aur-package>`, paru fetches the
+PKGBUILDs and calls `aur-scan fm` with a temporary view directory. The
+scanner then:
+
+1. Discovers all packages being reviewed
+2. Displays the PKGBUILD diff (what changed since the last version)
+3. Runs a full security scan on each package
+4. Shows findings with severity-aware colored output
+5. Prompts for confirmation before proceeding
+
+**Example workflow:**
+
+```
+$ paru -Sua
+:: 1 aur package to upgrade: my-package
+
+aur-scan fm: Scanning 1 package(s)...
+
+═══════════════════════════════════════════════════════════
+  PKGBUILD DIFF
+═══════════════════════════════════════════════════════════
+
+ -pkgver=1.0.0
+ +pkgver=1.1.0
+  sha256sums=('abc123...')
+
+Scan Results: my-package
+============================================================
+[MEDIUM] CHK-004 Partial SKIP checksums
+    Some non-VCS sources use SKIP checksum
+    Location: PKGBUILD:15
+    Recommendation: Add proper checksums for all sources
+
+  Summary: 1 MEDIUM
+Warnings found. Continue? [Y/n]:
+```
+
+**Options:**
+
+```bash
+# Basic usage (paru calls this automatically)
+aur-scan fm /tmp/aurXXXXXX
+
+# Abort on high severity or above
+# In paru.conf: FileManager = aur-scan fm --fail-on high
+aur-scan fm --fail-on high /tmp/aurXXXXXX
+```
+
+**Advantages over other integration levels:**
+
+- **Zero friction** — works within paru's native review flow
+- **Diff display** — shows exactly what changed in the PKGBUILD
+- **No wrapper needed** — paru calls the scanner directly
+- **Multi-package support** — handles batch updates seamlessly
 
 ---
 

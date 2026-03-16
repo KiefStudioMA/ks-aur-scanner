@@ -133,6 +133,21 @@ enum Commands {
         category: Option<String>,
     },
 
+    /// Act as paru FileManager for PKGBUILD review
+    ///
+    /// Integrates with paru's review step to automatically scan PKGBUILDs.
+    /// Add to ~/.config/paru/paru.conf:
+    ///   [bin]
+    ///   FileManager = aur-scan fm
+    Fm {
+        /// Path to paru view directory (passed by paru automatically)
+        path: PathBuf,
+
+        /// Exit with error on findings at or above this severity
+        #[arg(long, value_enum)]
+        fail_on: Option<SeverityArg>,
+    },
+
     /// Check scanner version and configuration
     Version,
 }
@@ -158,7 +173,9 @@ async fn main() -> Result<()> {
     };
 
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)),
+        )
         .with_target(false)
         .without_time()
         .init();
@@ -195,21 +212,15 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::System { rescan, cache_dir } => {
-            commands::system::run(
-                cli.severity.map(Into::into),
-                rescan,
-                cache_dir,
-            )
-            .await
+            commands::system::run(cli.severity.map(Into::into), rescan, cache_dir).await
         }
         Commands::Rules { severity, details } => {
             commands::rules::run(severity.map(Into::into), details)
         }
-        Commands::Explain { code } => {
-            commands::explain::run(&code)
-        }
-        Commands::Codes { category } => {
-            commands::codes::run(category.as_deref())
+        Commands::Explain { code } => commands::explain::run(&code),
+        Commands::Codes { category } => commands::codes::run(category.as_deref()),
+        Commands::Fm { path, fail_on } => {
+            commands::fm::run(path, fail_on.map(Into::into), cli.severity.map(Into::into)).await
         }
         Commands::Version => {
             commands::version::run();

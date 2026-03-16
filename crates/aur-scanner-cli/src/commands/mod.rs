@@ -4,6 +4,7 @@ pub mod banner;
 pub mod check;
 pub mod codes;
 pub mod explain;
+pub mod fm;
 pub mod rules;
 pub mod scan;
 pub mod system;
