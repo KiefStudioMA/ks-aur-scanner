@@ -129,17 +129,17 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         print!("{} {} {} ", "Scanning:".dimmed(), node.name.white(), format!("({origin})").dimmed());
         io::stdout().flush().ok();
 
-        let scan_path = match &local_pkgbuild {
-            Some(p) => Ok(p.clone()),
-            None => client
-                .fetch_pkgbuild(&node.name)
-                .await
-                .map(|f| f.pkgbuild_path)
-                .map_err(|e| format!("fetch error: {e}")),
-        };
-        let result = match scan_path {
-            Ok(path) => scanner.scan_pkgbuild(&path).await.map_err(|e| format!("scan error: {e}")),
-            Err(e) => Err(e),
+        let result = match &local_pkgbuild {
+            Some(p) => scanner.scan_pkgbuild(p).await.map_err(|e| format!("scan error: {e}")),
+            None => match client.fetch_pkgbuild(&node.name).await {
+                Ok(fetched) => {
+                    scanner
+                        .scan_pkgbuild(&fetched.pkgbuild_path)
+                        .await
+                        .map_err(|e| format!("scan error: {e}"))
+                }
+                Err(e) => Err(format!("fetch error: {e}")),
+            },
         };
         match result {
             Ok(result) => {

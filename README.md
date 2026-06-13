@@ -156,6 +156,7 @@ sudo install -Dm755 target/release/aur-scan-hook /usr/bin/aur-scan-hook
 # Install shell integration (recommended — scans BEFORE makepkg builds)
 sudo install -Dm644 install/integration.bash /usr/share/aur-scan/integration.bash
 sudo install -Dm644 install/integration.zsh /usr/share/aur-scan/integration.zsh
+sudo install -Dm644 install/integration.fish /usr/share/aur-scan/integration.fish
 
 # Install the community rules example
 sudo install -Dm644 install/rules.d/example.toml /usr/share/aur-scanner/rules.d/example.toml
@@ -439,6 +440,12 @@ source /usr/share/aur-scan/integration.bash
 
 ```bash
 source /usr/share/aur-scan/integration.zsh
+```
+
+**For Fish** - Add to `~/.config/fish/config.fish`:
+
+```fish
+source /usr/share/aur-scan/integration.fish
 ```
 
 This creates wrapper functions for `paru` and `yay` that:
@@ -842,6 +849,7 @@ ks-aur-scanner/
 ├── install/                      # Installation files
 │   ├── integration.bash
 │   ├── integration.zsh
+│   ├── integration.fish
 │   └── aur-scan.hook
 ├── tests/                        # Integration tests
 └── PKGBUILD                      # AUR package definition
