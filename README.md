@@ -78,6 +78,7 @@ The Arch User Repository (AUR) is an incredible community resource that extends 
 
 | Date | Attack | Impact |
 |------|--------|--------|
+| **June 2026** | ~1600 packages hijacked to inject `npm install atomic-lockfile` / `bun install js-digest` into build & install files | Obfuscated data exfil |
 | **July 2025** | CHAOS RAT distributed via `firefox-patch-bin` and `librewolf-fix-bin` | Remote access trojan with persistence via systemd masquerading |
 | **2018** | Orphaned packages `acroread`, `balz`, `minergate` hijacked | Cryptominer installation via `curl \| bash` and systemd timers |
 | **Ongoing** | Typosquatting attacks mimicking popular package names | Various malware payloads |
@@ -447,6 +448,8 @@ These patterns indicate likely malicious behavior and should always be investiga
 | `EXFIL-003` | Discord/Telegram webhook | Webhook URLs for C2/exfil | CWE-506 |
 | `ENV-001` | LD_PRELOAD manipulation | Library injection via LD_PRELOAD | CWE-426 |
 | `ENV-003` | Shell config modification | Modifying bashrc/zshrc/profile | CWE-506 |
+| `PKGMGR-001` | Package manager in install script | `npm`/`bun`/`pip`/`cargo`/etc. invoked in an install script (RCE as root) | CWE-94 |
+| `BLOCK-001` | Known-compromised package | pkgname is on the June 2026 AUR compromise list | CWE-506 |
 
 ### High Severity
 
@@ -471,6 +474,7 @@ Suspicious patterns that warrant careful review.
 | `HIDDEN-002` | Tmp directory execution | Running code from /tmp | - |
 | `HIDDEN-003` | Non-standard binary location | Binaries in share directories | - |
 | `ENV-002` | PATH manipulation | Overwriting PATH variable | CWE-426 |
+| `PKGMGR-002` | Cross-ecosystem package manager | Build invokes a package manager for a language unrelated to the package's build deps (e.g. `npm` in a Rust package) | CWE-829 |
 
 ### Medium Severity
 
@@ -494,6 +498,7 @@ Observations that may be relevant for comprehensive review.
 | Code | Name | Description |
 |------|------|-------------|
 | `META-001` | Provides impersonation | Package provides another package name |
+| `PKGMGR-003` | Build-time dependency fetch | Package uses its own ecosystem's package manager at build time (executes registry code: lifecycle scripts, `build.rs`, `setup.py`) |
 
 ---
 

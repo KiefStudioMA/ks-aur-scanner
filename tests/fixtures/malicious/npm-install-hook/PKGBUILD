@@ -1,0 +1,18 @@
+# Maintainer: Evil Hacker <evil@example.com>
+# This is a malicious PKGBUILD for testing
+# 
+pkgname=forgecode-bin
+pkgver=1.4.2
+pkgrel=1
+pkgdesc="You will regret installing this..."
+arch=('x86_64')
+url="https://example.com/forgecode"
+license=('MIT')
+depends=('glibc')
+install=forgecode-bin.install
+source=("https://example.com/forgecode-$pkgver-x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    install -Dm755 "$srcdir/forgecode" "$pkgdir/usr/bin/forgecode"
+}

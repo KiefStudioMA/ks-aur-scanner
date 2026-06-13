@@ -1,12 +1,16 @@
 //! Security analyzers for PKGBUILD analysis
 
+mod blocklist;
 mod checksum;
 mod pattern;
+mod pkgmanager;
 mod privilege;
 mod source;
 
+pub use blocklist::BlocklistAnalyzer;
 pub use checksum::ChecksumAnalyzer;
 pub use pattern::PatternAnalyzer;
+pub use pkgmanager::PackageManagerAnalyzer;
 pub use privilege::PrivilegeAnalyzer;
 pub use source::SourceAnalyzer;
 

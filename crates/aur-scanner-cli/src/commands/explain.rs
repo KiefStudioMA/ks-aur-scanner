@@ -168,6 +168,14 @@ fn get_real_world_context(code: &str) -> Option<String> {
              alternatives to legitimate packages (firefox-fix, etc.), tricking \
              users into installing them as dependencies.".to_string()
         ),
+        "PKGMGR-001" | "PKGMGR-002" | "BLOCK-001" => Some(
+            "In June 2026, hijacked maintainer accounts injected `npm install \
+             atomic-lockfile` (and later `bun install js-digest`) into the build \
+             and install files of ~1600 AUR packages. The npm/bun package pulled \
+             a heavily obfuscated infostealer via a dependency lifecycle hook, \
+             which set up systemd persistence and talked to C2 over an embedded \
+             Tor client.".to_string()
+        ),
         _ => None,
     }
 }

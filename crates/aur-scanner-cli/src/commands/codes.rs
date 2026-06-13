@@ -77,6 +77,20 @@ pub fn get_all_codes() -> Vec<CodeEntry> {
             "Makes network connections (curl/wget) in install scripts.",
             "Install scripts should never download content."),
 
+        // Supply Chain (June 2026 npm/bun AUR attack)
+        CodeEntry::new("PKGMGR-001", "Critical", "Package manager in install script", "Supply Chain",
+            "Invokes a language package manager (npm, bun, pip, cargo, etc.) inside an install script. Install scripts run as root during the pacman transaction; fetching dependencies here executes arbitrary registry code. This is the June 2026 AUR attack vector (npm install atomic-lockfile).",
+            "Install scripts must never fetch or build packages. Vendor dependencies at build time."),
+        CodeEntry::new("PKGMGR-002", "High", "Cross-ecosystem package manager", "Supply Chain",
+            "Build/prepare invokes a package manager for a language unrelated to the package's declared build dependencies (e.g. npm in a Rust package). A strong supply-chain red flag.",
+            "Verify why an unrelated language's package manager is needed; prefer vendored, checksummed sources."),
+        CodeEntry::new("PKGMGR-003", "Info", "Build-time dependency fetch", "Supply Chain",
+            "Build/prepare uses the package's own package manager to fetch dependencies, which can execute unreviewed registry code (lifecycle scripts, build.rs, setup.py).",
+            "Prefer offline/vendored builds (--offline, --frozen-lockfile, --ignore-scripts)."),
+        CodeEntry::new("BLOCK-001", "Critical", "Known-compromised package", "Supply Chain",
+            "Package name appears on the list of ~1600 AUR packages compromised in the June 2026 supply-chain attack. The package may have been cleaned since.",
+            "Audit the current sources before installing; confirm malicious commits were reverted."),
+
         // Persistence Mechanisms
         CodeEntry::new("PERSIST-001", "Critical", "Systemd service creation", "Persistence",
             "Creates systemd services in install scripts. Enables boot persistence. Used in 2018 xeactor and 2025 CHAOS RAT.",
