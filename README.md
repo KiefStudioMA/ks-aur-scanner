@@ -532,6 +532,7 @@ NeedsTargets
 | `EXFIL-003` | Discord/Telegram webhook | Data Exfiltration | rules | CWE-506 |
 | `INSTALL-001` | Python execution in install script | Malicious Code | rules | CWE-94 |
 | `INSTALL-003` | Network access in install script | Network Security | rules | CWE-494 |
+| `INSTALL-004` | Language package manager invoked in install hook | Malicious Code | rules | CWE-494 |
 | `IOC-001` | Known indicator-of-compromise match | Malicious Code | ioc | CWE-506 |
 | `PASTE-001` | Pastebin download | Malicious Code | rules | CWE-506 |
 | `PERSIST-001` | Systemd service creation in install | Persistence | rules | CWE-506 |
@@ -653,7 +654,7 @@ aur-scan scan ./PKGBUILD --format json
 ```json
 {
   "package_name": "example-package",
-  "package_version": "1.0.0-1",
+  "package_version": "1.0.1-1",
   "scan_duration_ms": 45,
   "findings": [
     {
