@@ -1382,8 +1382,17 @@ mod tests {
         // Regression guard: every built-in rule must compile and load. A bad
         // pattern previously aborted the whole load via `?`, silently disabling
         // every rule defined after it. Assert the full set is present.
+        //
+        // Use a built-ins-ONLY engine here, not RuleEngine::default(): default()
+        // also loads community rule files from user_rule_dirs(), so any machine
+        // with a community rule installed (e.g. the shipped example.toml in
+        // /usr/share/aur-scanner/rules.d/) would otherwise inflate the count and
+        // fail this test for the wrong reason.
         let expected = get_builtin_rules();
-        let engine = RuleEngine::default();
+        let mut engine = RuleEngine::new();
+        engine
+            .add_builtin_rules()
+            .expect("built-in rules must all load");
         for rule in &expected {
             assert!(
                 engine.get_rule(&rule.id).is_some(),
