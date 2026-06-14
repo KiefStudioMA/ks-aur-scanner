@@ -1,0 +1,37 @@
+
+======================================================================
+ATOMIC-001 Atomic Arch malicious npm/bun package [CRITICAL]
+======================================================================
+
+Category:
+  Malicious Code  (detector: rules)
+
+Description:
+  References a known-malicious package from the June 2026 'Atomic
+  Arch' AUR supply-chain campaign (atomic-lockfile, js-digest,
+  lockfile-js). These pull an infostealer and eBPF rootkit during
+  the build/install phase.
+
+Recommendation:
+  Do NOT build. This is a known-malicious dependency. Remove the
+  package and treat the host as compromised: rotate credentials
+  (SSH, npm/GitHub tokens, browser sessions).
+
+CWE: CWE-506
+
+Real-World Context:
+  The June 2026 'Atomic Arch' campaign adopted hundreds of orphaned
+  AUR packages (alvr, premake-git, and 1,500+ others) and modified
+  their PKGBUILD/install hooks to run `npm install atomic-lockfile`
+  (wave 1) or `bun install js-digest` (wave 2). The payload is a
+  credential stealer with an optional root-only eBPF rootkit
+  (scales.bpf.c). The hijacked packages themselves looked clean, so
+  signature scanners missed them.
+
+Detection Patterns:
+  - \b(atomic-lockfile|js-digest|lockfile-js)\b
+
+Related Codes:
+  ATOMIC-002, ATOMIC-003, INSTALL-003
+
+======================================================================

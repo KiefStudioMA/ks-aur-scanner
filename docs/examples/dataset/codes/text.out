@@ -1,0 +1,103 @@
+AUR Security Scanner - Detection Codes
+============================================================
+73 codes across 12 categories
+
+[Command Injection]
+  DLE-001 [Critical] Curl pipe to shell
+  DLE-002 [Critical] Wget pipe to shell
+  DLE-003 [Critical] Curl output executed
+  OBF-002 [High] Eval usage
+
+[Configuration]
+  CHK-006 [High] Checksum count mismatch (checksum)
+  EXAMPLE-001 [Info] Example: references example.com
+  SRC-005 [Medium] No sources with a build function (source)
+
+[Credential Theft]
+  BROWSER-001 [Critical] Browser profile access
+  BROWSER-002 [Critical] Browser database access
+  CRED-001 [Critical] SSH key access
+  CRED-002 [Critical] GPG key access
+  CRED-003 [Critical] Password file access
+
+[Cryptography]
+  CHK-001 [High] No checksums for sources (checksum)
+  CHK-002 [Medium] MD5 checksums used (checksum)
+  CHK-003 [Medium] SHA1 checksums used (checksum)
+  CHK-004 [Medium] Some sources use SKIP checksum (checksum)
+  CHK-005 [High] All non-VCS sources use SKIP (checksum)
+
+[Cryptomining]
+  CRYPTO-001 [Critical] Mining pool connection
+  CRYPTO-002 [Critical] Cryptominer binary
+  CRYPTO-003 [Critical] Monero/Bitcoin wallet address
+
+[Data Exfiltration]
+  EXFIL-001 [Critical] Curl POST data exfiltration
+  EXFIL-002 [Critical] Netcat data transfer
+  EXFIL-003 [Critical] Discord/Telegram webhook
+
+[Malicious Code]
+  ATOMIC-001 [Critical] Atomic Arch malicious npm/bun package
+  ATOMIC-002 [Critical] Node/Bun package manager in install hook
+  ENV-001 [Critical] LD_PRELOAD manipulation
+  ENV-002 [High] PATH manipulation
+  EXEC-REMOTE [Critical] Fetches and runs external code (remote_exec)
+  HIDDEN-001 [High] Hidden file creation in home
+  HIDDEN-002 [High] Tmp directory execution
+  HIDDEN-003 [High] Binary in non-standard location
+  INSTALL-001 [Critical] Python execution in install script
+  INSTALL-002 [High] Binary execution in install script
+  INSTALL-004 [Critical] Language package manager invoked in install hook
+  IOC-001 [Critical] Known indicator-of-compromise match (ioc)
+  PASTE-001 [Critical] Pastebin download
+  SHELL-001 [Critical] Bash reverse shell
+  SHELL-002 [Critical] Netcat reverse shell
+  SHELL-003 [Critical] Python reverse shell
+  SHELL-004 [Critical] Socat shell
+
+[Network Security]
+  FUNC-001 [High] Network access in a build function (pattern)
+  INSTALL-003 [Critical] Network access in install script
+  SRC-001 [Medium] Insecure source/transport protocol (source)
+  SRC-002 [High] Suspicious source domain (source)
+  SRC-003 [High] Raw IP address in source URL (source)
+  SRC-004 [High] URL shortener in source (source)
+  SRC-006 [Low] VCS source from non-standard host (source)
+  SRC-007 [Low] VCS source not pinned to a commit (source)
+  URL-001 [High] Raw IP in URL
+  URL-002 [High] URL shortener
+  URL-003 [High] Dynamic DNS domain
+
+[Obfuscation]
+  DEEP-001 [Critical] Decode-and-execute flow (deep)
+  DEEP-002 [High] Large embedded encoded blob (deep)
+  OBF-001 [High] Base64 decoding
+  OBF-003 [High] Hex-encoded payload
+  OBF-004 [Medium] String concatenation obfuscation
+  OBF-005 [High] Gzip decode execution
+
+[Persistence]
+  ATOMIC-003 [Critical] eBPF rootkit / payload artifact
+  ENV-003 [Critical] Bashrc/profile modification
+  PERSIST-001 [Critical] Systemd service creation in install
+  PERSIST-002 [Critical] Systemd timer creation
+  PERSIST-003 [High] Cron job creation
+  PERSIST-004 [Critical] rc.local modification
+  PERSIST-005 [High] XDG autostart creation
+  PERSIST-006 [Critical] Systemd masquerading
+
+[Privilege Escalation]
+  PRIV-001 [Critical] Sudo usage in a build function (privilege)
+  PRIV-002 [Critical] SUID/SGID bit set in a function (privilege)
+  PRIV-003 [Critical] Sudoers modification (privilege)
+  PRIV-004 [Medium] Capabilities being set (privilege)
+  PRIV-005 [High] Kernel module operations (privilege)
+  PRIV-006 [High] Sudo in an install hook (privilege)
+
+[Suspicious Metadata]
+  META-001 [Low] Provides impersonation
+  PROV-001 [High] Package gained risky behavior (provenance)
+
+Use 'aur-scan explain <CODE>' for details.
+Add your own: drop a .toml rule file in ~/.config/aur-scanner/rules.d/

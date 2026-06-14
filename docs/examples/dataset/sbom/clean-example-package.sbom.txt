@@ -1,0 +1,22 @@
+
+AUR Security Scanner | Pre-Install Check
+============================================================
+
+local: scanning 1 package dir(s) from disk (race-free)
+Resolving dependency tree...
+  1 AUR package(s) to scan, 4 repo/virtual dependencies
+
+note: a --local dir is providing transitive dependency "example-package"; its AUR source is not being checked
+Scanning: example-package (local) ok
+
+Dependency tree (review before installing):
+[AUR] example-package
+[repo] cmake
+[repo] glibc
+[repo] ninja
+[repo] openssl
+
+SBOM: CycloneDX SBOM written to /tmp/aur-scan-dataset.EoBMkG/sbom/clean-example-package.cdx.json
+
+============================================================
+Tree totals: no critical/high findings

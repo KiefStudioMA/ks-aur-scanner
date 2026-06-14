@@ -1,0 +1,25 @@
+
+======================================================================
+INSTALL-004 Language package manager invoked in install hook [CRITICAL]
+======================================================================
+
+Category:
+  Malicious Code  (detector: rules)
+
+Description:
+  An install scriptlet invokes a language package manager to
+  fetch/install packages. Installing a package runs its arbitrary
+  build/lifecycle scripts (preinstall, build.rs, setup.py, go
+  generate, ...) at install time -- a remote code execution vector.
+  The June 2026 Atomic Arch campaign used `npm install` this way
+  (see ATOMIC-002); the same applies to pip, poetry, uv, pdm, cargo,
+  go, gem, composer, conda, deno, and others.
+
+Recommendation:
+  Install hooks must never fetch or install packages. Declare real
+  dependencies in depends/makedepends and handle sources in the
+  source= array; report the package to the AUR maintainers.
+
+CWE: CWE-494
+
+======================================================================

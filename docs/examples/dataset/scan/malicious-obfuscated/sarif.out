@@ -1,0 +1,194 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "The file both decodes/decompresses data and dynamically executes shell input. Together these form a decode->execute payload, even when split across lines."
+          },
+          "ruleId": "DEEP-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 14
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Base64 decoding may hide malicious payloads"
+          },
+          "ruleId": "OBF-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 14
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Base64 decoding may hide malicious payloads"
+          },
+          "ruleId": "OBF-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 17
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Eval can execute obfuscated malicious code"
+          },
+          "ruleId": "OBF-002"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Package has build() function but no source array"
+          },
+          "ruleId": "SRC-005"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "The file both decodes/decompresses data and dynamically executes shell input. Together these form a decode->execute payload, even when split across lines."
+              },
+              "help": {
+                "text": "Decode the payload manually and review it. Legitimate builds do not decode and then execute generated shell code."
+              },
+              "id": "DEEP-001",
+              "name": "Decode-and-execute flow",
+              "shortDescription": {
+                "text": "Decode-and-execute flow"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Base64 decoding may hide malicious payloads"
+              },
+              "help": {
+                "text": "Decode and review the base64 content manually"
+              },
+              "id": "OBF-001",
+              "name": "Base64 decoding",
+              "shortDescription": {
+                "text": "Base64 decoding"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Base64 decoding may hide malicious payloads"
+              },
+              "help": {
+                "text": "Decode and review the base64 content manually"
+              },
+              "id": "OBF-001",
+              "name": "Base64 decoding",
+              "shortDescription": {
+                "text": "Base64 decoding"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Eval can execute obfuscated malicious code"
+              },
+              "help": {
+                "text": "Avoid eval; use direct commands instead"
+              },
+              "id": "OBF-002",
+              "name": "Eval usage",
+              "shortDescription": {
+                "text": "Eval usage"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Package has build() function but no source array"
+              },
+              "help": {
+                "text": "Verify this is intentional; build() usually needs sources"
+              },
+              "id": "SRC-005",
+              "name": "No sources with build function",
+              "shortDescription": {
+                "text": "No sources with build function"
+              }
+            }
+          ],
+          "version": "1.1.0-rc1"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

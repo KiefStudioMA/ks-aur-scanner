@@ -1,0 +1,36 @@
+
+======================================================================
+ATOMIC-003 eBPF rootkit / payload artifact [CRITICAL]
+======================================================================
+
+Category:
+  Persistence  (detector: rules)
+
+Description:
+  References the eBPF rootkit object (scales.bpf.c) or the 'deps'
+  hook path used by the June 2026 'Atomic Arch' payload to gain
+  rootkit-like capabilities and hide itself.
+
+Recommendation:
+  This is a rootkit dropper artifact. Do not build; treat the host
+  as compromised and reinstall rather than clean.
+
+CWE: CWE-506
+
+Real-World Context:
+  The June 2026 'Atomic Arch' campaign adopted hundreds of orphaned
+  AUR packages (alvr, premake-git, and 1,500+ others) and modified
+  their PKGBUILD/install hooks to run `npm install atomic-lockfile`
+  (wave 1) or `bun install js-digest` (wave 2). The payload is a
+  credential stealer with an optional root-only eBPF rootkit
+  (scales.bpf.c). The hijacked packages themselves looked clean, so
+  signature scanners missed them.
+
+Detection Patterns:
+  - scales\.bpf\.c
+  - src/hooks/deps\b
+
+Related Codes:
+  ATOMIC-001, ATOMIC-002, PERSIST-006
+
+======================================================================

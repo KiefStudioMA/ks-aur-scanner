@@ -1,0 +1,31 @@
+
+======================================================================
+PERSIST-001 Systemd service creation in install [CRITICAL]
+======================================================================
+
+Category:
+  Persistence  (detector: rules)
+
+Description:
+  Creating systemd services in install scripts enables persistence.
+  Used in 2018 xeactor and 2025 CHAOS RAT attacks.
+
+Recommendation:
+  Services should be enabled by the user, not automatically
+
+CWE: CWE-506
+
+Real-World Context:
+  Systemd persistence was used in both the 2018 xeactor attack
+  (timers running every 360 seconds) and the July 2025 CHAOS RAT
+  attack (services running at boot as default.target dependency).
+
+Detection Patterns:
+  - systemctl\s+(enable|start|daemon-reload)
+  - /etc/systemd/system/
+  - ~/.config/systemd/user/
+
+Related Codes:
+  PERSIST-002, PERSIST-003, PERSIST-004, PERSIST-006
+
+======================================================================

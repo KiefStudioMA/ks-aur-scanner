@@ -1,0 +1,48 @@
+{
+  "package_name": "git-package-git",
+  "package_version": "r100.abc1234-1",
+  "findings": [
+    {
+      "id": "META-001",
+      "severity": "low",
+      "category": "suspicious_metadata",
+      "title": "Provides impersonation",
+      "description": "Package provides another package name, may be impersonating. CHAOS RAT used this technique.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/clean/git-package/PKGBUILD",
+        "line": 13,
+        "column": 1,
+        "snippet": "provides=('git-package')"
+      },
+      "recommendation": "Verify this package is a legitimate alternative",
+      "cwe_id": null,
+      "metadata": {
+        "matched_text": "provides="
+      }
+    },
+    {
+      "id": "SRC-007",
+      "severity": "low",
+      "category": "network_security",
+      "title": "VCS source not pinned to a commit",
+      "description": "Source #1 is a VCS checkout on a movable ref (branch/tag or none): git+https://github.com/example/git-package.git. Its content is not integrity-pinned and can change between scan and build.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/clean/git-package/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "source=(\"git+https://github.com/example/git-package.git\")"
+      },
+      "recommendation": "Pin the VCS source to an immutable revision with #commit=<sha>.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "fragment": null,
+        "url": "git+https://github.com/example/git-package.git"
+      }
+    }
+  ],
+  "scanned_files": [
+    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/clean/git-package/PKGBUILD"
+  ],
+  "timestamp": "2026-06-14T16:42:02.460743110Z",
+  "scan_duration_ms": 1
+}

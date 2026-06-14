@@ -1,0 +1,73 @@
+
+Scan Results: malicious-cryptominer
+============================================================
+
+[CRITICAL] CRYPTO-001 Mining pool connection
+    Connection to cryptocurrency mining pools
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/cryptominer/PKGBUILD:16
+    Code:     ./xmrig -o stratum+tcp://pool.supportxmr.com:3333 -u WALLET_ADDRESS
+    Recommendation: Remove cryptomining components
+    Reference: CWE-506
+
+[CRITICAL] CRYPTO-001 Mining pool connection
+    Connection to cryptocurrency mining pools
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/cryptominer/PKGBUILD:16
+    Code:     ./xmrig -o stratum+tcp://pool.supportxmr.com:3333 -u WALLET_ADDRESS
+    Recommendation: Remove cryptomining components
+    Reference: CWE-506
+
+[CRITICAL] CRYPTO-002 Cryptominer binary
+    Known cryptocurrency miner executable names
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/cryptominer/PKGBUILD:11
+    Code: source=("http://192.168.1.1/xmrig-6.0.0.tar.gz")
+    Recommendation: Remove cryptomining components
+    Reference: CWE-506
+
+[CRITICAL] CRYPTO-002 Cryptominer binary
+    Known cryptocurrency miner executable names
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/cryptominer/PKGBUILD:16
+    Code:     ./xmrig -o stratum+tcp://pool.supportxmr.com:3333 -u WALLET_ADDRESS
+    Recommendation: Remove cryptomining components
+    Reference: CWE-506
+
+[CRITICAL] CRYPTO-002 Cryptominer binary
+    Known cryptocurrency miner executable names
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/cryptominer/PKGBUILD:20
+    Code:     install -Dm755 xmrig "$pkgdir/usr/bin/xmrig"
+    Recommendation: Remove cryptomining components
+    Reference: CWE-506
+
+[HIGH] URL-001 Raw IP in URL
+    URLs with raw IP addresses are suspicious
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/cryptominer/PKGBUILD:11
+    Code: source=("http://192.168.1.1/xmrig-6.0.0.tar.gz")
+    Recommendation: Use domain names from trusted sources
+
+[HIGH] SRC-003 Raw IP address in source URL
+    Source uses raw IP address: http://192.168.1.1/xmrig-6.0.0.tar.gz
+    Code: source=("http://192.168.1.1/xmrig-6.0.0.tar.gz")
+    Recommendation: Use domain names from trusted sources
+
+[MEDIUM] SRC-001 Insecure source/transport protocol
+    Source #1 uses an insecure transport: http://192.168.1.1/xmrig-6.0.0.tar.gz
+    Code: source=("http://192.168.1.1/xmrig-6.0.0.tar.gz")
+    Recommendation: Use HTTPS instead of HTTP for source downloads
+    Reference: CWE-319
+
+[MEDIUM] CHK-002 MD5 checksums used
+    MD5 is cryptographically broken and should not be used
+    Code: md5sums=(...)
+    Recommendation: Replace md5sums with sha256sums or sha512sums
+    Reference: CWE-328
+
+
+
+============================================================
+Package: malicious-cryptominer v1.0.0-1
+Scan duration: 1ms
+
+Found 9 issue(s):
+  5 CRITICAL
+  2 HIGH
+  2 MEDIUM
+============================================================

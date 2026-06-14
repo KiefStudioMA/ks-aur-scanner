@@ -1,0 +1,30 @@
+
+======================================================================
+PASTE-001 Pastebin download [CRITICAL]
+======================================================================
+
+Category:
+  Malicious Code  (detector: rules)
+
+Description:
+  Downloading from paste sites is a common malware technique. Used
+  in 2018 xeactor attack via ptpb.pw
+
+Recommendation:
+  Never download code from paste sites - this is a major red flag
+
+CWE: CWE-506
+
+Real-World Context:
+  The 2018 xeactor attacker used ptpb.pw (a pastebin clone) to host
+  malicious scripts. The scripts ~x and ~u were downloaded and
+  executed, creating systemd timers for persistence.
+
+Detection Patterns:
+  - pastebin\.com
+  - paste\.ee
+  - ptpb\.pw
+  - ix\.io
+  - hastebin
+
+======================================================================

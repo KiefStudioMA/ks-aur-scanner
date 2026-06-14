@@ -1,0 +1,149 @@
+{
+  "package_name": "alvr",
+  "package_version": "20.0.0-1",
+  "findings": [
+    {
+      "id": "ATOMIC-001",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Atomic Arch malicious npm/bun package (install script)",
+      "description": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js). These pull an infostealer and eBPF rootkit during the build/install phase.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install",
+        "line": 4,
+        "column": 17,
+        "snippet": "    npm install atomic-lockfile >/dev/null 2>&1"
+      },
+      "recommendation": "Do NOT build. This is a known-malicious dependency. Remove the package and treat the host as compromised: rotate credentials (SSH, npm/GitHub tokens, browser sessions).",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "atomic-lockfile"
+      }
+    },
+    {
+      "id": "ATOMIC-001",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Atomic Arch malicious npm/bun package (install script)",
+      "description": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js). These pull an infostealer and eBPF rootkit during the build/install phase.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install",
+        "line": 9,
+        "column": 17,
+        "snippet": "    bun install js-digest >/dev/null 2>&1"
+      },
+      "recommendation": "Do NOT build. This is a known-malicious dependency. Remove the package and treat the host as compromised: rotate credentials (SSH, npm/GitHub tokens, browser sessions).",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "js-digest"
+      }
+    },
+    {
+      "id": "ATOMIC-002",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Node/Bun package manager in install hook (install script)",
+      "description": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install",
+        "line": 4,
+        "column": 5,
+        "snippet": "    npm install atomic-lockfile >/dev/null 2>&1"
+      },
+      "recommendation": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "npm install"
+      }
+    },
+    {
+      "id": "ATOMIC-002",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Node/Bun package manager in install hook (install script)",
+      "description": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install",
+        "line": 9,
+        "column": 5,
+        "snippet": "    bun install js-digest >/dev/null 2>&1"
+      },
+      "recommendation": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "bun install"
+      }
+    },
+    {
+      "id": "IOC-001",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Known IOC: malicious npm/bun package 'atomic-lockfile'",
+      "description": "Content matches a known indicator of compromise: malicious npm/bun package 'atomic-lockfile' (campaign: Atomic Arch).",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install",
+        "line": 4,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Do NOT build. This matches a known-malicious indicator; treat the host as compromised if already built and rotate credentials.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "campaign": "atomic-arch-2026-06",
+        "context": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/PKGBUILD",
+        "ioc_kind": "NpmPackage",
+        "ioc_value": "atomic-lockfile"
+      }
+    },
+    {
+      "id": "IOC-001",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Known IOC: malicious npm/bun package 'js-digest'",
+      "description": "Content matches a known indicator of compromise: malicious npm/bun package 'js-digest' (campaign: Atomic Arch).",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install",
+        "line": 9,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Do NOT build. This matches a known-malicious indicator; treat the host as compromised if already built and rotate credentials.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "campaign": "atomic-arch-2026-06",
+        "context": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/PKGBUILD",
+        "ioc_kind": "NpmPackage",
+        "ioc_value": "js-digest"
+      }
+    },
+    {
+      "id": "CHK-005",
+      "severity": "high",
+      "category": "cryptography",
+      "title": "All non-VCS sources use SKIP checksum",
+      "description": "No integrity verification is performed on 1 non-VCS source(s)",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Provide real checksums for non-VCS sources",
+      "cwe_id": "CWE-354",
+      "metadata": {
+        "non_vcs_source_count": 1,
+        "vcs_source_count": 0
+      }
+    }
+  ],
+  "scanned_files": [
+    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/PKGBUILD",
+    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+  ],
+  "timestamp": "2026-06-14T16:42:02.548603972Z",
+  "scan_duration_ms": 2
+}

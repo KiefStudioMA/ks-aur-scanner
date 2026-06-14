@@ -1,0 +1,17 @@
+Scan a PKGBUILD file or directory
+
+Usage: aur-scan scan [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>  Path to PKGBUILD or directory containing it
+
+Options:
+  -f, --format <FORMAT>      Output format [default: text] [possible values: text, json, sarif]
+  -o, --output <OUTPUT>      Output file (stdout if not specified)
+      --fail-on <FAIL_ON>    Exit with non-zero code if findings at or above this severity [possible values: critical, high, medium, low, info]
+      --include-info         Include informational findings
+  -c, --config <CONFIG>      Configuration file path
+  -s, --severity <SEVERITY>  Minimum severity to report [possible values: critical, high, medium, low, info]
+  -v, --verbose              Enable verbose output
+  -q, --quiet                Quiet mode (only show findings)
+  -h, --help                 Print help

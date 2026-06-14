@@ -1,0 +1,19 @@
+
+======================================================================
+EXEC-REMOTE Fetches and runs external code [CRITICAL]
+======================================================================
+
+Category:
+  Malicious Code  (detector: remote_exec)
+
+Description:
+  The package downloads and executes code from an external URL at
+  build/install time; the scanner does not follow it (opaque
+  boundary).
+
+Recommendation:
+  Do not build; obtain software that ships its real code.
+
+CWE: CWE-494
+
+======================================================================

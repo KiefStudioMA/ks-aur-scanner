@@ -1,0 +1,11 @@
+Show or query the IOC (indicator of compromise) database
+
+Usage: aur-scan ioc [OPTIONS]
+
+Options:
+      --check <NAME>         Check whether a name/value matches a known indicator
+  -c, --config <CONFIG>      Configuration file path
+  -s, --severity <SEVERITY>  Minimum severity to report [possible values: critical, high, medium, low, info]
+  -v, --verbose              Enable verbose output
+  -q, --quiet                Quiet mode (only show findings)
+  -h, --help                 Print help
