@@ -23,10 +23,10 @@ A comprehensive security scanner for Arch Linux AUR packages that analyzes PKGBU
 ## TL;DR
 
 ```bash
-# Install
-paru -S aur-scanner-git
+# Install (stable, GPG-signed release — see "From AUR" for all channels)
+paru -S aur-scanner
 # or
-yay -S aur-scanner-git
+yay -S aur-scanner
 
 # Scan a package before installing
 aur-scan check <package-name>
@@ -121,20 +121,22 @@ This scanner implements detection rules based on real-world attacks and security
 
 ### From AUR
 
-Three packages install the same `aur-scan` binary — pick one:
+All four packages install the same `aur-scan` binary and **conflict with each
+other — install exactly one**. Pick the channel that fits you:
 
-| Package | Tracks |
-|---------|--------|
-| `aur-scanner-git` | Latest commit (rolling) |
-| `aur-scanner` | Tagged releases |
-| `ks-aur-scanner` | Tagged releases (same, different name) |
+| Package | Channel | Builds from | Best for |
+|---------|---------|-------------|----------|
+| [`aur-scanner`](https://aur.archlinux.org/packages/aur-scanner) | **Stable** (recommended) | GPG-signed release tag | Most users and production systems |
+| [`ks-aur-scanner`](https://aur.archlinux.org/packages/ks-aur-scanner) | Stable (alias) | GPG-signed release tag | Same as `aur-scanner`, under an alternate name |
+| [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc) | Release candidate | GPG-signed pre-release tag | Testing the next release before it ships |
+| [`aur-scanner-git`](https://aur.archlinux.org/packages/aur-scanner-git) | Rolling | Latest commit on `main` | Bleeding edge and contributors |
 
 ```bash
-paru -S aur-scanner        # or: yay -S aur-scanner
+paru -S aur-scanner        # stable, recommended — or: yay -S aur-scanner
 ```
 
-The tagged packages (`aur-scanner`, `ks-aur-scanner`) build from our
-**GPG-signed release tag** and verify it against our signing key
+The tagged packages (`aur-scanner`, `ks-aur-scanner`, `aur-scanner-rc`) build
+from a **GPG-signed git tag** and verify it against our signing key
 (`validpgpkeys`), so `makepkg` refuses to build a tag that isn't signed by us —
 integrity comes from the signature, not a tarball hash. If your AUR helper does
 not fetch the key automatically, import it once:
@@ -142,6 +144,14 @@ not fetch the key automatically, import it once:
 ```bash
 gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51
 ```
+
+> **Release-candidate channel — [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc):**
+> tracks the next release (currently `1.1.0-rc1`) so you can test it before it's
+> promoted to stable. The RC **fails closed** — the `paru`/`yay` wrapper and the
+> pacman hook now *deny* on a scan/fetch error, a timeout, or a non-interactive
+> (no-TTY) prompt instead of proceeding. That's the right behavior for a security
+> gate, but read the [release notes](https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.1.0-rc1) before driving it from scripts or
+> CI. Production systems should stay on the stable `aur-scanner`.
 
 ### From Source
 
