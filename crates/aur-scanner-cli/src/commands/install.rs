@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use aur_scanner_core::aur::AurClient;
 use aur_scanner_core::depgraph::{self, ResolveOptions};
@@ -127,6 +127,14 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         }
         base_dirs.insert(base, dir);
     }
+
+    // Guard: cleanup on any return path (success, build failure, user abort)
+    // unless --keep-workspace was given.
+    let _guard = WorkspaceGuard {
+        workspace: &workspace,
+        base_dirs: &base_dirs,
+        keep: args.keep_workspace,
+    };
 
     // 3. Show the reviewable tree + opaque boundaries.
     println!();
@@ -243,14 +251,140 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         }
     }
 
-    if !args.keep_workspace {
-        for base in base_dirs.keys() {
-            let dir = workspace.join(base);
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-    }
-
     println!();
     println!("{}", "All packages built and installed.".green().bold());
     Ok(())
+}
+
+/// RAII guard that cleans up the workspace on drop unless `keep` is true.
+struct WorkspaceGuard<'a> {
+    workspace: &'a Path,
+    base_dirs: &'a BTreeMap<String, PathBuf>,
+    keep: bool,
+}
+
+impl<'a> Drop for WorkspaceGuard<'a> {
+    fn drop(&mut self) {
+        if !self.keep {
+            cleanup_workspace(self.workspace, self.base_dirs);
+        }
+    }
+}
+
+/// Remove workspace package directories. No-op if `base_dirs` is empty or
+/// the workspace root does not exist.
+fn cleanup_workspace(workspace: &Path, base_dirs: &BTreeMap<String, PathBuf>) {
+    for base in base_dirs.keys() {
+        let dir = workspace.join(base);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn tmpdir() -> (PathBuf, impl FnOnce()) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CNT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir()
+            .join(format!("aur-scan-test-{}", CNT.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.clone();
+        (dir, move || {
+            let _ = fs::remove_dir_all(&path);
+        })
+    }
+
+    #[test]
+    fn cleanup_removes_directories() {
+        let (tmp, cleanup) = tmpdir();
+        let ws = tmp.join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+
+        let mut base_dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+        for name in &["pkg-a", "pkg-b"] {
+            let d = ws.join(name);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("PKGBUILD"), "pkgname=test").unwrap();
+            base_dirs.insert(name.to_string(), d);
+        }
+
+        cleanup_workspace(&ws, &base_dirs);
+
+        assert!(!ws.join("pkg-a").exists());
+        assert!(!ws.join("pkg-b").exists());
+
+        cleanup();
+    }
+
+    #[test]
+    fn cleanup_preserves_workspace_root() {
+        let (tmp, cleanup) = tmpdir();
+        let ws = tmp.join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("README"), "shared").unwrap();
+
+        let mut base_dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+        let d = ws.join("pkg-a");
+        fs::create_dir_all(&d).unwrap();
+        base_dirs.insert("pkg-a".to_string(), d);
+
+        cleanup_workspace(&ws, &base_dirs);
+
+        assert!(!ws.join("pkg-a").exists());
+        assert!(ws.exists());
+        assert!(ws.join("README").exists());
+
+        cleanup();
+    }
+
+    #[test]
+    fn guard_cleans_up_on_drop_when_keep_is_false() {
+        let (tmp, cleanup) = tmpdir();
+        let ws = tmp.join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+
+        let mut base_dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+        let d = ws.join("pkg-a");
+        fs::create_dir_all(&d).unwrap();
+        base_dirs.insert("pkg-a".to_string(), d);
+
+        {
+            let _guard = WorkspaceGuard {
+                workspace: &ws,
+                base_dirs: &base_dirs,
+                keep: false,
+            };
+        } // dropped here
+
+        assert!(!ws.join("pkg-a").exists());
+
+        cleanup();
+    }
+
+    #[test]
+    fn guard_keeps_workspace_when_keep_is_true() {
+        let (tmp, cleanup) = tmpdir();
+        let ws = tmp.join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+
+        let mut base_dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+        let d = ws.join("pkg-a");
+        fs::create_dir_all(&d).unwrap();
+        base_dirs.insert("pkg-a".to_string(), d);
+
+        {
+            let _guard = WorkspaceGuard {
+                workspace: &ws,
+                base_dirs: &base_dirs,
+                keep: true,
+            };
+        } // dropped here
+
+        assert!(ws.join("pkg-a").exists());
+
+        cleanup();
+    }
 }
