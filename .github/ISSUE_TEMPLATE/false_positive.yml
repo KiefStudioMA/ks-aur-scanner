@@ -1,0 +1,42 @@
+name: False positive
+description: aur-scan flagged something benign
+labels: ["false-positive"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A rule that cries wolf erodes trust in every real finding, so these matter.
+        Thanks for reporting.
+  - type: input
+    id: code
+    attributes:
+      label: Finding code
+      description: The code that fired (e.g. PRIV-002). See `aur-scan explain <CODE>`.
+      placeholder: PRIV-002
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: aur-scan 1.0.3
+    validations:
+      required: true
+  - type: textarea
+    id: snippet
+    attributes:
+      label: The line/snippet that was flagged
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: why_benign
+    attributes:
+      label: Why it's benign
+      description: What the code actually does and why it's legitimate.
+    validations:
+      required: true
+  - type: input
+    id: package
+    attributes:
+      label: Package (if public)

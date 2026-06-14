@@ -1,0 +1,44 @@
+name: Bug report
+description: Something in aur-scan misbehaves (crash, wrong output, scan fails)
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. If this is a **security** issue — including a
+        *false negative* (a malicious pattern that should be flagged but isn't, or
+        a scan that errors yet reports "clean") — do **not** file it here. See
+        [SECURITY.md](https://github.com/KiefStudioMA/ks-aur-scanner/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `aur-scan --version`
+      placeholder: aur-scan 1.0.3
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command / steps
+      description: Exactly what you ran.
+      placeholder: aur-scan check some-package
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. actual
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output / logs
+      description: Paste relevant output. Re-run with `-v` if useful. Code blocks please.
+      render: shell
+  - type: input
+    id: package
+    attributes:
+      label: Package involved (if public)
+      description: AUR package name, if the issue is tied to a specific one.

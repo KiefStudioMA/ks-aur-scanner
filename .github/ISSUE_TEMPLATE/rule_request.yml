@@ -1,0 +1,42 @@
+name: Detection rule request
+description: Suggest a new pattern aur-scan should flag
+labels: ["rule-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Propose a new detection. If you can already write it, even better — send a
+        community TOML rule in `install/rules.d/` (see `example.toml`) or a PR.
+
+        **Do not paste live malware or real malicious package names/payloads.**
+        Describe the *behaviour* and use a sanitized, illustrative snippet.
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: What should be detected
+      description: The behaviour or pattern, and why it's dangerous in a PKGBUILD / install script.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Illustrative snippet (sanitized)
+      description: A benign, made-up example of the shape the rule should match.
+      render: bash
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Suggested severity
+      options: ["critical", "high", "medium", "low", "info"]
+    validations:
+      required: true
+  - type: textarea
+    id: avoid_fp
+    attributes:
+      label: How to avoid false positives
+      description: What benign look-alike should NOT match? (This is the hard part of a good rule.)
+  - type: input
+    id: refs
+    attributes:
+      label: References
+      description: Advisories, write-ups, CWE — anything backing it up.

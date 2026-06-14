@@ -1,7 +1,7 @@
 # Maintainer: Kief Studio <packages@kief.studio>
 pkgname=aur-scanner-git
-pkgver=1.0.1.r1.gfa4ad98
-pkgrel=2
+pkgver=1.0.1.r4.gf67c155
+pkgrel=1
 pkgdesc="Security scanner for Arch Linux AUR packages - detect malicious PKGBUILDs before installation"
 arch=('x86_64' 'aarch64')
 url="https://github.com/KiefStudioMA/ks-aur-scanner"
@@ -55,6 +55,7 @@ package() {
     # scan AUR packages BEFORE makepkg builds them.
     install -Dm644 "install/integration.bash" "$pkgdir/usr/share/aur-scan/integration.bash"
     install -Dm644 "install/integration.zsh" "$pkgdir/usr/share/aur-scan/integration.zsh"
+    install -Dm644 "install/integration.fish" "$pkgdir/usr/share/aur-scan/integration.fish"
 
     # Community rules example
     install -Dm644 "install/rules.d/example.toml" "$pkgdir/usr/share/aur-scanner/rules.d/example.toml"

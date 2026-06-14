@@ -209,6 +209,19 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
         // -- pattern analyzer (function body) --
         e("FUNC-001", "Network access in a build function", High, NetworkSecurity, "pattern", None,
           "A build/package function performs network access (curl/wget/fetch); downloads belong in the source array.", "Move downloads to the source= array."),
+        // -- binary payload analyzer (prebuilt -bin artifacts) --
+        e("BIN-HASH", "Source artifact is a known payload", Critical, MaliciousCode, "binary", Some("CWE-506"),
+          "The declared sha256 of a shipped binary artifact matches a known-malicious payload hash in the IOC database.", "Do not build/install; the prebuilt binary is the malware."),
+        e("BIN-VT", "VirusTotal flags source artifact", Critical, MaliciousCode, "binary", Some("CWE-506"),
+          "VirusTotal reports engines detecting the declared sha256 of a shipped binary as malicious (only checked when a VT key is present in the environment).", "Do not build/install; review the VirusTotal report for the hash."),
+        e("BIN-EBPF", "Prebuilt binary contains eBPF objects", High, Persistence, "binary", Some("CWE-506"),
+          "A shipped binary embeds eBPF bytecode (EM_BPF machine or .bpf/.BTF sections), which can hook syscalls and hide artifacts — the Atomic Arch payload shipped an eBPF rootkit.", "Verify the package legitimately needs eBPF; treat as a rootkit otherwise."),
+        e("BIN-IMPORT", "Prebuilt binary imports high-risk syscalls", Medium, MaliciousCode, "binary", Some("CWE-506"),
+          "A shipped binary imports symbols typical of anti-debugging, code injection, or rootkits (ptrace, memfd_create, bpf, ...).", "Review why these are needed; cross-check against upstream sources."),
+        e("BIN-PACKED", "Prebuilt binary appears packed", High, Obfuscation, "binary", Some("CWE-506"),
+          "A shipped binary shows packer indicators (UPX sections or very high entropy), which hide the real code from inspection.", "Unpack and review, or obtain a build from reviewable source."),
+        e("BIN-STRING", "Prebuilt binary embeds known C2 domain", Critical, DataExfiltration, "binary", Some("CWE-506"),
+          "A shipped binary contains a known C2/exfil domain from the IOC database.", "Do not build/install; the binary references known-malicious infrastructure."),
     ]
 }
 
@@ -243,6 +256,7 @@ mod tests {
             "PRIV-001", "PRIV-002", "PRIV-003", "PRIV-004", "PRIV-005", "PRIV-006",
             "SRC-001", "SRC-002", "SRC-003", "SRC-004", "SRC-005", "SRC-006",
             "IOC-001", "DEEP-001", "DEEP-002", "EXEC-REMOTE", "PROV-001", "FUNC-001",
+            "BIN-HASH", "BIN-VT", "BIN-EBPF", "BIN-IMPORT", "BIN-PACKED", "BIN-STRING",
         ];
         let catalog = Catalog::load();
         for id in EMITTED {

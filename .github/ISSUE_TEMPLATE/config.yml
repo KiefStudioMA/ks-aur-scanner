@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (private)
+    url: https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/new
+    about: Report vulnerabilities — including false negatives — privately. Do NOT open a public issue.
+  - name: Documentation
+    url: https://aur-scanner.kief.studio
+    about: Install guide, command reference, and the full detection-code catalog.
+  - name: Questions / discussion
+    url: https://github.com/KiefStudioMA/ks-aur-scanner/discussions
+    about: Usage questions and ideas (enable Discussions in repo settings).

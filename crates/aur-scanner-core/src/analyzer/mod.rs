@@ -1,5 +1,6 @@
 //! Security analyzers for PKGBUILD analysis
 
+mod binary;
 mod checksum;
 mod deep;
 mod ioc;
@@ -8,6 +9,7 @@ mod privilege;
 mod remote_exec;
 mod source;
 
+pub use binary::BinaryPayloadAnalyzer;
 pub use checksum::ChecksumAnalyzer;
 pub use deep::DeepAnalyzer;
 pub use ioc::IocAnalyzer;

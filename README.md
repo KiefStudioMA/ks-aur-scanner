@@ -8,6 +8,14 @@
 
 **Detect malicious AUR packages before they compromise your system.**
 
+[![AUR version](https://img.shields.io/aur/version/aur-scanner?logo=archlinux&logoColor=white&label=AUR)](https://aur.archlinux.org/packages/aur-scanner)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Built with Rust](https://img.shields.io/badge/built_with-Rust-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![GPG-signed releases](https://img.shields.io/badge/releases-GPG_signed-2ea44f?logo=gnuprivacyguard&logoColor=white)](https://github.com/KiefStudioMA/ks-aur-scanner/releases)
+[![Static analysis only](https://img.shields.io/badge/scanner-static_only-2ea44f.svg)](#security)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-2ea44f.svg)](CONTRIBUTING.md)
+[![Code of Conduct](https://img.shields.io/badge/code_of_conduct-v2.1-blueviolet.svg)](CODE_OF_CONDUCT.md)
+
 A comprehensive security scanner for Arch Linux AUR packages that analyzes PKGBUILDs and install scripts for malicious patterns, suspicious behavior, and security vulnerabilities. Written in Rust for performance and safety.
 
 ---
@@ -113,12 +121,26 @@ This scanner implements detection rules based on real-world attacks and security
 
 ### From AUR
 
-```bash
-# Using paru
-paru -S ks-aur-scanner
+Three packages install the same `aur-scan` binary — pick one:
 
-# Using yay
-yay -S ks-aur-scanner
+| Package | Tracks |
+|---------|--------|
+| `aur-scanner-git` | Latest commit (rolling) |
+| `aur-scanner` | Tagged releases |
+| `ks-aur-scanner` | Tagged releases (same, different name) |
+
+```bash
+paru -S aur-scanner        # or: yay -S aur-scanner
+```
+
+The tagged packages (`aur-scanner`, `ks-aur-scanner`) build from our
+**GPG-signed release tag** and verify it against our signing key
+(`validpgpkeys`), so `makepkg` refuses to build a tag that isn't signed by us —
+integrity comes from the signature, not a tarball hash. If your AUR helper does
+not fetch the key automatically, import it once:
+
+```bash
+gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51
 ```
 
 ### From Source
@@ -139,11 +161,17 @@ sudo install -Dm755 target/release/aur-scan /usr/bin/aur-scan
 sudo install -Dm755 target/release/aur-scan-wrap /usr/bin/aur-scan-wrap
 sudo install -Dm755 target/release/aur-scan-hook /usr/bin/aur-scan-hook
 
-# Install shell integration (optional)
+# Install shell integration (recommended — scans BEFORE makepkg builds)
 sudo install -Dm644 install/integration.bash /usr/share/aur-scan/integration.bash
 sudo install -Dm644 install/integration.zsh /usr/share/aur-scan/integration.zsh
+sudo install -Dm644 install/integration.fish /usr/share/aur-scan/integration.fish
 
-# Install pacman hook (optional)
+# Install the community rules example
+sudo install -Dm644 install/rules.d/example.toml /usr/share/aur-scanner/rules.d/example.toml
+
+# Pacman hook — opt-in backstop only. It runs AFTER makepkg has already built
+# (and executed) the package, so it catches .install scriptlets, not build-time
+# payloads. Prefer the shell integration above. Enable it deliberately:
 sudo install -Dm644 install/aur-scan.hook /usr/share/libalpm/hooks/aur-scan.hook
 ```
 
@@ -422,6 +450,12 @@ source /usr/share/aur-scan/integration.bash
 source /usr/share/aur-scan/integration.zsh
 ```
 
+**For Fish** - Add to `~/.config/fish/config.fish`:
+
+```fish
+source /usr/share/aur-scan/integration.fish
+```
+
 This creates wrapper functions for `paru` and `yay` that:
 1. Detect AUR package installations
 2. Pre-scan packages before proceeding
@@ -512,6 +546,9 @@ NeedsTargets
 | `ATOMIC-001` | Atomic Arch malicious npm/bun package | Malicious Code | rules | CWE-506 |
 | `ATOMIC-002` | Node/Bun package manager in install hook | Malicious Code | rules | CWE-494 |
 | `ATOMIC-003` | eBPF rootkit / payload artifact | Persistence | rules | CWE-506 |
+| `BIN-HASH` | Source artifact is a known payload | Malicious Code | binary | CWE-506 |
+| `BIN-STRING` | Prebuilt binary embeds known C2 domain | Data Exfiltration | binary | CWE-506 |
+| `BIN-VT` | VirusTotal flags source artifact | Malicious Code | binary | CWE-506 |
 | `BROWSER-001` | Browser profile access | Credential Theft | rules | CWE-522 |
 | `BROWSER-002` | Browser database access | Credential Theft | rules | CWE-522 |
 | `CRED-001` | SSH key access | Credential Theft | rules | CWE-522 |
@@ -551,6 +588,8 @@ NeedsTargets
 
 | Code | Name | Category | Detector | CWE |
 |------|------|----------|----------|-----|
+| `BIN-EBPF` | Prebuilt binary contains eBPF objects | Persistence | binary | CWE-506 |
+| `BIN-PACKED` | Prebuilt binary appears packed | Obfuscation | binary | CWE-506 |
 | `CHK-001` | No checksums for sources | Cryptography | checksum | CWE-354 |
 | `CHK-005` | All non-VCS sources use SKIP | Cryptography | checksum | CWE-354 |
 | `CHK-006` | Checksum count mismatch | Configuration | checksum | - |
@@ -581,6 +620,7 @@ NeedsTargets
 
 | Code | Name | Category | Detector | CWE |
 |------|------|----------|----------|-----|
+| `BIN-IMPORT` | Prebuilt binary imports high-risk syscalls | Malicious Code | binary | CWE-506 |
 | `CHK-002` | MD5 checksums used | Cryptography | checksum | CWE-328 |
 | `CHK-003` | SHA1 checksums used | Cryptography | checksum | CWE-328 |
 | `CHK-004` | Some sources use SKIP checksum | Cryptography | checksum | CWE-354 |
@@ -595,6 +635,12 @@ NeedsTargets
 |------|------|----------|----------|-----|
 | `META-001` | Provides impersonation | Suspicious Metadata | rules | - |
 | `SRC-006` | VCS source from non-standard host | Network Security | source | - |
+
+## INFO severity
+
+| Code | Name | Category | Detector | CWE |
+|------|------|----------|----------|-----|
+| `EXAMPLE-001` | Example: references example.com | Configuration | user | - |
 
 ## Custom & Community Rules
 
@@ -823,6 +869,7 @@ ks-aur-scanner/
 ├── install/                      # Installation files
 │   ├── integration.bash
 │   ├── integration.zsh
+│   ├── integration.fish
 │   └── aur-scan.hook
 ├── tests/                        # Integration tests
 └── PKGBUILD                      # AUR package definition
@@ -968,49 +1015,55 @@ For commercial support, custom development, or enterprise licensing inquiries:
 
 ## Contributing
 
-Contributions are welcome under the terms of the project license.
+This is a security tool a lot of people now rely on, and it shouldn't depend on
+one person. **Contributors are genuinely welcome** — the whole point of the
+auditable [detection catalog](#detection-rules-reference) and the community
+[`rules.d/`](#custom--community-rules) format is so anyone can extend it without
+touching the core.
 
-### Areas for Contribution
+Good places to start (look for [`good first issue`](https://github.com/KiefStudioMA/ks-aur-scanner/labels/good%20first%20issue)):
 
-- **Detection Rules:** New patterns for emerging threats
-- **False Positive Fixes:** Improve pattern accuracy
-- **Documentation:** Improve guides and examples
-- **Testing:** Additional test cases and fixtures
-- **Integration:** Support for additional AUR helpers
+- **Detection rules** — patterns for emerging threats, as a community TOML rule or a built-in
+- **False-positive fixes** — tighten a pattern that cries wolf (like the `chmod 755` one we fixed in 1.0.2)
+- **AUR-helper integrations** — more shells/helpers (fish was added by a contributor in 1.0.3)
+- **Docs, tests, fixtures**
 
-### Contribution Process
+**Read [CONTRIBUTING.md](CONTRIBUTING.md) first** — it spells out the bar. The
+short version, because this is a security tool and the bar does not move:
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run tests: `cargo test`
-5. Run lints: `cargo clippy`
-6. Submit a pull request
-
-### Code Standards
-
-- All code must pass `cargo clippy` with no warnings
-- All code must be formatted with `cargo fmt`
-- All public APIs must be documented
-- New features must include tests
+- **Static-only is a hard invariant.** The scanner must *never* execute, source, or fetch-and-run a package it inspects. PRs that breach this are rejected on principle.
+- **Every detection code lives in the auditable catalog** and is covered by the uniqueness/coverage tests — no orphan rules.
+- **Tests + `cargo clippy` (no warnings) + `cargo fmt` are required.** New behavior needs new tests.
+- **No change may weaken an existing security check** to make something simpler or faster.
+- **`main` requires signed, reviewed commits** (enforced by a branch ruleset). Every change is reviewed before it lands; merges are GPG-signed. See CONTRIBUTING.md for how that works with your fork.
 
 ---
 
 ## Security
 
-### Reporting Vulnerabilities
+See **[SECURITY.md](SECURITY.md)** for the full policy and threat model.
 
-If you discover a security vulnerability in this project, please report it responsibly:
+### Reporting vulnerabilities
 
-- **Email:** security@kief.studio
-- **Do not** open public issues for security vulnerabilities
+Report privately — **do not** open a public issue:
 
-### Security Considerations
+- **Email:** security@kief.studio (or use GitHub's *Report a vulnerability* button)
 
-- This tool performs static analysis only; it cannot detect all threats
-- Dynamic analysis (sandboxing) is beyond the current scope
-- Always review PKGBUILDs manually for critical systems
-- The AUR is inherently a trust-based system
+### How this project protects itself
+
+A security tool has to be trustworthy end-to-end, so the supply chain around it
+is hardened too:
+
+- **The scanner is static-only** — it reads PKGBUILDs and install scripts; it never executes, sources, or fetches-and-runs the package it inspects. The scan cannot compromise the machine doing the scanning.
+- **Releases are GPG-signed.** Tags are signed, and the tagged AUR packages verify the signature (`validpgpkeys`) instead of trusting a tarball hash. Verify with `git verify-tag v<version>`.
+- **`main` and release tags are protected** by a branch ruleset: signed commits required, no force-push, no deletion. Every change is reviewed.
+- **One auditable catalog.** Every detection code is indexed and uniqueness-tested, so what the tool *can* flag is always reviewable (`aur-scan codes`).
+
+### Limits (be honest about them)
+
+- Static analysis cannot catch every novel or heavily-obfuscated attack
+- Sandboxed dynamic analysis is out of scope by design (that's what keeps it safe to run)
+- For critical systems, still review PKGBUILDs yourself — this is defense-in-depth, not a guarantee
 
 ---
 
@@ -1019,6 +1072,14 @@ If you discover a security vulnerability in this project, please report it respo
 **Developed by [Kief Studio](https://kief.studio)**
 
 This project was created to address a critical gap in the Arch Linux security ecosystem. Special thanks to the security researchers who documented the attacks that informed our detection rules.
+
+### Contributors
+
+Built by the community, not just us. Thank you:
+
+- [**@Disklo** (Rafael Lucio)](https://github.com/Disklo) — fixed a false-negative in `aur-scan check` and added the fish shell integration (1.0.3)
+
+Sent a PR? Add yourself here. See the full list on the [contributors page](https://github.com/KiefStudioMA/ks-aur-scanner/graphs/contributors).
 
 ### References
 

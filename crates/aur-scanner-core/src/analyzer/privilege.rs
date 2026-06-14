@@ -19,7 +19,20 @@ impl PrivilegeAnalyzer {
     pub fn new() -> Self {
         Self {
             sudo_pattern: Regex::new(r"\bsudo\b").unwrap(),
-            suid_pattern: Regex::new(r"chmod\s+[0-7]*[4-7][0-7]{2,3}\s").unwrap(),
+            // SUID/SGID is the *special* permission bit. In numeric form it only
+            // exists in a 4-digit octal mode whose leading digit has the suid (4)
+            // or sgid (2) bit set, i.e. leading digit 2-7 (a leading 0 = no special
+            // bit, 1 = sticky only). Plain 3-digit modes (755, 644, 700) CANNOT set
+            // suid/sgid and must never match. Symbolic forms (u+s, g+s, +s) and
+            // `install -m<mode>` with a special bit are also covered.
+            suid_pattern: Regex::new(
+                r"(?x)
+                  chmod \s+ (?:-[A-Za-z]+ \s+)* 0?[2-7][0-7]{3} \b   # chmod [flags] 4755 / 02755
+                | chmod \s+ [ugoa]* [-+=] [rwxXt]* s \b              # chmod u+s / g+s / +s
+                | install \s [^\n]* -[A-Za-z]*m [=\s]? 0?[2-7][0-7]{3} \b  # install -m4755 / -Dm4755
+                ",
+            )
+            .unwrap(),
             sudoers_pattern: Regex::new(r"/etc/sudoers").unwrap(),
             capabilities_pattern: Regex::new(r"setcap\s+").unwrap(),
         }
@@ -270,5 +283,52 @@ package() {
 
         let findings = analyzer.analyze(&context).await.unwrap();
         assert!(findings.iter().any(|f| f.id == "PRIV-002"));
+    }
+
+    #[tokio::test]
+    async fn test_benign_chmod_is_not_suid() {
+        // Regression: plain 3-digit modes (755/644/700) set NO special bit and
+        // must never raise PRIV-002. This is exactly what normal icon-theme and
+        // file-installing PKGBUILDs do.
+        let analyzer = PrivilegeAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+package() {
+    find "$pkgdir/usr" -type f -exec chmod 644 {} \;
+    find "$pkgdir/usr" -type d -exec chmod 755 {} \;
+    chmod 700 "$pkgdir/etc/secret"
+    install -Dm755 binary "$pkgdir/usr/bin/binary"
+    install -Dm644 data "$pkgdir/usr/share/data"
+}
+"#,
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(
+            !findings.iter().any(|f| f.id == "PRIV-002"),
+            "benign chmod 644/755/700 and install -m644/755 must not trip PRIV-002, got: {:?}",
+            findings.iter().filter(|f| f.id == "PRIV-002").collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_symbolic_and_install_suid_detected() {
+        let analyzer = PrivilegeAnalyzer::new();
+        for body in [
+            "chmod u+s \"$pkgdir/usr/bin/mybin\"",
+            "chmod g+s \"$pkgdir/usr/bin/mybin\"",
+            "chmod 2755 \"$pkgdir/usr/bin/mybin\"",
+            "install -Dm4755 mybin \"$pkgdir/usr/bin/mybin\"",
+        ] {
+            let src = format!("pkgname=test\npkgver=1.0\npkgrel=1\npackage() {{\n    {body}\n}}\n");
+            let context = create_test_context(&src);
+            let findings = analyzer.analyze(&context).await.unwrap();
+            assert!(
+                findings.iter().any(|f| f.id == "PRIV-002"),
+                "expected PRIV-002 for: {body}"
+            );
+        }
     }
 }
