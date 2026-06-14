@@ -35,26 +35,30 @@ const EM_BPF: u16 = 247;
 /// Whole-file Shannon entropy above which an ELF is treated as packed/encrypted.
 const PACKED_ENTROPY: f64 = 7.2;
 
-/// Imported symbols that are unusual for ordinary desktop software and typical
-/// of stealers / rootkits.
+/// Imported symbols that are genuinely rare in ordinary software and strongly
+/// associated with anti-debugging, process injection, and rootkits.
+///
+/// This list is deliberately narrow. Common symbols that also appear in benign
+/// binaries (dlopen, mprotect, syscall, setuid/setgid, prctl, memfd_create) are
+/// excluded on purpose: firing on those would flag bash and most Rust/Go
+/// binaries, eroding trust in every other finding.
 const SUSPICIOUS_IMPORTS: &[&str] = &[
-    "ptrace",
-    "memfd_create",
-    "bpf",
-    "process_vm_readv",
-    "process_vm_writev",
-    "setuid",
-    "setgid",
-    "prctl",
-    "personality",
-    "syscall",
-    "dlopen",
-    "mprotect",
+    "ptrace",            // anti-debugging / debugger-evasion
+    "process_vm_readv",  // reading another process's memory
+    "process_vm_writev", // writing another process's memory
+    "bpf",               // raw bpf(2) syscall (pairs with eBPF payloads)
 ];
 
 /// Extensions that indicate a shipped binary artifact rather than source.
 const BINARY_EXTS: &[&str] = &[
-    ".appimage", ".elf", ".bin", ".run", ".so", ".deb", ".pkg.tar.zst", ".pkg.tar.xz",
+    ".appimage",
+    ".elf",
+    ".bin",
+    ".run",
+    ".so",
+    ".deb",
+    ".pkg.tar.zst",
+    ".pkg.tar.xz",
 ];
 
 /// Analyzer that inspects prebuilt binary artifacts referenced from `source=`.
@@ -82,11 +86,7 @@ impl SecurityAnalyzer for BinaryPayloadAnalyzer {
     async fn analyze(&self, context: &AnalysisContext) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         let dir = context.file_path.parent().unwrap_or_else(|| Path::new("."));
-        let pkg_is_bin = context
-            .pkgbuild
-            .pkgname
-            .iter()
-            .any(|n| n.ends_with("-bin"));
+        let pkg_is_bin = context.pkgbuild.pkgname.iter().any(|n| n.ends_with("-bin"));
         let sha256s = &context.pkgbuild.checksums.sha256sums;
 
         for (idx, src) in context.pkgbuild.source.iter().enumerate() {
@@ -157,7 +157,13 @@ impl BinaryPayloadAnalyzer {
         None
     }
 
-    fn hash_finding(&self, ctx: &AnalysisContext, name: &str, hash: &str, campaign: &str) -> Finding {
+    fn hash_finding(
+        &self,
+        ctx: &AnalysisContext,
+        name: &str,
+        hash: &str,
+        campaign: &str,
+    ) -> Finding {
         let suffix = self
             .db
             .campaign(campaign)
@@ -190,7 +196,8 @@ impl BinaryPayloadAnalyzer {
                  malicious."
             ),
             location: loc(&ctx.file_path, Some(format!("sha256: {hash}"))),
-            recommendation: "Do NOT build/install; review the VirusTotal report for this hash.".into(),
+            recommendation: "Do NOT build/install; review the VirusTotal report for this hash."
+                .into(),
             cwe_id: Some("CWE-506".into()),
             metadata: serde_json::json!({ "artifact": name, "sha256": hash, "vt_malicious": mal }),
         }
@@ -213,7 +220,9 @@ impl BinaryPayloadAnalyzer {
                      payload shipped an eBPF rootkit (scales.bpf.c)."
                         .into(),
                 location: loc(path, None),
-                recommendation: "Verify the package legitimately needs eBPF; treat as a rootkit otherwise.".into(),
+                recommendation:
+                    "Verify the package legitimately needs eBPF; treat as a rootkit otherwise."
+                        .into(),
                 cwe_id: Some("CWE-506".into()),
                 metadata: serde_json::json!({ "sections": report.bpf_sections }),
             });
@@ -231,7 +240,8 @@ impl BinaryPayloadAnalyzer {
                     report.suspicious_imports.join(", ")
                 ),
                 location: loc(path, None),
-                recommendation: "Review why these are needed; cross-check against upstream sources.".into(),
+                recommendation:
+                    "Review why these are needed; cross-check against upstream sources.".into(),
                 cwe_id: Some("CWE-506".into()),
                 metadata: serde_json::json!({ "imports": report.suspicious_imports }),
             });
@@ -315,7 +325,9 @@ impl ElfReport {
             }
             for sym in elf.dynsyms.iter().filter(|s| s.is_import()) {
                 if let Some(n) = elf.dynstrtab.get_at(sym.st_name) {
-                    if SUSPICIOUS_IMPORTS.contains(&n) && !r.suspicious_imports.iter().any(|e| e == n) {
+                    if SUSPICIOUS_IMPORTS.contains(&n)
+                        && !r.suspicious_imports.iter().any(|e| e == n)
+                    {
                         r.suspicious_imports.push(n.to_string());
                     }
                 }
@@ -367,7 +379,10 @@ fn is_binary_artifact(name: &str, pkg_is_bin: bool) -> bool {
         return true;
     }
     // For -bin packages, generic archives usually carry the prebuilt binary.
-    pkg_is_bin && [".tar.gz", ".tgz", ".tar", ".zip", ".tar.xz", ".tar.zst"].iter().any(|e| lc.ends_with(e))
+    pkg_is_bin
+        && [".tar.gz", ".tgz", ".tar", ".zip", ".tar.xz", ".tar.zst"]
+            .iter()
+            .any(|e| lc.ends_with(e))
 }
 
 /// Resolve a source entry to a local file (co-located with the PKGBUILD or a
@@ -377,7 +392,11 @@ fn resolve_local(dir: &Path, src: &crate::parser::SourceEntry, name: &str) -> Op
     if src.protocol == Protocol::File {
         let raw = src.url.strip_prefix("file://").unwrap_or(&src.url);
         let p = Path::new(raw);
-        let cand = if p.is_absolute() { p.to_path_buf() } else { dir.join(raw) };
+        let cand = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            dir.join(raw)
+        };
         if cand.is_file() {
             return Some(cand);
         }
@@ -390,7 +409,9 @@ fn read_capped(path: &Path) -> Option<Vec<u8>> {
     use std::io::Read;
     let f = std::fs::File::open(path).ok()?;
     let mut buf = Vec::new();
-    f.take(MAX_ARTIFACT_BYTES as u64).read_to_end(&mut buf).ok()?;
+    f.take(MAX_ARTIFACT_BYTES as u64)
+        .read_to_end(&mut buf)
+        .ok()?;
     Some(buf)
 }
 
@@ -456,7 +477,7 @@ mod tests {
     fn entropy_bounds() {
         assert_eq!(shannon_entropy(&[]), 0.0);
         assert_eq!(shannon_entropy(&[7, 7, 7, 7]), 0.0); // single symbol
-        // 0..=255 once each -> maximal 8 bits/byte.
+                                                         // 0..=255 once each -> maximal 8 bits/byte.
         let all: Vec<u8> = (0..=255).collect();
         assert!((shannon_entropy(&all) - 8.0).abs() < 1e-9);
     }
@@ -472,19 +493,41 @@ mod tests {
 
     #[test]
     fn ascii_ci_search() {
-        assert!(contains_ascii_ci(b"junk\x00EvIl.Example\x00", b"evil.example"));
+        assert!(contains_ascii_ci(
+            b"junk\x00EvIl.Example\x00",
+            b"evil.example"
+        ));
         assert!(!contains_ascii_ci(b"nothing here", b"evil.example"));
     }
 
     #[test]
     fn suspicious_imports_detected_in_synthetic_list() {
-        let names = ["printf", "ptrace", "malloc", "memfd_create"];
+        let names = ["printf", "ptrace", "malloc", "process_vm_readv"];
         let hits: Vec<&str> = names
             .iter()
             .copied()
             .filter(|n| SUSPICIOUS_IMPORTS.contains(n))
             .collect();
-        assert_eq!(hits, vec!["ptrace", "memfd_create"]);
+        assert_eq!(hits, vec!["ptrace", "process_vm_readv"]);
+    }
+
+    #[test]
+    fn benign_imports_do_not_trigger() {
+        // Symbols that appear in ordinary binaries (bash imports dlopen/
+        // memfd_create; a normal Rust binary imports mprotect/setuid/syscall)
+        // must NOT be flagged, or BIN-IMPORT becomes noise.
+        let benign = [
+            "dlopen",
+            "memfd_create",
+            "mprotect",
+            "syscall",
+            "setuid",
+            "setgid",
+            "prctl",
+            "malloc",
+            "__libc_start_main",
+        ];
+        assert!(benign.iter().all(|n| !SUSPICIOUS_IMPORTS.contains(n)));
     }
 
     /// A hand-built 64-byte ELF64 header with `e_machine = EM_BPF` and no
@@ -499,7 +542,7 @@ mod tests {
         h[18..20].copy_from_slice(&EM_BPF.to_le_bytes()); // e_machine = BPF
         h[20..24].copy_from_slice(&1u32.to_le_bytes()); // e_version
         h[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
-        // e_phoff/e_shoff = 0, e_phnum/e_shnum = 0 -> nothing else to parse
+                                                         // e_phoff/e_shoff = 0, e_phnum/e_shnum = 0 -> nothing else to parse
         h
     }
 
@@ -546,7 +589,9 @@ mod tests {
         };
         let analyzer = BinaryPayloadAnalyzer::new(Arc::new(db));
         let findings = analyzer.analyze(&ctx).await.unwrap();
-        assert!(findings.iter().any(|f| f.id == "BIN-HASH" && f.severity == Severity::Critical));
+        assert!(findings
+            .iter()
+            .any(|f| f.id == "BIN-HASH" && f.severity == Severity::Critical));
     }
 
     #[tokio::test]
