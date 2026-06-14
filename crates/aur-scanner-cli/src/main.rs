@@ -137,6 +137,10 @@ enum Commands {
         #[arg(long)]
         force: bool,
 
+        /// Keep the workspace after a successful build
+        #[arg(long)]
+        keep_workspace: bool,
+
         /// Workspace dir for clones/builds (default ~/.cache/aur-scan/build)
         #[arg(long, value_name = "DIR")]
         workspace: Option<PathBuf>,
@@ -217,7 +221,9 @@ async fn main() -> Result<()> {
     };
 
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)),
+        )
         .with_target(false)
         .without_time()
         .init();
@@ -267,6 +273,7 @@ async fn main() -> Result<()> {
             include_optional,
             noconfirm,
             force,
+            keep_workspace,
             workspace,
             sbom,
         } => {
@@ -276,31 +283,21 @@ async fn main() -> Result<()> {
                 include_optional,
                 noconfirm,
                 force,
+                keep_workspace,
                 workspace,
                 sbom_path: sbom,
             })
             .await
         }
         Commands::System { rescan, cache_dir } => {
-            commands::system::run(
-                cli.severity.map(Into::into),
-                rescan,
-                cache_dir,
-            )
-            .await
+            commands::system::run(cli.severity.map(Into::into), rescan, cache_dir).await
         }
         Commands::Rules { severity, details } => {
             commands::rules::run(severity.map(Into::into), details)
         }
-        Commands::Explain { code } => {
-            commands::explain::run(&code)
-        }
-        Commands::Codes { category, format } => {
-            commands::codes::run(category.as_deref(), &format)
-        }
-        Commands::Ioc { check } => {
-            commands::ioc::run(check.as_deref())
-        }
+        Commands::Explain { code } => commands::explain::run(&code),
+        Commands::Codes { category, format } => commands::codes::run(category.as_deref(), &format),
+        Commands::Ioc { check } => commands::ioc::run(check.as_deref()),
         Commands::Version => {
             commands::version::run();
             Ok(())
