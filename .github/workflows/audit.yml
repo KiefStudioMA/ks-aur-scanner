@@ -1,0 +1,25 @@
+name: Security audit
+
+# Advisories are published continuously, so re-scan the committed Cargo.lock on a
+# schedule (not only on dependency changes) to catch a vuln in an existing,
+# unchanged dependency.
+on:
+  schedule:
+    - cron: '37 6 * * 1' # weekly, Monday 06:37 UTC
+  push:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/audit.yml'
+      - 'deny.toml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: cargo-deny advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
