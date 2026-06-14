@@ -79,7 +79,9 @@ impl AurScannerPlugin {
         println!();
         println!("{}", "=".repeat(60));
 
-        // Check for critical issues
+        // Check for critical issues. In non-interactive mode every prompt below
+        // fails closed (deny): there is no one to confirm an override, so the
+        // safe default is to abort rather than proceed.
         if result.has_critical() {
             println!(
                 "{} Critical security issues detected!",
@@ -87,13 +89,7 @@ impl AurScannerPlugin {
             );
 
             if self.interactive {
-                print!("Continue anyway? (type 'yes' to confirm): ");
-                io::stdout().flush().unwrap();
-
-                let mut response = String::new();
-                io::stdin().read_line(&mut response).unwrap();
-
-                if response.trim().to_lowercase() != "yes" {
+                if !prompt_typed_yes("Continue anyway? (type 'yes' to confirm): ") {
                     println!("Installation aborted.");
                     return false;
                 }
@@ -108,28 +104,18 @@ impl AurScannerPlugin {
             );
 
             if self.interactive {
-                print!("Continue with installation? [y/N]: ");
-                io::stdout().flush().unwrap();
-
-                let mut response = String::new();
-                io::stdin().read_line(&mut response).unwrap();
-
-                if !matches!(
-                    response.trim().to_lowercase().as_str(),
-                    "y" | "yes"
-                ) {
+                if !prompt_default_no("Continue with installation? [y/N]: ") {
                     println!("Installation aborted.");
                     return false;
                 }
+            } else {
+                // High findings, no one to confirm: abort.
+                println!("Aborting due to high-severity issues (non-interactive mode).");
+                return false;
             }
         } else if self.interactive {
-            print!("Continue with installation? [Y/n]: ");
-            io::stdout().flush().unwrap();
-
-            let mut response = String::new();
-            io::stdin().read_line(&mut response).unwrap();
-
-            if matches!(response.trim().to_lowercase().as_str(), "n" | "no") {
+            // Only low/medium/info remain; default to proceeding but honor "no".
+            if !prompt_default_yes("Continue with installation? [Y/n]: ") {
                 println!("Installation aborted.");
                 return false;
             }
@@ -137,4 +123,39 @@ impl AurScannerPlugin {
 
         true
     }
+}
+
+/// Prompt requiring the literal word `yes`. Any read error / EOF is a refusal.
+fn prompt_typed_yes(prompt: &str) -> bool {
+    read_response(prompt)
+        .map(|r| r.trim().eq_ignore_ascii_case("yes"))
+        .unwrap_or(false)
+}
+
+/// `[y/N]` prompt: defaults to NO, and a read error / EOF is a refusal.
+fn prompt_default_no(prompt: &str) -> bool {
+    read_response(prompt)
+        .map(|r| matches!(r.trim().to_lowercase().as_str(), "y" | "yes"))
+        .unwrap_or(false)
+}
+
+/// `[Y/n]` prompt: defaults to YES; only an explicit no aborts. A read error /
+/// EOF is treated as the default (yes) since no security threshold was crossed.
+fn prompt_default_yes(prompt: &str) -> bool {
+    match read_response(prompt) {
+        Ok(r) => !matches!(r.trim().to_lowercase().as_str(), "n" | "no"),
+        Err(_) => true,
+    }
+}
+
+/// Print `prompt`, flush, and read one line. Returns an error on EOF or I/O
+/// failure so callers can apply their own fail-open/closed default.
+fn read_response(prompt: &str) -> io::Result<String> {
+    print!("{prompt}");
+    io::stdout().flush()?;
+    let mut response = String::new();
+    if io::stdin().read_line(&mut response)? == 0 {
+        return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+    }
+    Ok(response)
 }

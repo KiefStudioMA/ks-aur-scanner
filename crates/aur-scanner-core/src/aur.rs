@@ -4,16 +4,54 @@
 //! before installation for pre-emptive security scanning.
 
 use crate::error::{Result, ScanError};
+use crate::validate::validate_package_name;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// AUR RPC API base URL
 const AUR_RPC_URL: &str = "https://aur.archlinux.org/rpc/v5";
 
 /// AUR Git base URL
 const AUR_GIT_URL: &str = "https://aur.archlinux.org";
+
+/// Hard cap on an RPC response body. The 30s timeout bounds *time*, not *size*:
+/// a hostile or MITM'd endpoint (or a redirect target) can otherwise stream
+/// unbounded data into memory. Real `info`/`search` replies are well under this;
+/// the cap only stops abuse.
+const MAX_RPC_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read a response body with a hard size cap and deserialize it as JSON.
+///
+/// `Content-Length` cannot be trusted (it may be absent or a lie), so we stream
+/// chunks and abort the moment the accumulated body exceeds the cap rather than
+/// buffering whatever the server decides to send.
+async fn read_capped_json<T: DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
+    if let Some(len) = resp.content_length() {
+        if len > MAX_RPC_BODY_BYTES as u64 {
+            return Err(ScanError::Network(format!(
+                "AUR response too large: {len} bytes > {MAX_RPC_BODY_BYTES} cap"
+            )));
+        }
+    }
+    let mut resp = resp;
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| ScanError::Network(format!("Failed to read response: {e}")))?
+    {
+        if body.len() + chunk.len() > MAX_RPC_BODY_BYTES {
+            return Err(ScanError::Network(format!(
+                "AUR response exceeded {MAX_RPC_BODY_BYTES} byte cap; aborting read"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body).map_err(|e| ScanError::Network(format!("Failed to parse response: {e}")))
+}
 
 /// Information about an AUR package from the RPC API
 #[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
@@ -60,7 +98,6 @@ pub struct AurPackageInfo {
 struct RpcResponse {
     #[serde(rename = "type")]
     response_type: String,
-    resultcount: i32,
     results: Vec<AurPackageInfo>,
     #[serde(default)]
     error: Option<String>,
@@ -84,31 +121,52 @@ pub struct AurClient {
 }
 
 impl AurClient {
-    /// Create a new AUR client
+    /// Create a new AUR client.
+    ///
+    /// Hardened against SSRF/downgrade: redirects are refused outright (the AUR
+    /// RPC never needs them, and a followed redirect is the classic SSRF
+    /// amplifier), and `https_only` guarantees no request — including any
+    /// redirect hop — is ever made over plaintext.
     pub fn new() -> Result<Self> {
         let http_client = reqwest::Client::builder()
             .user_agent(format!("aur-scan/{}", crate::VERSION))
             .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .https_only(true)
             .build()
             .map_err(|e| ScanError::Network(e.to_string()))?;
 
         Ok(Self { http_client })
     }
 
+    /// Build an RPC URL with `segments` appended as percent-encoded path
+    /// components. Using `path_segments_mut` (not `format!`) means an attacker
+    /// cannot inject `?`, `#`, `&`, `/`, or whitespace into the request.
+    fn rpc_url(segments: &[&str]) -> Result<reqwest::Url> {
+        let mut url = reqwest::Url::parse(AUR_RPC_URL)
+            .map_err(|e| ScanError::Network(format!("invalid base URL: {e}")))?;
+        url.path_segments_mut()
+            .map_err(|_| ScanError::Network("base URL cannot be a base".into()))?
+            .extend(segments);
+        Ok(url)
+    }
+
     /// Get package information from AUR RPC API
     pub async fn get_package_info(&self, package_name: &str) -> Result<AurPackageInfo> {
-        let url = format!("{}/info/{}", AUR_RPC_URL, package_name);
+        // Reject illegal names before they reach the network: a name is also a
+        // URL path segment, and downstream a filesystem path component.
+        validate_package_name(package_name)?;
+        let url = Self::rpc_url(&["info", package_name])?;
         debug!("Fetching package info from: {}", url);
 
-        let response: RpcResponse = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| ScanError::Network(format!("Failed to fetch package info: {}", e)))?
-            .json()
-            .await
-            .map_err(|e| ScanError::Network(format!("Failed to parse response: {}", e)))?;
+        let response: RpcResponse = read_capped_json(
+            self.http_client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| ScanError::Network(format!("Failed to fetch package info: {}", e)))?,
+        )
+        .await?;
 
         // Validate response type
         if response.response_type == "error" {
@@ -120,30 +178,31 @@ impl AurClient {
             return Err(ScanError::Network(format!("AUR API error: {}", error)));
         }
 
-        if response.resultcount == 0 {
-            return Err(ScanError::NotFound(format!(
-                "Package '{}' not found in AUR",
-                package_name
-            )));
-        }
-
-        Ok(response.results.into_iter().next().unwrap())
+        // Do not trust `resultcount`; use the actual array so a lying count
+        // (e.g. count:1, results:[]) cannot panic the process.
+        response.results.into_iter().next().ok_or_else(|| {
+            ScanError::NotFound(format!("Package '{}' not found in AUR", package_name))
+        })
     }
 
-    /// Search for packages in AUR
+    /// Search for packages in AUR.
+    ///
+    /// `query` is free-form, but it is appended as a percent-encoded path
+    /// segment by `rpc_url`, so it cannot inject extra path/query/fragment
+    /// components. (No CLI surface currently calls this; if one is added,
+    /// consider the AUR `by`/`arg` query form for multi-word searches.)
     pub async fn search(&self, query: &str) -> Result<Vec<AurPackageInfo>> {
-        let url = format!("{}/search/{}", AUR_RPC_URL, query);
+        let url = Self::rpc_url(&["search", query])?;
         debug!("Searching AUR: {}", url);
 
-        let response: RpcResponse = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| ScanError::Network(format!("Failed to search: {}", e)))?
-            .json()
-            .await
-            .map_err(|e| ScanError::Network(format!("Failed to parse response: {}", e)))?;
+        let response: RpcResponse = read_capped_json(
+            self.http_client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| ScanError::Network(format!("Failed to search: {}", e)))?,
+        )
+        .await?;
 
         // Validate response type
         if response.response_type == "error" {
@@ -171,6 +230,10 @@ impl AurClient {
     ///  - GIT_TERMINAL_PROMPT=0 : never block on a credential prompt
     ///  - `--` before the URL : the URL can never be parsed as an option
     pub async fn clone_repo(&self, package_base: &str, dest: &Path) -> Result<()> {
+        // `package_base` comes from attacker-controlled RPC JSON and is about to
+        // become a URL path. Reject anything that is not a bare package
+        // identifier so it cannot alter the URL path (e.g. `../../other`).
+        validate_package_name(package_base)?;
         let git_url = format!("{}/{}.git", AUR_GIT_URL, package_base);
         debug!("Cloning {} into {}", git_url, dest.display());
         let output = tokio::process::Command::new("git")
@@ -251,23 +314,33 @@ impl AurClient {
             return Ok(Vec::new());
         }
 
-        let args: Vec<String> = package_names
-            .iter()
-            .map(|n| format!("arg[]={}", n))
-            .collect();
-        let url = format!("{}/info?{}", AUR_RPC_URL, args.join("&"));
+        // Only query syntactically legal names. An illegal name cannot be a real
+        // AUR package, and feeding it to the query builder unencoded would let it
+        // inject extra `arg[]` parameters. Drop-and-warn rather than fail the
+        // whole batch so one bad dependency name doesn't abort resolution.
+        let mut url = reqwest::Url::parse(&format!("{}/info", AUR_RPC_URL))
+            .map_err(|e| ScanError::Network(format!("invalid base URL: {e}")))?;
+        {
+            let mut qp = url.query_pairs_mut();
+            for name in package_names {
+                if crate::validate::is_valid_package_name(name) {
+                    qp.append_pair("arg[]", name);
+                } else {
+                    warn!("skipping illegal package name in batch query: {name:?}");
+                }
+            }
+        }
 
         debug!("Fetching info for {} packages", package_names.len());
 
-        let response: RpcResponse = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| ScanError::Network(format!("Failed to fetch package info: {}", e)))?
-            .json()
-            .await
-            .map_err(|e| ScanError::Network(format!("Failed to parse response: {}", e)))?;
+        let response: RpcResponse = read_capped_json(
+            self.http_client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| ScanError::Network(format!("Failed to fetch package info: {}", e)))?,
+        )
+        .await?;
 
         // Validate response type
         if response.response_type == "error" {
@@ -280,12 +353,6 @@ impl AurClient {
         }
 
         Ok(response.results)
-    }
-}
-
-impl Default for AurClient {
-    fn default() -> Self {
-        Self::new().expect("Failed to create AUR client")
     }
 }
 
@@ -305,9 +372,15 @@ impl PackageInfoSource for AurClient {
     }
 }
 
-/// Find install script in a package directory
+/// Find install script in a package directory by its common filenames.
+///
+/// This only probes well-known filenames; it deliberately does NOT re-read the
+/// PKGBUILD to resolve an `install=` value. The scanner already reads the
+/// PKGBUILD exactly once and resolves the install script from that single
+/// parsed copy (see `resolve_install_path` in `lib.rs`); re-reading the file
+/// here opened a time-of-check/time-of-use gap (the bytes resolved could differ
+/// from the bytes parsed) for a value nothing downstream consumes.
 fn find_install_script(dir: &Path, package_base: &str) -> Option<PathBuf> {
-    // Common patterns for install scripts
     let patterns = [
         format!("{}.install", package_base),
         "install".to_string(),
@@ -318,30 +391,6 @@ fn find_install_script(dir: &Path, package_base: &str) -> Option<PathBuf> {
         let path = dir.join(pattern);
         if path.exists() {
             return Some(path);
-        }
-    }
-
-    // Also check PKGBUILD for install= line
-    let pkgbuild_path = dir.join("PKGBUILD");
-    if let Ok(content) = std::fs::read_to_string(&pkgbuild_path) {
-        for line in content.lines() {
-            if let Some(install_file) = line.strip_prefix("install=") {
-                let install_file = install_file
-                    .trim()
-                    .trim_matches(|c| c == '\'' || c == '"');
-                // Only accept a bare filename inside `dir`; reject traversal so a
-                // hostile install= value cannot escape the package directory.
-                if install_file.is_empty()
-                    || install_file.contains('/')
-                    || install_file.contains("..")
-                {
-                    continue;
-                }
-                let path = dir.join(install_file);
-                if path.exists() {
-                    return Some(path);
-                }
-            }
         }
     }
 

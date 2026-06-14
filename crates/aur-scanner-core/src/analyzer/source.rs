@@ -169,17 +169,49 @@ impl SecurityAnalyzer for SourceAnalyzer {
                 }
             }
 
+            // A VCS source on a movable ref (branch/tag, or no fragment) is not
+            // integrity-pinned: the fetched bytes can change after review, and a
+            // SKIP checksum on it (which makepkg accepts for VCS) provides no
+            // guarantee. Require a pinned `#commit=`/`#revision=`.
+            if source.is_vcs() && !source.is_vcs_pinned_commit() {
+                findings.push(Finding {
+                    // Low, not Medium: tracking a branch HEAD is the normal,
+                    // accepted pattern for rolling -git packages, so this is a
+                    // reproducibility/hardening nudge ("pin with #commit="), not
+                    // a security concern on its own. Rating it higher would fire
+                    // on nearly every -git package and cause alert fatigue.
+                    id: "SRC-007".to_string(),
+                    severity: Severity::Low,
+                    category: Category::NetworkSecurity,
+                    title: "VCS source not pinned to a commit".to_string(),
+                    description: format!(
+                        "Source #{} is a VCS checkout on a movable ref (branch/tag or none): {}. \
+                         Its content is not integrity-pinned and can change between scan and build.",
+                        idx + 1,
+                        source.url
+                    ),
+                    location: Location {
+                        file: context.file_path.clone(),
+                        line: None,
+                        column: None,
+                        snippet: Some(format!("source=(\"{}\")", source.url)),
+                    },
+                    recommendation:
+                        "Pin the VCS source to an immutable revision with #commit=<sha>."
+                            .to_string(),
+                    cwe_id: Some("CWE-494".to_string()),
+                    metadata: serde_json::json!({
+                        "url": source.url,
+                        "fragment": source.fragment,
+                    }),
+                });
+            }
+
             // Check for git/VCS sources hosted on non-standard providers.
             // (Code-based allow-list: the regex rule engine cannot express a
             // negative host match, so this lives here.)
             let lurl = source.url.to_lowercase();
-            let is_vcs = matches!(
-                source.protocol,
-                Protocol::Git | Protocol::Svn | Protocol::Hg | Protocol::Bzr
-            ) || lurl.starts_with("git+")
-                || lurl.contains("git+http")
-                || lurl.ends_with(".git");
-            if is_vcs && !lurl.is_empty() {
+            if source.is_vcs() && !lurl.is_empty() {
                 let trusted_vcs_hosts = [
                     "github.com",
                     "gitlab.com",
@@ -291,6 +323,24 @@ source=("http://example.com/file.tar.gz")
 
         let findings = analyzer.analyze(&context).await.unwrap();
         assert!(findings.iter().any(|f| f.id == "SRC-001"));
+    }
+
+    #[tokio::test]
+    async fn test_movable_git_ref_flagged_but_pinned_ok() {
+        let analyzer = SourceAnalyzer::new();
+        // Movable branch ref -> SRC-007.
+        let movable = create_test_context(
+            "pkgname=t\npkgver=1\npkgrel=1\nsource=(\"git+https://github.com/u/r.git#branch=main\")\n",
+        );
+        let f = analyzer.analyze(&movable).await.unwrap();
+        assert!(f.iter().any(|x| x.id == "SRC-007"), "movable ref should trip SRC-007");
+
+        // Pinned commit -> no SRC-007.
+        let pinned = create_test_context(
+            "pkgname=t\npkgver=1\npkgrel=1\nsource=(\"git+https://github.com/u/r.git#commit=deadbeefcafebabe\")\n",
+        );
+        let f = analyzer.analyze(&pinned).await.unwrap();
+        assert!(!f.iter().any(|x| x.id == "SRC-007"), "pinned commit must not trip SRC-007");
     }
 
     #[tokio::test]

@@ -12,6 +12,7 @@ use aur_scanner_core::depgraph::{self, DependencyGraph, PackageSource, ResolveOp
 use aur_scanner_core::overlay::{info_from_pkgbuild, OverlaySource};
 use aur_scanner_core::parser::{PkgbuildParser, StaticParser};
 use aur_scanner_core::sbom::{self, ComponentScan};
+use aur_scanner_core::validate::{is_valid_package_name, validate_package_name};
 use aur_scanner_core::{Scanner, Severity};
 
 use super::banner;
@@ -58,6 +59,18 @@ pub async fn run(args: CheckArgs) -> Result<()> {
             .parse(&content)
             .with_context(|| format!("parsing {}", pkgbuild_path.display()))?;
         for info in info_from_pkgbuild(&parsed) {
+            // The name is parsed from a local PKGBUILD and becomes a resolution
+            // key and a network query; reject illegal identifiers rather than
+            // letting them overlay the AUR tree or hit the RPC.
+            if !is_valid_package_name(&info.name) {
+                eprintln!(
+                    "{} ignoring local dir {} with illegal pkgname {:?}",
+                    "warning:".yellow(),
+                    dir.display(),
+                    info.name
+                );
+                continue;
+            }
             local_dir_by_name.insert(info.name.clone(), dir.clone());
             local_infos.push(info);
         }
@@ -69,6 +82,17 @@ pub async fn run(args: CheckArgs) -> Result<()> {
             local_dir_by_name.len()
         );
     }
+
+    // Explicit names the user asked for on the command line. A --local dir is
+    // only allowed to substitute its on-disk bytes for one of THESE (or a node
+    // resolved from them); a local dir that claims a different package's name
+    // must not silently mask that package's real AUR PKGBUILD.
+    for name in &args.package_names {
+        validate_package_name(name)
+            .with_context(|| format!("illegal package name {name:?}"))?;
+    }
+    let requested_roots: std::collections::HashSet<String> =
+        args.package_names.iter().cloned().collect();
 
     // Roots: explicit names plus any package names discovered in local dirs.
     let mut roots = args.package_names.clone();
@@ -119,12 +143,25 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     let mut scans: BTreeMap<String, ComponentScan> = BTreeMap::new();
     let mut total_critical = 0usize;
     let mut total_high = 0usize;
+    let mut gate_tripped = false;
     let mut fetch_failures: Vec<String> = Vec::new();
 
     for node in graph.aur_packages() {
         // Prefer the exact on-disk PKGBUILD when the package was provided via
         // --local: that is the same content the build will use (no TOCTOU).
+        // But if a local dir is standing in for a node the user did NOT ask for
+        // (a transitive dependency), surface it: a local PKGBUILD claiming a
+        // dependency's name would otherwise mask that dependency's real AUR
+        // source from the scan.
         let local_pkgbuild = local_dir_by_name.get(&node.name).map(|d| d.join("PKGBUILD"));
+        if local_pkgbuild.is_some() && !requested_roots.contains(&node.name) {
+            eprintln!(
+                "{} a --local dir is providing transitive dependency {:?}; \
+                 its AUR source is not being checked",
+                "note:".yellow(),
+                node.name
+            );
+        }
         let origin = if local_pkgbuild.is_some() { "local" } else { "aur" };
         print!("{} {} {} ", "Scanning:".dimmed(), node.name.white(), format!("({origin})").dimmed());
         io::stdout().flush().ok();
@@ -146,6 +183,11 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                 let scan = ComponentScan::from_findings(&result.findings);
                 total_critical += scan.critical;
                 total_high += scan.high;
+                if let Some(threshold) = args.fail_on {
+                    if result.findings.iter().any(|f| f.severity.is_at_least(threshold)) {
+                        gate_tripped = true;
+                    }
+                }
                 if scan.critical > 0 || scan.high > 0 {
                     println!("{}", format!("{}C/{}H", scan.critical, scan.high).red());
                 } else {
@@ -232,16 +274,14 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         );
     }
 
-    // 6. Decide pass/fail.
-    let mut failed = false;
-    if let Some(threshold) = args.fail_on {
-        let tripped = match threshold {
-            Severity::Critical => total_critical > 0,
-            _ => total_critical + total_high > 0,
-        };
-        if tripped {
-            failed = true;
-        }
+    // 6. Decide pass/fail. The gate trips if any finding was at or above the
+    // requested threshold (computed per-finding via `is_at_least` during the
+    // scan, so it honors any threshold -- not just critical/high).
+    let mut failed = gate_tripped;
+    // A package we could not fetch/scan is unreviewed; treat that as a failure
+    // when a gate threshold was requested rather than silently passing.
+    if args.fail_on.is_some() && !fetch_failures.is_empty() {
+        failed = true;
     }
 
     if args.interactive && (total_critical > 0 || total_high > 0) {

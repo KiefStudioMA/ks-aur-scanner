@@ -58,7 +58,16 @@ before reporting (`paru -S aur-scanner-git` / re-build the tagged package).
 - Release tags are **GPG-signed**; verify with `git verify-tag v<version>`.
 - The tagged AUR packages build from the signed tag and verify it
   (`validpgpkeys`) rather than trusting a GitHub tarball hash.
+- The rolling `aur-scanner-git` package verifies the HEAD **commit** signature
+  in `prepare()` (`git verify-commit HEAD`) against the same key. This is a
+  weaker guarantee than tag verification -- it proves the commit's author but
+  does not bind the build to a specific reviewed release. Prefer the tagged
+  packages for production systems.
 - `main` and `v*` tags are protected by a branch ruleset: **signed commits
   required, no force-push, no deletion.**
 - Signing key fingerprint: `25631EAE3F43999050B7D7021132BF893C33FB51`
   (`gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51`).
+- **Verify this fingerprint out-of-band before trusting the key.** Cross-check
+  it against an independent HTTPS source (the project's published page), not
+  just this file or the PKGBUILD -- both could be altered in a supply-chain
+  attack on the repository. Only import the key once the fingerprint matches.

@@ -192,6 +192,8 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
           "Package defines build() but has no source array.", "Verify this is intentional."),
         e("SRC-006", "VCS source from non-standard host", Low, NetworkSecurity, "source", None,
           "A git/VCS checkout is from a host outside the common providers.", "Verify the upstream host is official."),
+        e("SRC-007", "VCS source not pinned to a commit", Low, NetworkSecurity, "source", Some("CWE-494"),
+          "A git/VCS source uses a movable ref (branch/tag or none), so the fetched content is not integrity-pinned and can change between scan and build.", "Pin the VCS source to an immutable revision with #commit=<sha>."),
         // -- ioc analyzer --
         e("IOC-001", "Known indicator-of-compromise match", Critical, MaliciousCode, "ioc", Some("CWE-506"),
           "Content matches a known IOC (malicious npm/bun package, file artifact, or C2 domain).", "Do not build; treat the host as compromised if already built."),
@@ -241,7 +243,7 @@ mod tests {
         const EMITTED: &[&str] = &[
             "CHK-001", "CHK-002", "CHK-003", "CHK-004", "CHK-005", "CHK-006",
             "PRIV-001", "PRIV-002", "PRIV-003", "PRIV-004", "PRIV-005", "PRIV-006",
-            "SRC-001", "SRC-002", "SRC-003", "SRC-004", "SRC-005", "SRC-006",
+            "SRC-001", "SRC-002", "SRC-003", "SRC-004", "SRC-005", "SRC-006", "SRC-007",
             "IOC-001", "DEEP-001", "DEEP-002", "EXEC-REMOTE", "PROV-001", "FUNC-001",
         ];
         let catalog = Catalog::load();

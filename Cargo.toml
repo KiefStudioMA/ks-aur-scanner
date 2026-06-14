@@ -62,6 +62,9 @@ sha2 = "0.10"
 # Base64
 base64 = "0.22"
 
+# Low-level syscalls (privilege dropping in the root pacman hook)
+libc = "0.2"
+
 # Internal crates
 aur-scanner-core = { version = "1.0.3", path = "crates/aur-scanner-core" }
 

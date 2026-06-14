@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use aur_scanner_core::aur::AurClient;
 use aur_scanner_core::depgraph::{self, ResolveOptions};
 use aur_scanner_core::sbom::{self, ComponentScan};
+use aur_scanner_core::validate::validate_package_name;
 use aur_scanner_core::{Scanner, Severity};
 
 use super::banner;
@@ -73,15 +74,34 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     let mut node_base: BTreeMap<String, String> = BTreeMap::new();
     for node in graph.aur_packages() {
         let base = node.package_base.clone().unwrap_or_else(|| node.name.clone());
+        // `package_base`/`name` come straight from AUR RPC JSON and are about to
+        // become filesystem paths (clone dest, and `remove_dir_all`/`create_dir_all`
+        // targets). A value like `../../../.config/systemd/user` would escape the
+        // workspace and delete arbitrary directories BEFORE any gate runs. Reject
+        // anything that is not a bare package identifier up front.
+        validate_package_name(&base)
+            .with_context(|| format!("refusing to install: illegal package base {base:?}"))?;
         node_base.insert(node.name.clone(), base.clone());
         base_dirs.entry(base).or_default();
     }
 
     println!();
     let mut scans: BTreeMap<String, ComponentScan> = BTreeMap::new();
-    let mut blocked = false;
+    // Distinguish two block reasons. `gate_tripped`: a package was reviewed and
+    // had findings at/above the threshold -- a deliberate --force can override
+    // this. `unscannable`: a package could not be fetched or scanned at all, so
+    // it was never reviewed -- --force must NOT build these blind.
+    let mut gate_tripped = false;
+    let mut unscannable: Vec<String> = Vec::new();
     for base in base_dirs.keys().cloned().collect::<Vec<_>>() {
         let dir = workspace.join(&base);
+        // Defense in depth: `base` is a validated single component, so the clone
+        // directory must be a direct child of the workspace. Refuse to touch
+        // (remove/create) anything that is not, so a future bug can never turn
+        // this into an out-of-tree delete.
+        if dir.parent() != Some(workspace.as_path()) {
+            anyhow::bail!("internal error: build dir {} escaped workspace", dir.display());
+        }
         // Fresh clone: remove any stale copy so we scan and build the same bytes.
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -90,26 +110,26 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         io::stdout().flush().ok();
         if let Err(e) = client.clone_repo(&base, &dir).await {
             println!("{}", format!("clone failed: {e}").red());
-            blocked = true; // a package we cannot fetch is unreviewed -> block
+            unscannable.push(base.clone()); // cannot fetch -> never reviewed
             continue;
         }
         let result = match scanner.scan_pkgbuild(&dir.join("PKGBUILD")).await {
             Ok(r) => r,
             Err(e) => {
                 println!("{}", format!("scan failed: {e}").red());
-                blocked = true;
+                unscannable.push(base.clone()); // cannot scan -> never reviewed
                 continue;
             }
         };
         let scan = ComponentScan::from_findings(&result.findings);
-        let trips = result.findings.iter().any(|f| f.severity <= args.fail_on);
+        let trips = result.findings.iter().any(|f| f.severity.is_at_least(args.fail_on));
         if scan.critical > 0 || scan.high > 0 {
             println!("{}", format!("{}C/{}H", scan.critical, scan.high).red());
         } else {
             println!("{}", "ok".green());
         }
         if trips {
-            blocked = true;
+            gate_tripped = true;
         }
         // Attribute this base's scan to all of its package names for the tree.
         for (name, b) in &node_base {
@@ -149,15 +169,29 @@ pub async fn run(args: InstallArgs) -> Result<()> {
 
     // 4. Gate.
     println!();
-    if blocked {
+    // Unscannable packages were never reviewed; building them blind defeats the
+    // tool. This is a hard stop that --force cannot override -- override is only
+    // for findings the user has actually seen.
+    if !unscannable.is_empty() {
+        println!(
+            "{} could not fetch/scan (unreviewed): {}",
+            "GATE:".red().bold(),
+            unscannable.join(", ")
+        );
+        anyhow::bail!(
+            "refusing to build {} unreviewed package(s); --force cannot override unscannable packages",
+            unscannable.len()
+        );
+    }
+    if gate_tripped {
         println!(
             "{}",
-            "GATE: findings at or above the threshold (or an unscannable package).".red().bold()
+            "GATE: findings at or above the threshold.".red().bold()
         );
         if !args.force {
             anyhow::bail!("blocked by scan gate; not building (use --force to override deliberately)");
         }
-        println!("{}", "--force given: overriding the gate.".yellow().bold());
+        println!("{}", "--force given: overriding findings gate.".yellow().bold());
     } else {
         println!("{}", "GATE: passed -- no blocking findings.".green().bold());
     }
@@ -193,7 +227,16 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         };
         println!();
         println!("{} {}", "Building:".cyan().bold(), base.white().bold());
-        let mut cmd = tokio::process::Command::new("makepkg");
+        // Resolve makepkg to an absolute path rather than letting it be looked
+        // up relative to the (attacker-controlled) package directory we set as
+        // the cwd. This prevents a hostile package from shipping its own
+        // `makepkg` that would run if `.` were ever on PATH.
+        let makepkg_bin = ["/usr/bin/makepkg", "/bin/makepkg"]
+            .iter()
+            .find(|p| std::path::Path::new(p).is_file())
+            .copied()
+            .unwrap_or("makepkg");
+        let mut cmd = tokio::process::Command::new(makepkg_bin);
         cmd.arg("-si").current_dir(&dir);
         if args.noconfirm {
             cmd.arg("--noconfirm");

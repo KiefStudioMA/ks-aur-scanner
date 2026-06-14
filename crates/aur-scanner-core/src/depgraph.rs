@@ -205,6 +205,17 @@ pub async fn resolve(
                 if opts.include_optional {
                     children.extend(info.opt_depends.iter().map(|s| dep_name(s).to_string()));
                 }
+                // Drop dependency names that are not legal package identifiers.
+                // These come from an attacker-controlled PKGBUILD and would
+                // otherwise flow into network URLs and filesystem paths; a name
+                // that is not installable can never be a real build dependency.
+                children.retain(|c| {
+                    let ok = crate::validate::is_valid_package_name(c);
+                    if !ok {
+                        tracing::warn!("ignoring illegal dependency name {c:?} of {name}");
+                    }
+                    ok
+                });
                 children.sort();
                 children.dedup();
 

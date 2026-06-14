@@ -60,12 +60,33 @@ impl ProvenanceStore {
             .join("aur-scanner/provenance.json")
     }
 
-    /// Load the store from `path`, tolerating a missing or malformed file.
+    /// Load the store from `path`.
+    ///
+    /// A *missing* file is a legitimate first run and yields an empty baseline.
+    /// A *present but unparseable* file is different: silently resetting it would
+    /// erase every package's baseline (disabling the "gained risky behavior"
+    /// detection that PROV-001 depends on) and could hide tampering. So we warn
+    /// loudly and move the unreadable file aside to `*.corrupt` rather than
+    /// overwriting it, then start fresh.
     pub fn load(path: PathBuf) -> Self {
-        let snapshots = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+        let snapshots = match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(s) => s,
+                Err(e) => {
+                    let backup = path.with_extension("json.corrupt");
+                    tracing::warn!(
+                        "provenance store at {} is unreadable ({e}); moving it to {} and \
+                         starting a fresh baseline. Behavior-change detection is degraded until \
+                         packages are re-seen.",
+                        path.display(),
+                        backup.display()
+                    );
+                    let _ = std::fs::rename(&path, &backup);
+                    HashMap::new()
+                }
+            },
+            Err(_) => HashMap::new(),
+        };
         Self { path, snapshots, dirty: false }
     }
 
@@ -147,7 +168,12 @@ impl ProvenanceStore {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(&self.snapshots).map_err(std::io::Error::other)?;
-        std::fs::write(&self.path, json)
+        // Atomic replace: write to a sibling temp file then rename over the
+        // target, so a crash mid-write cannot truncate the baseline into the
+        // "corrupt" state handled by `load`.
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(&tmp, &self.path)
     }
 
     /// Number of tracked packages.
@@ -208,6 +234,20 @@ mod tests {
         let mut s = store();
         let f = s.evaluate("pkg", "npm install foo", "t0", Path::new("PKGBUILD"));
         assert!(f.is_empty());
+    }
+
+    #[test]
+    fn corrupt_store_is_moved_aside_not_silently_reset() {
+        // ME-3: a present-but-unreadable store must not be silently overwritten.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provenance.json");
+        std::fs::write(&path, "{ this is not valid json ]").unwrap();
+        let store = ProvenanceStore::load(path.clone());
+        assert_eq!(store.tracked(), 0, "corrupt file yields a fresh baseline");
+        assert!(
+            path.with_extension("json.corrupt").exists(),
+            "the unreadable file must be preserved as .corrupt, not destroyed"
+        );
     }
 
     #[test]

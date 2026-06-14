@@ -114,6 +114,46 @@ impl SourceEntry {
             fragment,
         }
     }
+
+    /// Whether this source is a VCS checkout (git/svn/hg/bzr), by protocol or by
+    /// URL shape. This is the single shared definition used by both the checksum
+    /// and source analyzers, which previously diverged and disagreed about what
+    /// counted as VCS.
+    pub fn is_vcs(&self) -> bool {
+        if matches!(
+            self.protocol,
+            Protocol::Git | Protocol::Svn | Protocol::Hg | Protocol::Bzr
+        ) {
+            return true;
+        }
+        let l = self.url.to_lowercase();
+        l.starts_with("git+")
+            || l.starts_with("svn+")
+            || l.starts_with("hg+")
+            || l.starts_with("bzr+")
+            || l.contains("git+http")
+            || l.ends_with(".git")
+    }
+
+    /// Whether this VCS source is pinned to an immutable revision
+    /// (`#commit=<sha>` or `#revision=<n>`). A `#branch=`/`#tag=` fragment, or no
+    /// fragment at all, is a *movable* ref: the fetched bytes can change after
+    /// review, so a `SKIP` checksum on it gives no real integrity guarantee.
+    pub fn is_vcs_pinned_commit(&self) -> bool {
+        if !self.is_vcs() {
+            return false;
+        }
+        match &self.fragment {
+            Some(frag) => {
+                let f = frag.to_lowercase();
+                // Fragments look like `commit=abcd`, possibly with a trailing
+                // `?signed`; split on the few separators that can appear.
+                f.split(['&', '?', ' '])
+                    .any(|kv| kv.starts_with("commit=") || kv.starts_with("revision="))
+            }
+            None => false,
+        }
+    }
 }
 
 /// Protocol used for source download
@@ -308,23 +348,25 @@ pub fn parse_install_hooks(content: &str) -> Vec<InstallHook> {
     hooks
 }
 
-/// Extract function body from content starting at function definition
+/// Extract function body from content starting at a function definition.
+///
+/// Uses a quote-aware brace scanner so a `}` inside a string in the hook body
+/// (`echo "done }"`) cannot terminate the hook early and hide a payload (e.g. a
+/// `sudo` line) past the fake closing brace from the privilege analyzer.
 fn extract_function_body(content: &str) -> Option<String> {
-    let mut brace_count = 0;
+    let mut scanner = crate::textutil::BraceScanner::default();
     let mut in_function = false;
     let mut body = String::new();
 
     for ch in content.chars() {
-        if ch == '{' {
-            brace_count += 1;
+        scanner.feed_char(ch);
+        if scanner.depth > 0 {
             in_function = true;
-        } else if ch == '}' {
-            brace_count -= 1;
         }
 
         if in_function {
             body.push(ch);
-            if brace_count == 0 {
+            if scanner.depth == 0 {
                 return Some(body);
             }
         }

@@ -92,14 +92,22 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
             });
         }
 
-        // Check for SKIP checksums
-        // VCS sources (git, svn, hg, bzr) legitimately use SKIP since their content changes
+        // Check for SKIP/unverified checksums.
+        //
+        // A source is "verified" iff at least one PRESENT checksum array gives
+        // it a real (non-SKIP) hash. Evaluating across ALL arrays (not just the
+        // first non-empty one) defeats laundering: an attacker cannot hide a
+        // SKIP in the strong array behind a populated weak array. VCS sources
+        // legitimately use SKIP (their content is a moving checkout); a movable
+        // (unpinned) VCS ref is the source analyzer's concern -- it is reported
+        // at the appropriate severity by SRC-007. Flagging every HEAD-tracking
+        // -git package as a High "no integrity" finding here would be noise, so
+        // the checksum analyzer only evaluates NON-VCS sources.
         let source_count = context.pkgbuild.source.len();
-        let vcs_count = self.count_vcs_sources(&context.pkgbuild.source);
-        let non_vcs_count = source_count - vcs_count;
-        let (skip_count, vcs_skip_count) =
-            self.count_skip_checksums_detailed(checksums, &context.pkgbuild.source);
-        let non_vcs_skip_count = skip_count - vcs_skip_count;
+        let non_vcs_count = context.pkgbuild.source.iter().filter(|s| !s.is_vcs()).count();
+        let vcs_count = source_count - non_vcs_count;
+        let non_vcs_skip_count =
+            self.count_unverified_non_vcs(checksums, &context.pkgbuild.source);
 
         if non_vcs_skip_count > 0 && non_vcs_skip_count < non_vcs_count {
             // Some non-VCS sources have SKIP - this is concerning
@@ -188,79 +196,51 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
 }
 
 impl ChecksumAnalyzer {
-    /// Count VCS sources (git, svn, hg, bzr) which legitimately use SKIP
-    fn count_vcs_sources(&self, sources: &[crate::parser::SourceEntry]) -> usize {
-        use crate::parser::Protocol;
+    /// All checksum arrays that are actually present (non-empty), in priority
+    /// order. A source is only verified if one of THESE gives it a real hash.
+    fn present_arrays(checksums: &crate::parser::Checksums) -> Vec<&[Option<String>]> {
+        [
+            checksums.sha256sums.as_slice(),
+            checksums.sha512sums.as_slice(),
+            checksums.b2sums.as_slice(),
+            checksums.sha1sums.as_slice(),
+            checksums.md5sums.as_slice(),
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect()
+    }
+
+    /// Number of non-VCS sources that have NO real (non-SKIP) hash in ANY
+    /// present checksum array. Checking every array -- not just the first
+    /// non-empty one -- is what prevents SKIP-laundering: a strong-array SKIP
+    /// hidden behind a populated weak array is still counted as unverified.
+    fn count_unverified_non_vcs(
+        &self,
+        checksums: &crate::parser::Checksums,
+        sources: &[crate::parser::SourceEntry],
+    ) -> usize {
+        let present = Self::present_arrays(checksums);
         sources
             .iter()
-            .filter(|s| {
-                matches!(
-                    s.protocol,
-                    Protocol::Git | Protocol::Svn | Protocol::Hg | Protocol::Bzr
-                )
+            .enumerate()
+            .filter(|(i, s)| {
+                !s.is_vcs()
+                    && !present
+                        .iter()
+                        .any(|arr| matches!(arr.get(*i), Some(Some(_))))
             })
             .count()
     }
 
-    /// Count SKIP entries in checksums, returning (total_skips, vcs_skips)
-    fn count_skip_checksums_detailed(
-        &self,
-        checksums: &crate::parser::Checksums,
-        sources: &[crate::parser::SourceEntry],
-    ) -> (usize, usize) {
-        use crate::parser::Protocol;
-
-        // Get the first non-empty checksum array
-        let sums = [
-            &checksums.sha256sums,
-            &checksums.sha512sums,
-            &checksums.b2sums,
-            &checksums.sha1sums,
-            &checksums.md5sums,
-        ]
-        .into_iter()
-        .find(|s| !s.is_empty());
-
-        let Some(sums) = sums else {
-            return (0, 0);
-        };
-
-        let mut total_skips = 0;
-        let mut vcs_skips = 0;
-
-        for (i, sum) in sums.iter().enumerate() {
-            if sum.is_none() {
-                total_skips += 1;
-                // Check if corresponding source is VCS
-                if let Some(source) = sources.get(i) {
-                    if matches!(
-                        source.protocol,
-                        Protocol::Git | Protocol::Svn | Protocol::Hg | Protocol::Bzr
-                    ) {
-                        vcs_skips += 1;
-                    }
-                }
-            }
-        }
-
-        (total_skips, vcs_skips)
-    }
-
-    /// Get the number of checksums defined
+    /// Get the number of checksums defined: the maximum length across all
+    /// present arrays (so a short decoy array cannot mask a count mismatch).
     fn get_checksum_count(&self, checksums: &crate::parser::Checksums) -> usize {
-        // Return the count from the first non-empty checksum array
-        for sums in [
-            &checksums.sha256sums,
-            &checksums.sha512sums,
-            &checksums.b2sums,
-            &checksums.sha1sums,
-            &checksums.md5sums,
-        ] {
-            if !sums.is_empty() {
-                return sums.len();
-            }
-        }
-        0
+        Self::present_arrays(checksums)
+            .iter()
+            .map(|a| a.len())
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -364,6 +344,55 @@ sha256sums=('SKIP'
             !findings.iter().any(|f| f.id == "CHK-004" || f.id == "CHK-005"),
             "Mixed VCS+regular sources with appropriate checksums should not trigger warnings"
         );
+    }
+
+    #[tokio::test]
+    async fn test_skip_laundering_across_arrays_detected() {
+        // HI-7: coverage is evaluated per-source across ALL present arrays. Here
+        // source #2 is SKIP in BOTH arrays (unverified) while source #1 is
+        // covered by sha256. The old "first non-empty array only" logic looked
+        // solely at sha256sums -- which has a real hash for #1 and SKIP for #2 --
+        // and could misreport; the per-source/all-array check correctly flags
+        // that one source is unverified (CHK-004, partial coverage).
+        let analyzer = ChecksumAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+source=("https://example.com/a.tar.gz"
+        "https://example.com/b.tar.gz")
+sha256sums=('realhash0000000000000000000000000000000000000000000000000000000'
+            'SKIP')
+sha512sums=('SKIP'
+            'SKIP')
+"#,
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(
+            findings.iter().any(|f| f.id == "CHK-004"),
+            "the source that is SKIP across every present array must be flagged: {:?}",
+            findings.iter().map(|f| &f.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pinned_git_skip_is_ok_but_movable_is_flagged() {
+        // HI-7: a git source pinned to a commit may SKIP; a movable branch ref
+        // must be flagged (SRC-007 lives in the source analyzer; here we just
+        // confirm the pinned case is not a checksum finding).
+        let analyzer = ChecksumAnalyzer::new();
+        let pinned = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+source=("git+https://github.com/u/r.git#commit=abcdef1234567890")
+sha256sums=('SKIP')
+"#,
+        );
+        let findings = analyzer.analyze(&pinned).await.unwrap();
+        assert!(!findings.iter().any(|f| f.id == "CHK-004" || f.id == "CHK-005"));
     }
 
     #[tokio::test]

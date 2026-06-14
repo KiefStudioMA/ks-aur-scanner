@@ -17,8 +17,10 @@ pub mod parser;
 pub mod provenance;
 pub mod rules;
 pub mod sbom;
+pub mod textutil;
 pub mod threat_intel;
 pub mod types;
+pub mod validate;
 
 pub use error::{ParseError, Result, ScanError};
 pub use types::*;

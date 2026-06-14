@@ -9,7 +9,7 @@
 #   aur/ks-aur-scanner   - tagged releases (alias)
 #   aur/aur-scanner-git  - rolling, tracks the latest commit
 pkgname=aur-scanner
-pkgver=1.0.1
+pkgver=1.0.3
 pkgrel=1
 pkgdesc="Security scanner for Arch Linux AUR packages - detect malicious PKGBUILDs before installation"
 arch=('x86_64' 'aarch64')
@@ -22,8 +22,14 @@ conflicts=('aur-scanner-git' 'ks-aur-scanner')
 # No source array: this builds the checked-out tree in place.
 
 pkgver() {
-    # Derive the version from the workspace manifest so it never drifts.
-    awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' "$startdir/Cargo.toml"
+    # Derive the version from the workspace manifest so it never drifts. Anchor
+    # strictly to the [workspace.package] section so a dependency's `version =`
+    # can never be picked up by accident.
+    awk -F'"' '
+        /^\[workspace\.package\]/ { in_section = 1; next }
+        /^\[/                     { in_section = 0 }
+        in_section && /^version[[:space:]]*=/ { print $2; exit }
+    ' "$startdir/Cargo.toml"
 }
 
 build() {

