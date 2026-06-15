@@ -20,6 +20,7 @@ depends=('gcc-libs' 'openssl')
 makedepends=('cargo' 'clang')
 provides=('aur-scan')
 conflicts=('aur-scanner-git' 'ks-aur-scanner')
+options=('!debug')
 # No source array: this builds the checked-out tree in place.
 
 pkgver() {

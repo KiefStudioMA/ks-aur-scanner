@@ -39,6 +39,9 @@ pub struct InstallArgs {
     pub workspace: Option<PathBuf>,
     /// Optional CycloneDX SBOM output path.
     pub sbom_path: Option<PathBuf>,
+    /// Keep the per-package build directories after a successful install.
+    /// Default is to clean them up (the install tidies after itself).
+    pub keep_build: bool,
 }
 
 pub async fn run(args: InstallArgs) -> Result<()> {
@@ -248,6 +251,31 @@ pub async fn run(args: InstallArgs) -> Result<()> {
                 base,
                 status.code(),
                 built.iter().filter(|b| *b != &base).cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
+
+    // 6. Tidy up after a successful install: remove the per-package build dirs we
+    //    created in the workspace (large clones + build trees that otherwise just
+    //    accumulate). Only on full success, and only dirs that are direct children
+    //    of the workspace (the same invariant enforced at fetch time).
+    if !args.keep_build {
+        let mut cleaned = 0usize;
+        for base in &built {
+            if let Some(dir) = base_dirs.get(base) {
+                if dir.parent() == Some(workspace.as_path())
+                    && std::fs::remove_dir_all(dir).is_ok()
+                {
+                    cleaned += 1;
+                }
+            }
+        }
+        if cleaned > 0 {
+            println!(
+                "{} removed {} build dir(s) from {} (use --keep-build to retain)",
+                "cleanup:".dimmed(),
+                cleaned,
+                workspace.display()
             );
         }
     }

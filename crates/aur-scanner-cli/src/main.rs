@@ -144,6 +144,11 @@ enum Commands {
         /// Write a CycloneDX SBOM to this path
         #[arg(long, value_name = "FILE")]
         sbom: Option<PathBuf>,
+
+        /// Keep the build directories after a successful install
+        /// (default: clean them up)
+        #[arg(long)]
+        keep_build: bool,
     },
 
     /// Scan all installed AUR packages on the system
@@ -269,6 +274,7 @@ async fn main() -> Result<()> {
             force,
             workspace,
             sbom,
+            keep_build,
         } => {
             commands::install::run(commands::install::InstallArgs {
                 package_names: packages,
@@ -278,6 +284,7 @@ async fn main() -> Result<()> {
                 force,
                 workspace,
                 sbom_path: sbom,
+                keep_build,
             })
             .await
         }
