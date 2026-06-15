@@ -37,6 +37,35 @@ pub struct CheckArgs {
     pub local_dirs: Vec<PathBuf>,
 }
 
+/// How a `--local` dir's self-declared pkgname relates to what the user asked
+/// for (audit ME-6). A local PKGBUILD is untrusted input that *names itself*, so
+/// a clean scan of it must never be silently attributed to an AUR node the user
+/// did not explicitly request.
+#[derive(Debug, PartialEq, Eq)]
+enum LocalDirBinding {
+    /// The declared name is one the user explicitly requested on the command
+    /// line: the on-disk bytes legitimately stand in for that node.
+    RequestedRoot,
+    /// The declared name was NOT explicitly requested: the local dir is standing
+    /// in for some other node (a transitive dependency, or an identity injected
+    /// solely by the local PKGBUILD). Its real AUR source is therefore not what
+    /// gets scanned -- surfaced loudly rather than masked.
+    UnrequestedShadow,
+}
+
+/// Classify a `--local` dir by its declared name against the explicitly-requested
+/// roots. Pure, so the binding policy is unit-testable independently of the scan.
+fn classify_local_dir(
+    declared_name: &str,
+    requested_roots: &std::collections::HashSet<String>,
+) -> LocalDirBinding {
+    if requested_roots.contains(declared_name) {
+        LocalDirBinding::RequestedRoot
+    } else {
+        LocalDirBinding::UnrequestedShadow
+    }
+}
+
 /// Run the pre-install check.
 pub async fn run(args: CheckArgs) -> Result<()> {
     let client = AurClient::new().context("Failed to create AUR client")?;
@@ -154,10 +183,13 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         // dependency's name would otherwise mask that dependency's real AUR
         // source from the scan.
         let local_pkgbuild = local_dir_by_name.get(&node.name).map(|d| d.join("PKGBUILD"));
-        if local_pkgbuild.is_some() && !requested_roots.contains(&node.name) {
+        if local_pkgbuild.is_some()
+            && classify_local_dir(&node.name, &requested_roots)
+                == LocalDirBinding::UnrequestedShadow
+        {
             eprintln!(
-                "{} a --local dir is providing transitive dependency {:?}; \
-                 its AUR source is not being checked",
+                "{} a --local dir is providing {:?}, which you did not explicitly request; \
+                 its real AUR source is NOT being checked",
                 "note:".yellow(),
                 node.name
             );
@@ -329,5 +361,59 @@ fn print_orphans(graph: &DependencyGraph) {
             "note:".yellow(),
             orphans.join(", ")
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    // --- --local name binding (audit ME-6) -----------------------------------
+    // A local dir's declared name is honored as a stand-in only for a node the
+    // user explicitly requested; any other name is an unrequested shadow whose
+    // real AUR source is not what gets scanned.
+
+    #[test]
+    fn local_dir_for_requested_name_is_bound() {
+        let roots: HashSet<String> = ["firefox".to_string()].into_iter().collect();
+        assert_eq!(
+            classify_local_dir("firefox", &roots),
+            LocalDirBinding::RequestedRoot
+        );
+    }
+
+    #[test]
+    fn local_dir_claiming_an_unrequested_name_is_a_shadow() {
+        let roots: HashSet<String> = ["firefox".to_string()].into_iter().collect();
+        // A crafted local PKGBUILD claiming a different package's name must not be
+        // silently treated as that package -- it is an unrequested shadow.
+        assert_eq!(
+            classify_local_dir("openssl", &roots),
+            LocalDirBinding::UnrequestedShadow
+        );
+        // Even with no explicit request, a local-only name is a shadow (its AUR
+        // source is not what was scanned).
+        let empty: HashSet<String> = HashSet::new();
+        assert_eq!(
+            classify_local_dir("anything", &empty),
+            LocalDirBinding::UnrequestedShadow
+        );
+    }
+
+    #[test]
+    fn illegal_pkgnames_are_rejected_before_binding() {
+        // The name-validation half of ME-6: a local PKGBUILD's declared name is an
+        // identifier that becomes a resolution key + network query; illegal ones
+        // are refused up front (run() drops them) so they can never bind at all.
+        for bad in ["../etc/passwd", "a/b", "a;rm -rf /", "", "-rf", "a$(id)"] {
+            assert!(
+                !is_valid_package_name(bad),
+                "must reject local pkgname {bad:?}"
+            );
+        }
+        for good in ["firefox", "python-requests", "lib32-foo"] {
+            assert!(is_valid_package_name(good), "must accept {good}");
+        }
     }
 }
