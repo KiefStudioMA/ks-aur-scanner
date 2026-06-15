@@ -431,7 +431,11 @@ mod tests {
         // reaches into a 3-byte char rather than a terminator byte.
         let content = "pkgname=x\r\ny=1\r\n# \u{8a9e}\r\npost_install() {\r\n  echo hi\r\n}\r\n";
         let hooks = parse_install_hooks(content);
-        assert_eq!(hooks.len(), 1, "post_install hook must be detected on a CRLF file");
+        assert_eq!(
+            hooks.len(),
+            1,
+            "post_install hook must be detected on a CRLF file"
+        );
         assert_eq!(hooks[0].name, "post_install");
         assert!(
             hooks[0].content.contains("echo hi"),

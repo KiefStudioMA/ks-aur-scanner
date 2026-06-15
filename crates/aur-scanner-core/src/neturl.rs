@@ -93,7 +93,10 @@ fn strip_vcs_prefix(s: &str) -> &str {
 /// string when scheme-less), up to the first `/`, `?`, or `#`.
 fn authority_span(s: &str) -> &str {
     let after_scheme = s.split_once("://").map_or(s, |(_, rest)| rest);
-    after_scheme.split(['/', '?', '#']).next().unwrap_or(after_scheme)
+    after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme)
 }
 
 /// Extract the host of a single URL-ish string (refanged, VCS-prefix stripped,
@@ -182,25 +185,40 @@ mod tests {
 
     #[test]
     fn extract_host_handles_schemes_vcs_and_userinfo() {
-        assert_eq!(extract_host("https://github.com/u/r"), Some("github.com".into()));
+        assert_eq!(
+            extract_host("https://github.com/u/r"),
+            Some("github.com".into())
+        );
         assert_eq!(
             extract_host("git+https://github.com/u/r.git#commit=abc"),
             Some("github.com".into())
         );
-        assert_eq!(extract_host("git://git.sr.ht/~u/r"), Some("git.sr.ht".into()));
+        assert_eq!(
+            extract_host("git://git.sr.ht/~u/r"),
+            Some("git.sr.ht".into())
+        );
         // userinfo must not be mistaken for the host (the @-confusion bypass)
-        assert_eq!(extract_host("https://github.com@evil.tld/x"), Some("evil.tld".into()));
+        assert_eq!(
+            extract_host("https://github.com@evil.tld/x"),
+            Some("evil.tld".into())
+        );
         // scheme-less host
-        assert_eq!(extract_host("evil.example/payload"), Some("evil.example".into()));
+        assert_eq!(
+            extract_host("evil.example/payload"),
+            Some("evil.example".into())
+        );
         // a port does not bleed into the host
-        assert_eq!(extract_host("https://evil.example:8443/x"), Some("evil.example".into()));
+        assert_eq!(
+            extract_host("https://evil.example:8443/x"),
+            Some("evil.example".into())
+        );
     }
 
     #[test]
     fn host_matches_is_label_boundary_not_substring() {
         assert!(host_matches("github.com", "github.com"));
         assert!(host_matches("git.github.com", "github.com")); // subdomain
-        // the SRC-006 bypass class: an allowlisted host as a left-substring
+                                                               // the SRC-006 bypass class: an allowlisted host as a left-substring
         assert!(!host_matches("github.com.evil.tld", "github.com"));
         // and as a right-substring / sibling label
         assert!(!host_matches("notgithub.com", "github.com"));
@@ -211,7 +229,10 @@ mod tests {
     fn refang_normalizes_defanged_forms() {
         assert_eq!(refang("hxxps://evil[.]example"), "https://evil.example");
         assert_eq!(refang("evil(dot)example"), "evil.example");
-        assert_eq!(extract_host("hxxp://evil[.]example/x"), Some("evil.example".into()));
+        assert_eq!(
+            extract_host("hxxp://evil[.]example/x"),
+            Some("evil.example".into())
+        );
     }
 
     #[test]
@@ -219,10 +240,16 @@ mod tests {
         // F1 (Echo review): the `url` crate rewrites `\`->`/` so it parses
         // host=github.com, but git/curl fetch evil.tld. Refuse to assert a host
         // -> caller treats None as untrusted and flags it.
-        assert_eq!(extract_host(r"git+https://github.com\@evil.tld/r.git"), None);
+        assert_eq!(
+            extract_host(r"git+https://github.com\@evil.tld/r.git"),
+            None
+        );
         assert_eq!(extract_host(r"https://github.com\.evil.tld/x"), None);
         // a backslash only in the PATH is not an authority differential -> host ok
-        assert_eq!(extract_host(r"https://github.com/u\r"), Some("github.com".into()));
+        assert_eq!(
+            extract_host(r"https://github.com/u\r"),
+            Some("github.com".into())
+        );
     }
 
     #[test]
@@ -230,18 +257,36 @@ mod tests {
         // F2 (Echo review): a dotted token in the URL path is not the host.
         let hosts = extract_hosts("https://github.com/u/evil.example");
         assert_eq!(hosts, vec!["github.com".to_string()]);
-        assert!(!line_has_host("https://github.com/u/evil.example", "evil.example"));
+        assert!(!line_has_host(
+            "https://github.com/u/evil.example",
+            "evil.example"
+        ));
         // but a real subdomain host still matches
-        assert!(line_has_host("https://evil.example/u/github.com", "evil.example"));
+        assert!(line_has_host(
+            "https://evil.example/u/github.com",
+            "evil.example"
+        ));
     }
 
     #[test]
     fn line_has_host_matches_on_boundaries_and_defang() {
-        assert!(line_has_host("curl https://c2.evil.example/beacon", "evil.example"));
-        assert!(line_has_host("wget hxxps://evil[.]example/x", "evil.example"));
+        assert!(line_has_host(
+            "curl https://c2.evil.example/beacon",
+            "evil.example"
+        ));
+        assert!(line_has_host(
+            "wget hxxps://evil[.]example/x",
+            "evil.example"
+        ));
         // substring over-match must NOT fire
-        assert!(!line_has_host("git clone https://github.com/evil.example-mirror", "evil.example"));
-        assert!(!line_has_host("# see notes about evilexample.org", "evil.example"));
+        assert!(!line_has_host(
+            "git clone https://github.com/evil.example-mirror",
+            "evil.example"
+        ));
+        assert!(!line_has_host(
+            "# see notes about evilexample.org",
+            "evil.example"
+        ));
     }
 
     #[test]

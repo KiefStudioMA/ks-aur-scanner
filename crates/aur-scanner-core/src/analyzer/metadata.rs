@@ -35,35 +35,114 @@ use async_trait::async_trait;
 const TRUSTED_PKGS: &[&str] = &[
     // core system (NB: `sh` is intentionally absent — every shell legitimately
     // `provides=('sh')`, so it would false-positive)
-    "bash", "coreutils", "glibc", "gcc-libs", "systemd", "systemd-libs",
-    "util-linux", "shadow", "filesystem", "pacman", "sudo", "doas", "openssh",
-    "gnupg", "pam", "grep", "sed", "gawk", "tar", "gzip", "xz", "zstd",
-    "findutils", "which", "less", "procps-ng", "psmisc", "iproute2", "iputils",
-    "e2fsprogs", "krb5", "curl", "wget", "openssl", "ca-certificates",
-    "ca-certificates-mozilla", "zlib", "readline", "ncurses", "dbus", "polkit",
-    "systemd-sysvcompat", "linux", "linux-firmware", "mkinitcpio", "grub",
-    "pacman-mirrorlist", "archlinux-keyring",
+    "bash",
+    "coreutils",
+    "glibc",
+    "gcc-libs",
+    "systemd",
+    "systemd-libs",
+    "util-linux",
+    "shadow",
+    "filesystem",
+    "pacman",
+    "sudo",
+    "doas",
+    "openssh",
+    "gnupg",
+    "pam",
+    "grep",
+    "sed",
+    "gawk",
+    "tar",
+    "gzip",
+    "xz",
+    "zstd",
+    "findutils",
+    "which",
+    "less",
+    "procps-ng",
+    "psmisc",
+    "iproute2",
+    "iputils",
+    "e2fsprogs",
+    "krb5",
+    "curl",
+    "wget",
+    "openssl",
+    "ca-certificates",
+    "ca-certificates-mozilla",
+    "zlib",
+    "readline",
+    "ncurses",
+    "dbus",
+    "polkit",
+    "systemd-sysvcompat",
+    "linux",
+    "linux-firmware",
+    "mkinitcpio",
+    "grub",
+    "pacman-mirrorlist",
+    "archlinux-keyring",
     // security tooling (replacing/conflicting these = defense evasion)
-    "apparmor", "firejail", "ufw", "nftables", "iptables", "audit", "usbguard",
-    "fail2ban", "clamav", "firewalld", "opensnitch", "selinux", "tomb",
+    "apparmor",
+    "firejail",
+    "ufw",
+    "nftables",
+    "iptables",
+    "audit",
+    "usbguard",
+    "fail2ban",
+    "clamav",
+    "firewalld",
+    "opensnitch",
+    "selinux",
+    "tomb",
 ];
 
 /// Sensitive file prefixes (relative to `/`): a `backup=` entry under one of
 /// these turns a "config" file into a persistent root-level tamper surface.
 const SENSITIVE_BACKUP: &[&str] = &[
-    "etc/sudoers", "etc/ssh/", "etc/pam.d/", "etc/ld.so.preload",
-    "etc/ld.so.conf", "etc/profile", "etc/shadow", "etc/passwd", "etc/group",
-    "etc/gshadow", "etc/crontab", "etc/cron.d/", "etc/polkit-1/",
-    "etc/systemd/system/", "etc/modprobe.d/", "etc/sysctl.d/",
-    "etc/security/", "root/.ssh/", "etc/skel/",
+    "etc/sudoers",
+    "etc/ssh/",
+    "etc/pam.d/",
+    "etc/ld.so.preload",
+    "etc/ld.so.conf",
+    "etc/profile",
+    "etc/shadow",
+    "etc/passwd",
+    "etc/group",
+    "etc/gshadow",
+    "etc/crontab",
+    "etc/cron.d/",
+    "etc/polkit-1/",
+    "etc/systemd/system/",
+    "etc/modprobe.d/",
+    "etc/sysctl.d/",
+    "etc/security/",
+    "root/.ssh/",
+    "etc/skel/",
 ];
 
 /// Alternate-package affixes: a `foo-git`/`foo-bin` package legitimately
 /// provides/replaces `foo`. Stripping these (and a leading `lib`) yields the
 /// "stem" used to recognise that a provides/replaces is the package's own base.
 const ALT_SUFFIXES: &[&str] = &[
-    "-git", "-bin", "-svn", "-hg", "-bzr", "-cvs", "-nightly", "-beta", "-rc",
-    "-dev", "-devel", "-debug", "-legacy", "-lts", "-stable", "-unstable",
+    "-git",
+    "-bin",
+    "-svn",
+    "-hg",
+    "-bzr",
+    "-cvs",
+    "-nightly",
+    "-beta",
+    "-rc",
+    "-dev",
+    "-devel",
+    "-debug",
+    "-legacy",
+    "-lts",
+    "-stable",
+    "-unstable",
 ];
 
 /// Strip a dependency/version constraint and soname to the bare package name:
@@ -71,10 +150,7 @@ const ALT_SUFFIXES: &[&str] = &[
 /// -> `pkg`. Splits at the first constraint/soname/description separator.
 fn bare_name(dep: &str) -> &str {
     let dep = dep.trim().trim_matches(|c| c == '\'' || c == '"');
-    dep.split(['=', '<', '>', ':'])
-        .next()
-        .unwrap_or(dep)
-        .trim()
+    dep.split(['=', '<', '>', ':']).next().unwrap_or(dep).trim()
 }
 
 /// The "stem" of a package name with an alternate affix removed, e.g.
@@ -206,7 +282,10 @@ impl SecurityAnalyzer for MetadataAnalyzer {
                 "Remove the replaces/conflicts unless this package is the legitimate provider; \
                  report the package to the AUR maintainers.",
                 Some("CWE-1357"),
-                Some(format!("replaces/conflicts: {}", displaced_trusted.join(", "))),
+                Some(format!(
+                    "replaces/conflicts: {}",
+                    displaced_trusted.join(", ")
+                )),
             ));
         }
 
@@ -238,7 +317,11 @@ impl SecurityAnalyzer for MetadataAnalyzer {
                 findings.push(self.finding(
                     context,
                     "META-004",
-                    if escalate { Severity::High } else { Severity::Low },
+                    if escalate {
+                        Severity::High
+                    } else {
+                        Severity::Low
+                    },
                     Category::SuspiciousMetadata,
                     "epoch set (forces an upgrade over the repo version)".to_string(),
                     format!(
@@ -327,21 +410,23 @@ impl SecurityAnalyzer for MetadataAnalyzer {
                     || fname.ends_with(".asc")
             });
             if !verifies {
-                findings.push(self.finding(
-                    context,
-                    "META-002",
-                    Severity::Low,
-                    Category::SuspiciousMetadata,
-                    "validpgpkeys declared but no signature is verified".to_string(),
-                    "validpgpkeys= lists trusted signing key(s) but no source carries a \
+                findings.push(
+                    self.finding(
+                        context,
+                        "META-002",
+                        Severity::Low,
+                        Category::SuspiciousMetadata,
+                        "validpgpkeys declared but no signature is verified".to_string(),
+                        "validpgpkeys= lists trusted signing key(s) but no source carries a \
                      detached signature (.sig/.asc) or a ?signed VCS fragment, so the declared \
                      key verifies nothing — signature theatre that can lull a reviewer."
-                        .to_string(),
-                    "Either verify a signed source against the key, or remove the unused \
+                            .to_string(),
+                        "Either verify a signed source against the key, or remove the unused \
                      validpgpkeys.",
-                    Some("CWE-347"),
-                    None,
-                ));
+                        Some("CWE-347"),
+                        None,
+                    ),
+                );
             }
         }
 
@@ -386,8 +471,14 @@ mod tests {
             "pkgname=evil\npkgver=1\npkgrel=1\nprovides=('bash')\nreplaces=('sudo')\nconflicts=('openssh')\n",
         )
         .await;
-        assert!(got.contains(&"DEP-001".to_string()), "provides bash -> DEP-001: {got:?}");
-        assert!(got.contains(&"META-003".to_string()), "replaces sudo -> META-003: {got:?}");
+        assert!(
+            got.contains(&"DEP-001".to_string()),
+            "provides bash -> DEP-001: {got:?}"
+        );
+        assert!(
+            got.contains(&"META-003".to_string()),
+            "replaces sudo -> META-003: {got:?}"
+        );
     }
 
     #[tokio::test]
@@ -397,8 +488,14 @@ mod tests {
             "pkgname=bash-git\npkgver=1\npkgrel=1\nprovides=('bash')\nconflicts=('bash')\nreplaces=('bash')\n",
         )
         .await;
-        assert!(!got.contains(&"DEP-001".to_string()), "alternate must not fire DEP-001: {got:?}");
-        assert!(!got.contains(&"META-003".to_string()), "alternate must not fire META-003: {got:?}");
+        assert!(
+            !got.contains(&"DEP-001".to_string()),
+            "alternate must not fire DEP-001: {got:?}"
+        );
+        assert!(
+            !got.contains(&"META-003".to_string()),
+            "alternate must not fire META-003: {got:?}"
+        );
     }
 
     #[tokio::test]
@@ -416,14 +513,22 @@ mod tests {
         }
         // ...but an UNRELATED name claiming a core provide is the attack.
         let evil = ids("pkgname=totally-legit-app\npkgver=1\npkgrel=1\nprovides=('xz')\n").await;
-        assert!(evil.contains(&"DEP-001".to_string()), "unrelated provides xz -> DEP-001: {evil:?}");
+        assert!(
+            evil.contains(&"DEP-001".to_string()),
+            "unrelated provides xz -> DEP-001: {evil:?}"
+        );
     }
 
     #[tokio::test]
     async fn provides_of_non_core_is_clean() {
         // Providing a normal (non-core) virtual package is routine.
-        let got = ids("pkgname=myapp\npkgver=1\npkgrel=1\nprovides=('libmyapp.so' 'myapp-thing')\n").await;
-        assert!(!got.contains(&"DEP-001".to_string()), "non-core provides must be clean: {got:?}");
+        let got =
+            ids("pkgname=myapp\npkgver=1\npkgrel=1\nprovides=('libmyapp.so' 'myapp-thing')\n")
+                .await;
+        assert!(
+            !got.contains(&"DEP-001".to_string()),
+            "non-core provides must be clean: {got:?}"
+        );
     }
 
     #[tokio::test]
@@ -434,23 +539,45 @@ mod tests {
         let esc = ids("pkgname=app\npkgver=1\npkgrel=1\nepoch=2\nprovides=('glibc')\n").await;
         assert!(esc.contains(&"META-004".to_string()) && esc.contains(&"DEP-001".to_string()));
         // epoch=0 / absent is clean.
-        assert!(!ids("pkgname=app\npkgver=1\npkgrel=1\nepoch=0\n").await.contains(&"META-004".to_string()));
+        assert!(!ids("pkgname=app\npkgver=1\npkgrel=1\nepoch=0\n")
+            .await
+            .contains(&"META-004".to_string()));
     }
 
     #[tokio::test]
     async fn meta005_install_outside_package() {
-        assert!(ids("pkgname=a\npkgver=1\npkgrel=1\ninstall=../../etc/evil\n").await.contains(&"META-005".to_string()));
-        assert!(ids("pkgname=a\npkgver=1\npkgrel=1\ninstall=/opt/x.sh\n").await.contains(&"META-005".to_string()));
+        assert!(
+            ids("pkgname=a\npkgver=1\npkgrel=1\ninstall=../../etc/evil\n")
+                .await
+                .contains(&"META-005".to_string())
+        );
+        assert!(ids("pkgname=a\npkgver=1\npkgrel=1\ninstall=/opt/x.sh\n")
+            .await
+            .contains(&"META-005".to_string()));
         // a plain <name>.install is clean.
-        assert!(!ids("pkgname=a\npkgver=1\npkgrel=1\ninstall=a.install\n").await.contains(&"META-005".to_string()));
+        assert!(!ids("pkgname=a\npkgver=1\npkgrel=1\ninstall=a.install\n")
+            .await
+            .contains(&"META-005".to_string()));
     }
 
     #[tokio::test]
     async fn meta006_sensitive_backup() {
-        assert!(ids("pkgname=a\npkgver=1\npkgrel=1\nbackup=('etc/sudoers.d/a')\n").await.contains(&"META-006".to_string()));
-        assert!(ids("pkgname=a\npkgver=1\npkgrel=1\nbackup=('etc/ssh/sshd_config')\n").await.contains(&"META-006".to_string()));
+        assert!(
+            ids("pkgname=a\npkgver=1\npkgrel=1\nbackup=('etc/sudoers.d/a')\n")
+                .await
+                .contains(&"META-006".to_string())
+        );
+        assert!(
+            ids("pkgname=a\npkgver=1\npkgrel=1\nbackup=('etc/ssh/sshd_config')\n")
+                .await
+                .contains(&"META-006".to_string())
+        );
         // an ordinary app config is clean.
-        assert!(!ids("pkgname=a\npkgver=1\npkgrel=1\nbackup=('etc/myapp/myapp.conf')\n").await.contains(&"META-006".to_string()));
+        assert!(
+            !ids("pkgname=a\npkgver=1\npkgrel=1\nbackup=('etc/myapp/myapp.conf')\n")
+                .await
+                .contains(&"META-006".to_string())
+        );
     }
 
     #[tokio::test]
@@ -460,12 +587,18 @@ mod tests {
             "pkgname=a\npkgver=1\npkgrel=1\nvalidpgpkeys=('ABCDEF0123456789')\nsource=('https://x/a.tar.gz')\n",
         )
         .await;
-        assert!(unused.contains(&"META-002".to_string()), "unused key -> META-002: {unused:?}");
+        assert!(
+            unused.contains(&"META-002".to_string()),
+            "unused key -> META-002: {unused:?}"
+        );
         // declared key with a .sig source -> not signature theatre
         let used = ids(
             "pkgname=a\npkgver=1\npkgrel=1\nvalidpgpkeys=('ABCDEF0123456789')\nsource=('https://x/a.tar.gz' 'https://x/a.tar.gz.sig')\n",
         )
         .await;
-        assert!(!used.contains(&"META-002".to_string()), "signed source -> no META-002: {used:?}");
+        assert!(
+            !used.contains(&"META-002".to_string()),
+            "signed source -> no META-002: {used:?}"
+        );
     }
 }

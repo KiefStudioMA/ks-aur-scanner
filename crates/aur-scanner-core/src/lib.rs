@@ -123,7 +123,11 @@ impl Scanner {
                     hooks: parser::parse_install_hooks(&script_content),
                 }),
                 Err(e) => {
-                    warn!("Failed to read install script {}: {}", install_path.display(), e);
+                    warn!(
+                        "Failed to read install script {}: {}",
+                        install_path.display(),
+                        e
+                    );
                     None
                 }
             }
@@ -229,7 +233,10 @@ fn read_text_capped(path: &Path) -> Result<String> {
 /// install hook is a primary malware delivery vector. Resolution order:
 /// 1. Expand `$pkgname`/`$pkgbase` in the declared `install=` value.
 /// 2. Fall back to a single `*.install` file in the package directory.
-fn resolve_install_path(dir: &Path, pkgbuild: &parser::ParsedPkgbuild) -> Option<std::path::PathBuf> {
+fn resolve_install_path(
+    dir: &Path,
+    pkgbuild: &parser::ParsedPkgbuild,
+) -> Option<std::path::PathBuf> {
     let pkgname = pkgbuild.pkgname.first().cloned().unwrap_or_default();
 
     if let Some(install_file) = &pkgbuild.install {
@@ -238,7 +245,10 @@ fn resolve_install_path(dir: &Path, pkgbuild: &parser::ParsedPkgbuild) -> Option
         // directory. Reject path separators / traversal so a hostile install=
         // value cannot make us read a file outside the cloned package dir.
         if expanded.is_empty() || expanded.contains('/') || expanded.contains("..") {
-            warn!("ignoring suspicious install= value '{}' (path traversal)", install_file);
+            warn!(
+                "ignoring suspicious install= value '{}' (path traversal)",
+                install_file
+            );
         } else {
             let candidate = dir.join(&expanded);
             if candidate.is_file() {
@@ -268,9 +278,7 @@ fn resolve_install_path(dir: &Path, pkgbuild: &parser::ParsedPkgbuild) -> Option
             // and warn so the gap is visible rather than silent.
             let preferred = install_files
                 .iter()
-                .find(|p| {
-                    p.file_stem().and_then(|s| s.to_str()) == Some(pkgname.as_str())
-                })
+                .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(pkgname.as_str()))
                 .cloned();
             if preferred.is_none() {
                 warn!(
@@ -320,9 +328,15 @@ mod tests {
 
     #[test]
     fn test_expand_pkg_vars() {
-        assert_eq!(expand_pkg_vars("${pkgname}.install", "alvr"), "alvr.install");
+        assert_eq!(
+            expand_pkg_vars("${pkgname}.install", "alvr"),
+            "alvr.install"
+        );
         assert_eq!(expand_pkg_vars("$pkgname.install", "alvr"), "alvr.install");
-        assert_eq!(expand_pkg_vars("\"$pkgbase.install\"", "alvr"), "alvr.install");
+        assert_eq!(
+            expand_pkg_vars("\"$pkgbase.install\"", "alvr"),
+            "alvr.install"
+        );
         assert_eq!(expand_pkg_vars("custom.install", "alvr"), "custom.install");
     }
 
@@ -342,8 +356,9 @@ mod tests {
             "expected ATOMIC-001 from the install hook; got: {:?}",
             result.findings.iter().map(|f| &f.id).collect::<Vec<_>>()
         );
-        assert!(result.scanned_files.iter().any(|p| {
-            p.extension().and_then(|e| e.to_str()) == Some("install")
-        }));
+        assert!(result
+            .scanned_files
+            .iter()
+            .any(|p| { p.extension().and_then(|e| e.to_str()) == Some("install") }));
     }
 }

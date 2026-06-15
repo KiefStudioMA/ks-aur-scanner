@@ -16,7 +16,7 @@ use aur_scanner_core::{Scanner, Severity};
 use colored::Colorize;
 use std::env;
 use std::io::{self, IsTerminal, Write};
-use std::process::{Command, Stdio, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 
 /// What a helper invocation means for scanning.
 enum Operation {
@@ -76,8 +76,13 @@ fn classify(helper_args: &[&str]) -> Operation {
 
     // Read-only sync sub-operations that never install anything.
     let readonly_sync = long_opts.iter().any(|o| {
-        matches!(*o, "search" | "info" | "list" | "groups" | "clean" | "print")
-    }) || sync_mods.chars().any(|m| matches!(m, 's' | 'i' | 'l' | 'g' | 'c' | 'p'));
+        matches!(
+            *o,
+            "search" | "info" | "list" | "groups" | "clean" | "print"
+        )
+    }) || sync_mods
+        .chars()
+        .any(|m| matches!(m, 's' | 'i' | 'l' | 'g' | 'c' | 'p'));
 
     // Decide. The bias is fail-closed: scan whenever the invocation could build
     // an AUR package and there is something to scan.
@@ -168,7 +173,7 @@ async fn run() -> Result<ExitCode> {
     for pkg in &candidates {
         match is_aur_package(pkg).await {
             Ok(true) => aur_packages.push(pkg.clone()),
-            Ok(false) => {} // Official repo package, skip
+            Ok(false) => {}                           // Official repo package, skip
             Err(_) => aur_packages.push(pkg.clone()), // could not determine -> fail closed, scan
         }
     }
@@ -230,8 +235,14 @@ async fn run() -> Result<ExitCode> {
         if findings.is_empty() {
             println!("{}", "OK".green());
         } else {
-            let crit_count = findings.iter().filter(|f| f.severity == Severity::Critical).count();
-            let high_count = findings.iter().filter(|f| f.severity == Severity::High).count();
+            let crit_count = findings
+                .iter()
+                .filter(|f| f.severity == Severity::Critical)
+                .count();
+            let high_count = findings
+                .iter()
+                .filter(|f| f.severity == Severity::High)
+                .count();
 
             if crit_count > 0 {
                 critical_found = true;
@@ -277,7 +288,10 @@ async fn run() -> Result<ExitCode> {
             println!("{}", "Installation aborted (unreviewed packages).".yellow());
             return Ok(ExitCode::FAILURE);
         }
-        println!("{}", "User accepted installing unreviewed packages.".dimmed());
+        println!(
+            "{}",
+            "User accepted installing unreviewed packages.".dimmed()
+        );
     }
 
     if critical_found {
@@ -325,7 +339,10 @@ async fn run() -> Result<ExitCode> {
 /// always a refusal (fail-closed): there is no one to confirm.
 fn confirm_typed_yes(interactive: bool, prompt: &str) -> Result<bool> {
     if !interactive {
-        eprintln!("{} non-interactive; refusing without confirmation.", "abort:".red());
+        eprintln!(
+            "{} non-interactive; refusing without confirmation.",
+            "abort:".red()
+        );
         return Ok(false);
     }
     print!("{} ", prompt.yellow());
@@ -340,7 +357,10 @@ fn confirm_typed_yes(interactive: bool, prompt: &str) -> Result<bool> {
 /// `[y/N]` prompt that defaults to NO and refuses in non-interactive mode.
 fn confirm_default_no(interactive: bool, prompt: &str) -> Result<bool> {
     if !interactive {
-        eprintln!("{} non-interactive; refusing without confirmation.", "abort:".red());
+        eprintln!(
+            "{} non-interactive; refusing without confirmation.",
+            "abort:".red()
+        );
         return Ok(false);
     }
     print!("{} ", prompt.yellow());
@@ -426,14 +446,20 @@ mod tests {
             scanned(&["-S", "--needed", "--noconfirm", "pkg"]),
             Some(vec!["pkg".into()])
         );
-        assert_eq!(scanned(&["-S", "--rebuild", "pkg"]), Some(vec!["pkg".into()]));
+        assert_eq!(
+            scanned(&["-S", "--rebuild", "pkg"]),
+            Some(vec!["pkg".into()])
+        );
     }
 
     #[test]
     fn bare_operand_with_long_flag_is_still_scanned() {
         // Regression for the fail-open: an install expressed as a bare operand
         // plus a long flag (no -S) must NOT pass through unscanned.
-        assert_eq!(scanned(&["--noconfirm", "evilpkg"]), Some(vec!["evilpkg".into()]));
+        assert_eq!(
+            scanned(&["--noconfirm", "evilpkg"]),
+            Some(vec!["evilpkg".into()])
+        );
         assert_eq!(scanned(&["--needed", "pkg"]), Some(vec!["pkg".into()]));
         // ...but a read-only/non-install op with a long flag still passes through.
         assert!(scanned(&["--color=always", "-Ss", "firefox"]).is_none());

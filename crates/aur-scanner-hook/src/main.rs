@@ -46,11 +46,7 @@ async fn main() -> Result<()> {
 
     // Read package names from stdin (pacman hook provides this)
     let stdin = io::stdin();
-    let packages: Vec<String> = stdin
-        .lock()
-        .lines()
-        .map_while(Result::ok)
-        .collect();
+    let packages: Vec<String> = stdin.lock().lines().map_while(Result::ok).collect();
 
     let scan_user = match scan_user {
         Some(u) => u,
@@ -404,7 +400,15 @@ mod tests {
     // path components, so it must reject anything that isn't a clean identifier.
     #[test]
     fn hook_rejects_path_traversal_and_injection_targets() {
-        for bad in ["../etc/passwd", "a/b", "..", "a;rm -rf /", "a b", "a$(id)", ""] {
+        for bad in [
+            "../etc/passwd",
+            "a/b",
+            "..",
+            "a;rm -rf /",
+            "a b",
+            "a$(id)",
+            "",
+        ] {
             assert!(!is_valid_package_name(bad), "must reject {bad:?}");
         }
         for good in ["firefox", "aur-scanner-git", "lib32-foo", "python-requests"] {

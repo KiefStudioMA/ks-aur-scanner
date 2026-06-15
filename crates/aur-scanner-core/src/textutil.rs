@@ -155,7 +155,11 @@ fn decode_ansic_escape(rest: &[char]) -> (String, usize) {
     match rest[0] {
         'x' => {
             // up to two hex digits
-            let hex: String = rest[1..].iter().take(2).take_while(|c| c.is_ascii_hexdigit()).collect();
+            let hex: String = rest[1..]
+                .iter()
+                .take(2)
+                .take_while(|c| c.is_ascii_hexdigit())
+                .collect();
             if hex.is_empty() {
                 return (String::from("x"), 1);
             }
@@ -185,7 +189,9 @@ fn decode_ansic_escape(rest: &[char]) -> (String, usize) {
 }
 
 fn char_from(val: u32) -> String {
-    char::from_u32(val).map(|c| c.to_string()).unwrap_or_default()
+    char::from_u32(val)
+        .map(|c| c.to_string())
+        .unwrap_or_default()
 }
 
 /// Re-render a shell word the way the shell would, with the quoting *removed*:
@@ -360,8 +366,7 @@ pub const SHELL_PATH: &str = r"(?:/\S+/)?";
 /// produced ZERO findings. NOT folded into `SHELLS` itself, so the bare-name
 /// behavior is unchanged. Linear-time (the `regex` crate has no backtracking) so
 /// the nested `*` is ReDoS-free.
-pub const SHELL_LAUNCHER: &str =
-    r"(?:(?:/\S+/)?(?:busybox|toybox|env|command|exec|setsid|stdbuf|nice)\s+(?:-\S+\s+|\w+=\S*\s+)*)*";
+pub const SHELL_LAUNCHER: &str = r"(?:(?:/\S+/)?(?:busybox|toybox|env|command|exec|setsid|stdbuf|nice)\s+(?:-\S+\s+|\w+=\S*\s+)*)*";
 
 #[cfg(test)]
 mod tests {
@@ -461,7 +466,14 @@ mod tests {
         let bounded = Regex::new(&format!(r"\b{SHELLS}\b")).unwrap();
         assert!(bounded.is_match("exec ash now"));
         assert!(bounded.is_match("run nu here"));
-        for bad in ["a crash occurred", "make a splash", "run shellcheck", "pipe | number", "| oilcheck", "use nutool"] {
+        for bad in [
+            "a crash occurred",
+            "make a splash",
+            "run shellcheck",
+            "pipe | number",
+            "| oilcheck",
+            "use nutool",
+        ] {
             assert!(!bounded.is_match(bad), "must not match: {bad}");
         }
     }
@@ -535,7 +547,10 @@ mod tests {
         for line in ["build() {", "  : # cosmetic note }", "  sudo evil", "}"] {
             sc.feed(line);
         }
-        assert_eq!(sc.depth, 0, "comment brace must be ignored; body stays balanced");
+        assert_eq!(
+            sc.depth, 0,
+            "comment brace must be ignored; body stays balanced"
+        );
     }
 
     #[test]

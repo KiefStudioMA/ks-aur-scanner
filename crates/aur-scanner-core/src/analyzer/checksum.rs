@@ -104,10 +104,14 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
         // -git package as a High "no integrity" finding here would be noise, so
         // the checksum analyzer only evaluates NON-VCS sources.
         let source_count = context.pkgbuild.source.len();
-        let non_vcs_count = context.pkgbuild.source.iter().filter(|s| !s.is_vcs()).count();
+        let non_vcs_count = context
+            .pkgbuild
+            .source
+            .iter()
+            .filter(|s| !s.is_vcs())
+            .count();
         let vcs_count = source_count - non_vcs_count;
-        let non_vcs_skip_count =
-            self.count_unverified_non_vcs(checksums, &context.pkgbuild.source);
+        let non_vcs_skip_count = self.count_unverified_non_vcs(checksums, &context.pkgbuild.source);
 
         if non_vcs_skip_count > 0 && non_vcs_skip_count < non_vcs_count {
             // Some non-VCS sources have SKIP - this is concerning
@@ -209,7 +213,10 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
                 }
                 if s.len() != len || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
                     let shown = if s.len() > 12 { &s[..12] } else { s };
-                    malformed.push(format!("{algo}sums has a bad entry '{shown}…' (len {})", s.len()));
+                    malformed.push(format!(
+                        "{algo}sums has a bad entry '{shown}…' (len {})",
+                        s.len()
+                    ));
                 }
             }
         }
@@ -298,7 +305,7 @@ impl ChecksumAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{StaticParser, PkgbuildParser};
+    use crate::parser::{PkgbuildParser, StaticParser};
     use crate::types::ScanConfig;
     use std::path::PathBuf;
 
@@ -367,7 +374,9 @@ sha256sums=('SKIP')
         let findings = analyzer.analyze(&context).await.unwrap();
         // Should NOT have CHK-004 or CHK-005 for VCS sources
         assert!(
-            !findings.iter().any(|f| f.id == "CHK-004" || f.id == "CHK-005"),
+            !findings
+                .iter()
+                .any(|f| f.id == "CHK-004" || f.id == "CHK-005"),
             "VCS source with SKIP should not trigger checksum warnings"
         );
     }
@@ -392,7 +401,9 @@ sha256sums=('SKIP'
         let findings = analyzer.analyze(&context).await.unwrap();
         // Should NOT have CHK-004 or CHK-005
         assert!(
-            !findings.iter().any(|f| f.id == "CHK-004" || f.id == "CHK-005"),
+            !findings
+                .iter()
+                .any(|f| f.id == "CHK-004" || f.id == "CHK-005"),
             "Mixed VCS+regular sources with appropriate checksums should not trigger warnings"
         );
     }
@@ -443,7 +454,9 @@ sha256sums=('SKIP')
 "#,
         );
         let findings = analyzer.analyze(&pinned).await.unwrap();
-        assert!(!findings.iter().any(|f| f.id == "CHK-004" || f.id == "CHK-005"));
+        assert!(!findings
+            .iter()
+            .any(|f| f.id == "CHK-004" || f.id == "CHK-005"));
     }
 
     #[tokio::test]

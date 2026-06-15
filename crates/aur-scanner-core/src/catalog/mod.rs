@@ -94,7 +94,11 @@ impl Catalog {
         for e in &self.entries {
             *seen.entry(e.id.clone()).or_insert(0usize) += 1;
         }
-        let mut dups: Vec<String> = seen.into_iter().filter(|(_, n)| *n > 1).map(|(k, _)| k).collect();
+        let mut dups: Vec<String> = seen
+            .into_iter()
+            .filter(|(_, n)| *n > 1)
+            .map(|(k, _)| k)
+            .collect();
         dups.sort();
         dups
     }
@@ -105,7 +109,10 @@ impl Catalog {
         if dups.is_empty() {
             Ok(())
         } else {
-            Err(format!("duplicate finding IDs in catalog: {}", dups.join(", ")))
+            Err(format!(
+                "duplicate finding IDs in catalog: {}",
+                dups.join(", ")
+            ))
         }
     }
 
@@ -116,7 +123,11 @@ impl Catalog {
 
     /// All distinct category display names present, sorted.
     pub fn categories(&self) -> Vec<String> {
-        let mut cats: Vec<String> = self.entries.iter().map(|e| e.category.to_string()).collect();
+        let mut cats: Vec<String> = self
+            .entries
+            .iter()
+            .map(|e| e.category.to_string())
+            .collect();
         cats.sort();
         cats.dedup();
         cats
@@ -260,19 +271,54 @@ mod tests {
     #[test]
     fn catalog_covers_every_analyzer_emitted_id() {
         const EMITTED: &[&str] = &[
-            "CHK-001", "CHK-002", "CHK-003", "CHK-004", "CHK-005", "CHK-006", "CHK-008",
-            "PRIV-001", "PRIV-002", "PRIV-003", "PRIV-004", "PRIV-005", "PRIV-006",
-            "SRC-001", "SRC-002", "SRC-003", "SRC-004", "SRC-005", "SRC-006", "SRC-007", "SRC-008",
-            "IOC-001", "DEEP-001", "DEEP-002", "EXEC-REMOTE", "PROV-001", "FUNC-001",
-            "META-002", "META-003", "META-004", "META-005", "META-006", "DEP-001",
+            "CHK-001",
+            "CHK-002",
+            "CHK-003",
+            "CHK-004",
+            "CHK-005",
+            "CHK-006",
+            "CHK-008",
+            "PRIV-001",
+            "PRIV-002",
+            "PRIV-003",
+            "PRIV-004",
+            "PRIV-005",
+            "PRIV-006",
+            "SRC-001",
+            "SRC-002",
+            "SRC-003",
+            "SRC-004",
+            "SRC-005",
+            "SRC-006",
+            "SRC-007",
+            "SRC-008",
+            "IOC-001",
+            "DEEP-001",
+            "DEEP-002",
+            "EXEC-REMOTE",
+            "PROV-001",
+            "FUNC-001",
+            "META-002",
+            "META-003",
+            "META-004",
+            "META-005",
+            "META-006",
+            "DEP-001",
         ];
         let catalog = Catalog::load();
         for id in EMITTED {
-            assert!(catalog.get(id).is_some(), "emitted code {id} missing from catalog");
+            assert!(
+                catalog.get(id).is_some(),
+                "emitted code {id} missing from catalog"
+            );
         }
         // And no phantom analyzer codes (every analyzer_codes id is in EMITTED).
         for c in analyzer_codes() {
-            assert!(EMITTED.contains(&c.id.as_str()), "catalog has phantom analyzer code {}", c.id);
+            assert!(
+                EMITTED.contains(&c.id.as_str()),
+                "catalog has phantom analyzer code {}",
+                c.id
+            );
         }
     }
 }

@@ -199,9 +199,7 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
             }
 
             // Check for kernel module loading
-            if body.contains("insmod")
-                || body.contains("modprobe")
-                || body.contains("/lib/modules")
+            if body.contains("insmod") || body.contains("modprobe") || body.contains("/lib/modules")
             {
                 findings.push(Finding {
                     id: "PRIV-005".to_string(),
@@ -270,7 +268,7 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{StaticParser, PkgbuildParser};
+    use crate::parser::{PkgbuildParser, StaticParser};
     use crate::types::ScanConfig;
     use std::path::PathBuf;
 
@@ -342,9 +340,18 @@ package() {
 "#,
         );
         let findings = analyzer.analyze(&context).await.unwrap();
-        assert!(findings.iter().any(|f| f.id == "PRIV-001"), "SUDO must fire PRIV-001");
-        assert!(findings.iter().any(|f| f.id == "PRIV-004"), "SETCAP must fire PRIV-004");
-        assert!(findings.iter().any(|f| f.id == "PRIV-002"), "CHMOD 4755 must fire PRIV-002");
+        assert!(
+            findings.iter().any(|f| f.id == "PRIV-001"),
+            "SUDO must fire PRIV-001"
+        );
+        assert!(
+            findings.iter().any(|f| f.id == "PRIV-004"),
+            "SETCAP must fire PRIV-004"
+        );
+        assert!(
+            findings.iter().any(|f| f.id == "PRIV-002"),
+            "CHMOD 4755 must fire PRIV-002"
+        );
     }
 
     #[tokio::test]
@@ -371,7 +378,10 @@ package() {
         assert!(
             !findings.iter().any(|f| f.id == "PRIV-002"),
             "benign chmod 644/755/700 and install -m644/755 must not trip PRIV-002, got: {:?}",
-            findings.iter().filter(|f| f.id == "PRIV-002").collect::<Vec<_>>()
+            findings
+                .iter()
+                .filter(|f| f.id == "PRIV-002")
+                .collect::<Vec<_>>()
         );
     }
 

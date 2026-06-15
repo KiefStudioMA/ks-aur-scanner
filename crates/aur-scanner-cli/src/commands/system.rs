@@ -106,11 +106,7 @@ pub async fn run(
 
         let scan_result = if let Some(path) = pkgbuild_path {
             // Scan from cache
-            print!(
-                "{} {} ",
-                "Scanning:".dimmed(),
-                package.white()
-            );
+            print!("{} {} ", "Scanning:".dimmed(), package.white());
 
             match scanner.scan_pkgbuild(&path).await {
                 Ok(result) => Some(result),
@@ -121,22 +117,16 @@ pub async fn run(
             }
         } else if let Some(ref aur_client) = client {
             // Fetch and scan from AUR
-            print!(
-                "{} {} ",
-                "Fetching:".dimmed(),
-                package.white()
-            );
+            print!("{} {} ", "Fetching:".dimmed(), package.white());
 
             match aur_client.fetch_pkgbuild(package).await {
-                Ok(fetched) => {
-                    match scanner.scan_pkgbuild(&fetched.pkgbuild_path).await {
-                        Ok(result) => Some(result),
-                        Err(e) => {
-                            println!("{}", format!("scan error: {}", e).red());
-                            None
-                        }
+                Ok(fetched) => match scanner.scan_pkgbuild(&fetched.pkgbuild_path).await {
+                    Ok(result) => Some(result),
+                    Err(e) => {
+                        println!("{}", format!("scan error: {}", e).red());
+                        None
                     }
-                }
+                },
                 Err(e) => {
                     println!("{}", format!("fetch error: {}", e).red());
                     None
@@ -159,11 +149,7 @@ pub async fn run(
                 .collect::<Vec<_>>()
                 .join("\n");
             if !combined.is_empty() {
-                let anchor = result
-                    .scanned_files
-                    .first()
-                    .cloned()
-                    .unwrap_or_default();
+                let anchor = result.scanned_files.first().cloned().unwrap_or_default();
                 let prov = prov_store.evaluate(package, &combined, &now, &anchor);
                 result.findings.extend(prov);
             }
@@ -181,8 +167,14 @@ pub async fn run(
                 })
                 .collect();
 
-            let critical = findings.iter().filter(|f| f.severity == Severity::Critical).count();
-            let high = findings.iter().filter(|f| f.severity == Severity::High).count();
+            let critical = findings
+                .iter()
+                .filter(|f| f.severity == Severity::Critical)
+                .count();
+            let high = findings
+                .iter()
+                .filter(|f| f.severity == Severity::High)
+                .count();
 
             if findings.is_empty() {
                 println!("{}", "OK".green());

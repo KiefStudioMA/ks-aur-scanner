@@ -5,8 +5,8 @@
 
 use crate::error::{Result, ScanError};
 use crate::validate::validate_package_name;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tracing::{debug, info, warn};
@@ -50,7 +50,8 @@ async fn read_capped_json<T: DeserializeOwned>(resp: reqwest::Response) -> Resul
         }
         body.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&body).map_err(|e| ScanError::Network(format!("Failed to parse response: {e}")))
+    serde_json::from_slice(&body)
+        .map_err(|e| ScanError::Network(format!("Failed to parse response: {e}")))
 }
 
 /// Information about an AUR package from the RPC API
@@ -159,18 +160,19 @@ impl AurClient {
         let url = Self::rpc_url(&["info", package_name])?;
         debug!("Fetching package info from: {}", url);
 
-        let response: RpcResponse = read_capped_json(
-            self.http_client
-                .get(url)
-                .send()
-                .await
-                .map_err(|e| ScanError::Network(format!("Failed to fetch package info: {}", e)))?,
-        )
-        .await?;
+        let response: RpcResponse =
+            read_capped_json(
+                self.http_client.get(url).send().await.map_err(|e| {
+                    ScanError::Network(format!("Failed to fetch package info: {}", e))
+                })?,
+            )
+            .await?;
 
         // Validate response type
         if response.response_type == "error" {
-            let msg = response.error.unwrap_or_else(|| "Unknown error".to_string());
+            let msg = response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
             return Err(ScanError::Network(format!("AUR API error: {}", msg)));
         }
 
@@ -206,7 +208,9 @@ impl AurClient {
 
         // Validate response type
         if response.response_type == "error" {
-            let msg = response.error.unwrap_or_else(|| "Unknown error".to_string());
+            let msg = response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
             return Err(ScanError::Network(format!("AUR API error: {}", msg)));
         }
 
@@ -264,7 +268,10 @@ impl AurClient {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ScanError::Network(format!("Failed to clone AUR repo: {}", stderr)));
+            return Err(ScanError::Network(format!(
+                "Failed to clone AUR repo: {}",
+                stderr
+            )));
         }
         Ok(())
     }
@@ -274,13 +281,18 @@ impl AurClient {
         // First get package info to find the package base
         let info = self.get_package_info(package_name).await?;
 
-        info!("Fetching PKGBUILD for {} (base: {})", package_name, info.package_base);
+        info!(
+            "Fetching PKGBUILD for {} (base: {})",
+            package_name, info.package_base
+        );
 
         // Create temp directory
-        let temp_dir = TempDir::new()
-            .map_err(|e| ScanError::Io(std::io::Error::other(
-                format!("Failed to create temp directory: {}", e),
-            )))?;
+        let temp_dir = TempDir::new().map_err(|e| {
+            ScanError::Io(std::io::Error::other(format!(
+                "Failed to create temp directory: {}",
+                e
+            )))
+        })?;
 
         // Clone the AUR git repo into the temp directory (hardened).
         self.clone_repo(&info.package_base, temp_dir.path()).await?;
@@ -353,18 +365,19 @@ impl AurClient {
 
         debug!("Fetching info for {} packages", package_names.len());
 
-        let response: RpcResponse = read_capped_json(
-            self.http_client
-                .get(url)
-                .send()
-                .await
-                .map_err(|e| ScanError::Network(format!("Failed to fetch package info: {}", e)))?,
-        )
-        .await?;
+        let response: RpcResponse =
+            read_capped_json(
+                self.http_client.get(url).send().await.map_err(|e| {
+                    ScanError::Network(format!("Failed to fetch package info: {}", e))
+                })?,
+            )
+            .await?;
 
         // Validate response type
         if response.response_type == "error" {
-            let msg = response.error.unwrap_or_else(|| "Unknown error".to_string());
+            let msg = response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
             return Err(ScanError::Network(format!("AUR API error: {}", msg)));
         }
 
@@ -516,7 +529,9 @@ mod tests {
     #[tokio::test]
     async fn test_package_not_found() {
         let client = AurClient::new().unwrap();
-        let info = client.get_package_info("this-package-definitely-does-not-exist-12345").await;
+        let info = client
+            .get_package_info("this-package-definitely-does-not-exist-12345")
+            .await;
         assert!(info.is_err());
     }
 

@@ -20,9 +20,15 @@ pub fn run(check: Option<&str>) -> Result<()> {
     println!("  Last updated   : {}", db.updated);
     match active_override_path() {
         Some(p) => println!("  Override file  : {}", p.display().to_string().green()),
-        None => println!("  Override file  : {}", "(none; embedded defaults only)".dimmed()),
+        None => println!(
+            "  Override file  : {}",
+            "(none; embedded defaults only)".dimmed()
+        ),
     }
-    println!("  Indicators     : {}", db.indicator_count().to_string().bold());
+    println!(
+        "  Indicators     : {}",
+        db.indicator_count().to_string().bold()
+    );
     println!(
         "    npm/bun packages {}, fake AUR packages {}, file artifacts {}, domains {}, hashes {}",
         db.npm_packages.len(),
@@ -35,7 +41,11 @@ pub fn run(check: Option<&str>) -> Result<()> {
 
     println!("{}", "Campaigns".cyan().bold());
     for c in &db.campaigns {
-        println!("  {} {}", c.id.green().bold(), format!("({})", c.date).dimmed());
+        println!(
+            "  {} {}",
+            c.id.green().bold(),
+            format!("({})", c.date).dimmed()
+        );
         println!("    {}", c.name.bold());
         if !c.description.is_empty() {
             println!("    {}", c.description);
@@ -76,7 +86,11 @@ fn run_check(db: &IocDatabase, value: &str) -> Result<()> {
     }
 
     if !matched {
-        println!("{} '{}' is not a known indicator.", "OK:".green().bold(), value);
+        println!(
+            "{} '{}' is not a known indicator.",
+            "OK:".green().bold(),
+            value
+        );
     }
     Ok(())
 }

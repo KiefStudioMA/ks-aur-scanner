@@ -61,9 +61,8 @@ impl RuleLoader {
             rule: Vec<Rule>,
         }
 
-        let file: RulesFile = toml::from_str(content).map_err(|e| {
-            ScanError::Config(format!("Failed to parse {}: {}", path.display(), e))
-        })?;
+        let file: RulesFile = toml::from_str(content)
+            .map_err(|e| ScanError::Config(format!("Failed to parse {}: {}", path.display(), e)))?;
 
         // A community rule that omits `file_types` would otherwise deserialize to
         // an empty list, load, count toward the catalog, and never fire (audit

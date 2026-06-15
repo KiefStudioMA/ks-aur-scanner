@@ -102,7 +102,10 @@ impl DiskCache {
     /// file and the entry is never world-readable.
     fn write_atomic(path: &std::path::Path, content: &str) -> Result<()> {
         let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let tmp = dir.join(format!(".{}.tmp", blake3::hash(content.as_bytes()).to_hex()));
+        let tmp = dir.join(format!(
+            ".{}.tmp",
+            blake3::hash(content.as_bytes()).to_hex()
+        ));
         {
             use std::io::Write;
             let mut opts = std::fs::OpenOptions::new();
@@ -127,7 +130,12 @@ impl DiskCache {
 
         let mut entries: Vec<_> = std::fs::read_dir(&self.directory)?
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|ext| ext == "json").unwrap_or(false))
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "json")
+                    .unwrap_or(false)
+            })
             .filter_map(|e| {
                 let metadata = e.metadata().ok()?;
                 let modified = metadata.modified().ok()?;
@@ -329,7 +337,12 @@ impl Cache for DiskCache {
         if self.directory.exists() {
             for entry in std::fs::read_dir(&self.directory)? {
                 let entry = entry?;
-                if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
+                if entry
+                    .path()
+                    .extension()
+                    .map(|e| e == "json")
+                    .unwrap_or(false)
+                {
                     let _ = std::fs::remove_file(entry.path());
                 }
             }
@@ -337,7 +350,6 @@ impl Cache for DiskCache {
         Ok(())
     }
 }
-
 
 /// No-op cache (disabled)
 pub struct NoCache;
@@ -364,14 +376,19 @@ mod tests {
     fn roundtrip_and_dir_is_private() {
         let dir = tempfile::tempdir().unwrap();
         let cache = DiskCache::new(dir.path().join("c"), 8).unwrap();
-        cache.set("k", &"v".to_string(), Duration::from_secs(60)).unwrap();
+        cache
+            .set("k", &"v".to_string(), Duration::from_secs(60))
+            .unwrap();
         let got: Option<String> = cache.get("k").unwrap();
         assert_eq!(got.as_deref(), Some("v"));
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.path().join("c")).unwrap().permissions().mode();
+            let mode = std::fs::metadata(dir.path().join("c"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o700, "cache dir must be owner-only");
         }
     }
@@ -384,14 +401,19 @@ mod tests {
         let cdir = dir.path().join("c");
         let cache = DiskCache::new(cdir.clone(), 8).unwrap();
         // Write a valid entry for "real".
-        cache.set("real", &"trusted".to_string(), Duration::from_secs(60)).unwrap();
+        cache
+            .set("real", &"trusted".to_string(), Duration::from_secs(60))
+            .unwrap();
         // Forge: copy that file's contents to the path for "victim".
         let real_path = cache.key_to_path("real");
         let victim_path = cache.key_to_path("victim");
         std::fs::copy(&real_path, &victim_path).unwrap();
         // Reading "victim" must reject the key-mismatched entry (miss).
         let got: Option<String> = cache.get("victim").unwrap();
-        assert!(got.is_none(), "key-bound entry must not satisfy a different key");
+        assert!(
+            got.is_none(),
+            "key-bound entry must not satisfy a different key"
+        );
     }
 
     #[test]
@@ -400,7 +422,10 @@ mod tests {
         let cache = DiskCache::new(dir.path().join("c"), 8).unwrap();
         std::fs::write(cache.key_to_path("k"), "}{ not json").unwrap();
         let got: Result<Option<String>> = cache.get("k");
-        assert!(matches!(got, Ok(None)), "corrupt entry must be a clean miss");
+        assert!(
+            matches!(got, Ok(None)),
+            "corrupt entry must be a clean miss"
+        );
     }
 
     // --- verdict authenticity / MAC (audit ME-2) -----------------------------

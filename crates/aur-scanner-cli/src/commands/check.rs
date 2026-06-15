@@ -117,8 +117,7 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     // resolved from them); a local dir that claims a different package's name
     // must not silently mask that package's real AUR PKGBUILD.
     for name in &args.package_names {
-        validate_package_name(name)
-            .with_context(|| format!("illegal package name {name:?}"))?;
+        validate_package_name(name).with_context(|| format!("illegal package name {name:?}"))?;
     }
     let requested_roots: std::collections::HashSet<String> =
         args.package_names.iter().cloned().collect();
@@ -139,7 +138,11 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     let opts = ResolveOptions {
         include_optional: args.include_optional,
         // --no-deps => expand nothing past the roots.
-        max_depth: if args.resolve_deps { ResolveOptions::default().max_depth } else { 0 },
+        max_depth: if args.resolve_deps {
+            ResolveOptions::default().max_depth
+        } else {
+            0
+        },
         ..ResolveOptions::default()
     };
     println!("{}", "Resolving dependency tree...".dimmed());
@@ -182,7 +185,9 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         // (a transitive dependency), surface it: a local PKGBUILD claiming a
         // dependency's name would otherwise mask that dependency's real AUR
         // source from the scan.
-        let local_pkgbuild = local_dir_by_name.get(&node.name).map(|d| d.join("PKGBUILD"));
+        let local_pkgbuild = local_dir_by_name
+            .get(&node.name)
+            .map(|d| d.join("PKGBUILD"));
         if local_pkgbuild.is_some()
             && classify_local_dir(&node.name, &requested_roots)
                 == LocalDirBinding::UnrequestedShadow
@@ -194,19 +199,29 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                 node.name
             );
         }
-        let origin = if local_pkgbuild.is_some() { "local" } else { "aur" };
-        print!("{} {} {} ", "Scanning:".dimmed(), node.name.white(), format!("({origin})").dimmed());
+        let origin = if local_pkgbuild.is_some() {
+            "local"
+        } else {
+            "aur"
+        };
+        print!(
+            "{} {} {} ",
+            "Scanning:".dimmed(),
+            node.name.white(),
+            format!("({origin})").dimmed()
+        );
         io::stdout().flush().ok();
 
         let result = match &local_pkgbuild {
-            Some(p) => scanner.scan_pkgbuild(p).await.map_err(|e| format!("scan error: {e}")),
+            Some(p) => scanner
+                .scan_pkgbuild(p)
+                .await
+                .map_err(|e| format!("scan error: {e}")),
             None => match client.fetch_pkgbuild(&node.name).await {
-                Ok(fetched) => {
-                    scanner
-                        .scan_pkgbuild(&fetched.pkgbuild_path)
-                        .await
-                        .map_err(|e| format!("scan error: {e}"))
-                }
+                Ok(fetched) => scanner
+                    .scan_pkgbuild(&fetched.pkgbuild_path)
+                    .await
+                    .map_err(|e| format!("scan error: {e}")),
                 Err(e) => Err(format!("fetch error: {e}")),
             },
         };
@@ -216,7 +231,11 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                 total_critical += scan.critical;
                 total_high += scan.high;
                 if let Some(threshold) = args.fail_on {
-                    if result.findings.iter().any(|f| f.severity.is_at_least(threshold)) {
+                    if result
+                        .findings
+                        .iter()
+                        .any(|f| f.severity.is_at_least(threshold))
+                    {
                         gate_tripped = true;
                     }
                 }
@@ -237,15 +256,17 @@ pub async fn run(args: CheckArgs) -> Result<()> {
 
     // 3. Render the reviewable tree.
     println!();
-    println!("{}", "Dependency tree (review before installing):".cyan().bold());
+    println!(
+        "{}",
+        "Dependency tree (review before installing):".cyan().bold()
+    );
     print!("{}", sbom::render_tree(&graph, &scans));
     print_orphans(&graph);
 
     // Loudly call out opaque boundaries: packages that fetch/run external code.
     // The scanner intentionally does NOT follow these, so their real behavior
     // is unknown -- this is the "it's trying to run something from <url>" case.
-    let opaque: Vec<(&String, &ComponentScan)> =
-        scans.iter().filter(|(_, s)| s.opaque).collect();
+    let opaque: Vec<(&String, &ComponentScan)> = scans.iter().filter(|(_, s)| s.opaque).collect();
     if !opaque.is_empty() {
         println!();
         println!(
@@ -280,8 +301,13 @@ pub async fn run(args: CheckArgs) -> Result<()> {
             &sbom::now_timestamp(),
         );
         let json = serde_json::to_string_pretty(&bom)?;
-        std::fs::write(path, json).with_context(|| format!("writing SBOM to {}", path.display()))?;
-        println!("{} CycloneDX SBOM written to {}", "SBOM:".green().bold(), path.display());
+        std::fs::write(path, json)
+            .with_context(|| format!("writing SBOM to {}", path.display()))?;
+        println!(
+            "{} CycloneDX SBOM written to {}",
+            "SBOM:".green().bold(),
+            path.display()
+        );
         println!();
     }
 
@@ -319,7 +345,12 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     if args.interactive && (total_critical > 0 || total_high > 0) {
         println!();
         if total_critical > 0 {
-            println!("{}", "WARNING: Critical security issues in the dependency tree!".red().bold());
+            println!(
+                "{}",
+                "WARNING: Critical security issues in the dependency tree!"
+                    .red()
+                    .bold()
+            );
         }
         print!("{} ", "Proceed with installation? [y/N]:".yellow().bold());
         io::stdout().flush()?;
@@ -340,11 +371,17 @@ pub async fn run(args: CheckArgs) -> Result<()> {
 }
 
 fn print_findings_for(pkg: &str, findings: &[aur_scanner_core::Finding], min: Option<Severity>) {
-    for f in findings
-        .iter()
-        .filter(|f| min.map(|m| f.severity <= m).unwrap_or(f.severity <= Severity::High))
-    {
-        println!("    {} {} [{}] {}", "·".dimmed(), pkg.dimmed(), f.severity, f.title);
+    for f in findings.iter().filter(|f| {
+        min.map(|m| f.severity <= m)
+            .unwrap_or(f.severity <= Severity::High)
+    }) {
+        println!(
+            "    {} {} [{}] {}",
+            "·".dimmed(),
+            pkg.dimmed(),
+            f.severity,
+            f.title
+        );
     }
 }
 

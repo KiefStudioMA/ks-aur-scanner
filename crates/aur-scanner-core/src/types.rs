@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Severity levels for security findings
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Critical security issue - likely malicious
@@ -156,7 +158,9 @@ pub struct ScanResult {
 impl ScanResult {
     /// Check if any critical findings were found
     pub fn has_critical(&self) -> bool {
-        self.findings.iter().any(|f| f.severity == Severity::Critical)
+        self.findings
+            .iter()
+            .any(|f| f.severity == Severity::Critical)
     }
 
     /// Check if any findings at or above the given severity were found. Routes
@@ -164,7 +168,9 @@ impl ScanResult {
     /// stay covered by the pinning test (and a variant reorder can't silently
     /// invert this gate).
     pub fn has_severity_or_above(&self, severity: Severity) -> bool {
-        self.findings.iter().any(|f| f.severity.is_at_least(severity))
+        self.findings
+            .iter()
+            .any(|f| f.severity.is_at_least(severity))
     }
 
     /// Get findings filtered by severity

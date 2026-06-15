@@ -71,8 +71,17 @@ mod tests {
     #[test]
     fn accepts_real_names() {
         for ok in [
-            "paru", "yay", "google-chrome", "lib32-glibc", "python-pip",
-            "gtk+", "c++", "foo.bar", "a_b", "node@18", "0ad",
+            "paru",
+            "yay",
+            "google-chrome",
+            "lib32-glibc",
+            "python-pip",
+            "gtk+",
+            "c++",
+            "foo.bar",
+            "a_b",
+            "node@18",
+            "0ad",
         ] {
             assert!(is_valid_package_name(ok), "should accept {ok:?}");
         }
@@ -87,10 +96,10 @@ mod tests {
             "../../etc/passwd",
             "../../../.config/systemd/user",
             "a/b",
-            "-rf",          // leading hyphen -> arg injection
-            ".hidden",      // leading dot
+            "-rf",     // leading hyphen -> arg injection
+            ".hidden", // leading dot
             "x#@evil",
-            "foo bar",      // whitespace
+            "foo bar", // whitespace
             "foo&arg[]=bar",
             "name\ninjected",
             "pkg;rm -rf /",

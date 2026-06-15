@@ -137,7 +137,12 @@ impl SecurityAnalyzer for IocAnalyzer {
     async fn analyze(&self, context: &AnalysisContext) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        self.scan_file(context, &context.file_path, &context.pkgbuild.raw_content, &mut findings);
+        self.scan_file(
+            context,
+            &context.file_path,
+            &context.pkgbuild.raw_content,
+            &mut findings,
+        );
 
         if let Some(install) = &context.install_script {
             self.scan_file(context, &install.path, &install.content, &mut findings);
@@ -196,7 +201,9 @@ mod tests {
         let findings = analyzer.analyze(&context).await.unwrap();
         // The obfuscated atomic-lockfile is caught only after de-obfuscation.
         assert!(
-            findings.iter().any(|f| f.metadata["ioc_value"] == "atomic-lockfile"),
+            findings
+                .iter()
+                .any(|f| f.metadata["ioc_value"] == "atomic-lockfile"),
             "obfuscated IOC must be caught: {findings:?}"
         );
         // The plain js-digest indicator is reported exactly once, not duplicated
@@ -205,7 +212,10 @@ mod tests {
             .iter()
             .filter(|f| f.metadata["ioc_value"] == "js-digest")
             .count();
-        assert_eq!(js_digest, 1, "plain IOC must not be double-reported: {findings:?}");
+        assert_eq!(
+            js_digest, 1,
+            "plain IOC must not be double-reported: {findings:?}"
+        );
     }
 
     #[tokio::test]

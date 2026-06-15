@@ -38,7 +38,13 @@ fn fixture_dirs(kind: &str) -> Vec<PathBuf> {
 /// Run `aur-scan scan <dir> --format <fmt>` and return (stdout, stderr, code).
 fn scan(dir: &Path, fmt: &str) -> (Vec<u8>, Vec<u8>, i32) {
     let out = Command::new(bin())
-        .args(["scan", dir.to_str().unwrap(), "--include-info", "--format", fmt])
+        .args([
+            "scan",
+            dir.to_str().unwrap(),
+            "--include-info",
+            "--format",
+            fmt,
+        ])
         .output()
         .expect("failed to run aur-scan");
     (out.stdout, out.stderr, out.status.code().unwrap_or(-1))
@@ -48,8 +54,12 @@ fn parse_findings(stdout: &[u8]) -> Vec<serde_json::Value> {
     // from_slice (not a lenient reader) rejects ANY trailing bytes after the
     // JSON document -- this is the exact assertion the summary-on-stdout bug
     // failed.
-    let v: serde_json::Value = serde_json::from_slice(stdout)
-        .unwrap_or_else(|e| panic!("stdout was not a single clean JSON document: {e}\n--- stdout ---\n{}", String::from_utf8_lossy(stdout)));
+    let v: serde_json::Value = serde_json::from_slice(stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout was not a single clean JSON document: {e}\n--- stdout ---\n{}",
+            String::from_utf8_lossy(stdout)
+        )
+    });
     v["findings"].as_array().cloned().unwrap_or_default()
 }
 
@@ -62,13 +72,19 @@ fn severities(findings: &[serde_json::Value]) -> (usize, usize) {
 fn json_stdout_is_clean_and_parseable() {
     // Regression for the summary-corrupts-stdout bug: every fixture's JSON
     // output must parse with no trailing data.
-    for dir in fixture_dirs("malicious").into_iter().chain(fixture_dirs("clean")) {
+    for dir in fixture_dirs("malicious")
+        .into_iter()
+        .chain(fixture_dirs("clean"))
+    {
         let (stdout, _err, _code) = scan(&dir, "json");
         let findings = parse_findings(&stdout);
         // Sanity: each finding has the fields downstream tooling relies on.
         for f in &findings {
             assert!(f["id"].is_string(), "finding missing id in {dir:?}");
-            assert!(f["severity"].is_string(), "finding missing severity in {dir:?}");
+            assert!(
+                f["severity"].is_string(),
+                "finding missing severity in {dir:?}"
+            );
         }
     }
 }
@@ -77,9 +93,12 @@ fn json_stdout_is_clean_and_parseable() {
 fn sarif_stdout_is_valid() {
     let dir = &fixture_dirs("malicious")[0];
     let (stdout, _err, _code) = scan(dir, "sarif");
-    let v: serde_json::Value = serde_json::from_slice(&stdout)
-        .expect("SARIF stdout must be a single clean JSON document");
-    assert!(v["runs"][0]["results"].is_array(), "SARIF missing runs[0].results");
+    let v: serde_json::Value =
+        serde_json::from_slice(&stdout).expect("SARIF stdout must be a single clean JSON document");
+    assert!(
+        v["runs"][0]["results"].is_array(),
+        "SARIF missing runs[0].results"
+    );
 }
 
 #[test]
@@ -116,7 +135,10 @@ fn every_emitted_finding_id_exists_in_the_catalog() {
     let catalog = Catalog::load();
     let builtin: std::collections::HashSet<String> =
         catalog.entries.iter().map(|e| e.id.clone()).collect();
-    for dir in fixture_dirs("malicious").into_iter().chain(fixture_dirs("clean")) {
+    for dir in fixture_dirs("malicious")
+        .into_iter()
+        .chain(fixture_dirs("clean"))
+    {
         let (stdout, _err, _code) = scan(&dir, "json");
         for f in parse_findings(&stdout) {
             let id = f["id"].as_str().unwrap_or("");
@@ -158,6 +180,14 @@ fn fail_on_sets_exit_code() {
             .unwrap_or(-1)
     };
 
-    assert_eq!(code(mal, "critical"), 1, "malicious must exit 1 under --fail-on critical");
-    assert_eq!(code(clean, "critical"), 0, "clean must exit 0 under --fail-on critical");
+    assert_eq!(
+        code(mal, "critical"),
+        1,
+        "malicious must exit 1 under --fail-on critical"
+    );
+    assert_eq!(
+        code(clean, "critical"),
+        0,
+        "clean must exit 0 under --fail-on critical"
+    );
 }

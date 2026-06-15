@@ -43,7 +43,10 @@ fn scratch() -> PathBuf {
 /// A file the scanner reads (so a payload in it counts). Mirrors the scanner's
 /// own inputs: the PKGBUILD and any install scriptlet / shipped shell script.
 fn is_scannable(p: &Path) -> bool {
-    let n = p.file_name().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let n = p
+        .file_name()
+        .map(|x| x.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
     n == "pkgbuild" || n.ends_with(".install") || n.ends_with(".sh") || n.ends_with(".bash")
 }
 
@@ -71,10 +74,14 @@ fn copy_into(src: &Path, dst: &Path, tf: Option<fn(&str) -> Option<String>>, cha
                     *changed = true;
                     std::fs::write(&target, mutated).expect("write mutated");
                 }
-                None => std::fs::copy(&path, &target).map(|_| ()).expect("copy file"),
+                None => std::fs::copy(&path, &target)
+                    .map(|_| ())
+                    .expect("copy file"),
             }
         } else {
-            std::fs::copy(&path, &target).map(|_| ()).expect("copy file");
+            std::fs::copy(&path, &target)
+                .map(|_| ())
+                .expect("copy file");
         }
     }
 }
@@ -111,10 +118,17 @@ fn transforms() -> Vec<Transform> {
             )
         }),
         ("interpreter-swap bash→dash", |s| {
-            changed(s, s.replace("| bash", "| dash").replace("bash -c", "dash -c"))
+            changed(
+                s,
+                s.replace("| bash", "| dash").replace("bash -c", "dash -c"),
+            )
         }),
         ("interpreter-swap →busybox sh", |s| {
-            changed(s, s.replace("| sh", "| busybox sh").replace("| bash", "| busybox sh"))
+            changed(
+                s,
+                s.replace("| sh", "| busybox sh")
+                    .replace("| bash", "| busybox sh"),
+            )
         }),
         ("printf-assembly of curl", |s| {
             changed(s, s.replacen("curl ", "$(printf '\\x63url') ", 1))
@@ -125,7 +139,8 @@ fn transforms() -> Vec<Transform> {
             }
             changed(
                 s,
-                s.replacen("| bash", "| $_r", 1).replacen("{\n", "{\n  _r=bash\n", 1),
+                s.replacen("| bash", "| $_r", 1)
+                    .replacen("{\n", "{\n  _r=bash\n", 1),
             )
         }),
         ("IFS-for-space after fetcher", |s| {
@@ -170,7 +185,10 @@ fn every_malicious_fixture_resists_evasion_transforms() {
         let (base, _) = materialize(&src, None);
         let base_gates = gates_dir(&base);
         let _ = std::fs::remove_dir_all(&base);
-        assert!(base_gates, "baseline: malicious fixture `{name}` does not gate");
+        assert!(
+            base_gates,
+            "baseline: malicious fixture `{name}` does not gate"
+        );
 
         for (tname, tf) in &transforms {
             let (variant, did) = materialize(&src, Some(*tf));
@@ -188,7 +206,10 @@ fn every_malicious_fixture_resists_evasion_transforms() {
         "evasion fuzzer: {applied} mutated variants tested across the malicious corpus, {} evasion(s)",
         evasions.len()
     );
-    assert!(applied > 0, "no transforms applied to any fixture (harness broken)");
+    assert!(
+        applied > 0,
+        "no transforms applied to any fixture (harness broken)"
+    );
     assert!(
         evasions.is_empty(),
         "{} evasion(s) slipped the gate ({} variants tested):\n{}",

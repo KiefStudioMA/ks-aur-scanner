@@ -23,16 +23,56 @@ struct Marker {
 /// Behaviours whose *introduction* on an update is noteworthy. Deliberately
 /// coarse: a legitimate package newly pulling npm is itself worth a heads-up.
 const MARKERS: &[Marker] = &[
-    Marker { id: "npm", label: "npm package install", needles: &["npm install", "npm i ", "npm ci"] },
-    Marker { id: "pnpm", label: "pnpm install", needles: &["pnpm install", "pnpm add"] },
-    Marker { id: "yarn", label: "yarn install", needles: &["yarn add", "yarn install"] },
-    Marker { id: "bun", label: "bun install", needles: &["bun install", "bun add", "bunx"] },
-    Marker { id: "pipe-shell", label: "pipe to shell", needles: &["| sh", "|sh", "| bash", "|bash"] },
-    Marker { id: "eval", label: "eval", needles: &["eval "] },
-    Marker { id: "base64-decode", label: "base64 decode", needles: &["base64 -d", "base64 --decode"] },
-    Marker { id: "reverse-shell", label: "raw TCP socket", needles: &["/dev/tcp/"] },
-    Marker { id: "ebpf", label: "eBPF object", needles: &[".bpf.c", ".bpf.o"] },
-    Marker { id: "curl-net", label: "curl/wget fetch", needles: &["curl ", "wget "] },
+    Marker {
+        id: "npm",
+        label: "npm package install",
+        needles: &["npm install", "npm i ", "npm ci"],
+    },
+    Marker {
+        id: "pnpm",
+        label: "pnpm install",
+        needles: &["pnpm install", "pnpm add"],
+    },
+    Marker {
+        id: "yarn",
+        label: "yarn install",
+        needles: &["yarn add", "yarn install"],
+    },
+    Marker {
+        id: "bun",
+        label: "bun install",
+        needles: &["bun install", "bun add", "bunx"],
+    },
+    Marker {
+        id: "pipe-shell",
+        label: "pipe to shell",
+        needles: &["| sh", "|sh", "| bash", "|bash"],
+    },
+    Marker {
+        id: "eval",
+        label: "eval",
+        needles: &["eval "],
+    },
+    Marker {
+        id: "base64-decode",
+        label: "base64 decode",
+        needles: &["base64 -d", "base64 --decode"],
+    },
+    Marker {
+        id: "reverse-shell",
+        label: "raw TCP socket",
+        needles: &["/dev/tcp/"],
+    },
+    Marker {
+        id: "ebpf",
+        label: "eBPF object",
+        needles: &[".bpf.c", ".bpf.o"],
+    },
+    Marker {
+        id: "curl-net",
+        label: "curl/wget fetch",
+        needles: &["curl ", "wget "],
+    },
 ];
 
 /// One package's last-seen fingerprint.
@@ -87,7 +127,11 @@ impl ProvenanceStore {
             },
             Err(_) => HashMap::new(),
         };
-        Self { path, snapshots, dirty: false }
+        Self {
+            path,
+            snapshots,
+            dirty: false,
+        }
     }
 
     /// Compute the marker ids present in `content`.
@@ -104,13 +148,23 @@ impl ProvenanceStore {
     }
 
     fn label_for(id: &str) -> &'static str {
-        MARKERS.iter().find(|m| m.id == id).map(|m| m.label).unwrap_or("risky behavior")
+        MARKERS
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.label)
+            .unwrap_or("risky behavior")
     }
 
     /// Evaluate a package's current content against its last-seen snapshot,
     /// returning findings for newly-introduced risk markers, and record the
     /// new baseline. `now` is an RFC3339 timestamp supplied by the caller.
-    pub fn evaluate(&mut self, package: &str, content: &str, now: &str, file: &Path) -> Vec<Finding> {
+    pub fn evaluate(
+        &mut self,
+        package: &str,
+        content: &str,
+        now: &str,
+        file: &Path,
+    ) -> Vec<Finding> {
         let mut findings = Vec::new();
         let current_markers = Self::markers_in(content);
         let sha = sha256_hex(content);
@@ -126,14 +180,23 @@ impl ProvenanceStore {
                     id: "PROV-001".to_string(),
                     severity: Severity::High,
                     category: Category::SuspiciousMetadata,
-                    title: format!("Package gained risky behavior since last scan: {}", labels.join(", ")),
+                    title: format!(
+                        "Package gained risky behavior since last scan: {}",
+                        labels.join(", ")
+                    ),
                     description: format!(
                         "'{}' introduced behavior it did not have at the previous scan ({}). \
                          A package suddenly fetching/executing code on update is the primary \
                          tell of an AUR hijack.",
-                        package, labels.join(", ")
+                        package,
+                        labels.join(", ")
                     ),
-                    location: Location { file: file.to_path_buf(), line: None, column: None, snippet: None },
+                    location: Location {
+                        file: file.to_path_buf(),
+                        line: None,
+                        column: None,
+                        snippet: None,
+                    },
                     recommendation:
                         "Review the PKGBUILD/install diff before building. If the new behavior \
                          is unexplained, do not build and report the package."
@@ -147,11 +210,19 @@ impl ProvenanceStore {
             }
         }
 
-        let changed = self.snapshots.get(package).map(|s| s.content_sha256 != sha).unwrap_or(true);
+        let changed = self
+            .snapshots
+            .get(package)
+            .map(|s| s.content_sha256 != sha)
+            .unwrap_or(true);
         if changed {
             self.snapshots.insert(
                 package.to_string(),
-                Snapshot { content_sha256: sha, markers: current_markers, last_seen: now.to_string() },
+                Snapshot {
+                    content_sha256: sha,
+                    markers: current_markers,
+                    last_seen: now.to_string(),
+                },
             );
             self.dirty = true;
         }
@@ -194,13 +265,22 @@ mod tests {
     use super::*;
 
     fn store() -> ProvenanceStore {
-        ProvenanceStore { path: PathBuf::from("/dev/null"), snapshots: HashMap::new(), dirty: false }
+        ProvenanceStore {
+            path: PathBuf::from("/dev/null"),
+            snapshots: HashMap::new(),
+            dirty: false,
+        }
     }
 
     #[test]
     fn first_sighting_is_baseline_no_finding() {
         let mut s = store();
-        let f = s.evaluate("pkg", "build() { make }", "2026-06-13T00:00:00Z", Path::new("PKGBUILD"));
+        let f = s.evaluate(
+            "pkg",
+            "build() { make }",
+            "2026-06-13T00:00:00Z",
+            Path::new("PKGBUILD"),
+        );
         assert!(f.is_empty());
         assert_eq!(s.tracked(), 1);
     }
@@ -254,7 +334,8 @@ mod tests {
     fn config_loads_from_toml_or_defaults() {
         use crate::ScanConfig;
         // Missing file -> defaults.
-        let cfg = ScanConfig::from_toml_file_or_default(Path::new("/nonexistent/aur.toml")).unwrap();
+        let cfg =
+            ScanConfig::from_toml_file_or_default(Path::new("/nonexistent/aur.toml")).unwrap();
         assert_eq!(cfg.timeout_seconds, 30);
     }
 }

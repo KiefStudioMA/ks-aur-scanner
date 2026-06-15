@@ -298,8 +298,9 @@ impl SecurityAnalyzer for SourceAnalyzer {
         // only when BOTH hosts resolve to a recognized forge and they disagree, so
         // a normal `url=project.org` + `source=github.com/releases` does not fire.
         if let Some(url) = &context.pkgbuild.url {
-            if let Some(url_forge) =
-                crate::neturl::extract_host(url).as_deref().and_then(forge_key)
+            if let Some(url_forge) = crate::neturl::extract_host(url)
+                .as_deref()
+                .and_then(forge_key)
             {
                 for source in &context.pkgbuild.source {
                     if source.is_vcs() {
@@ -380,7 +381,7 @@ impl SecurityAnalyzer for SourceAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{StaticParser, PkgbuildParser};
+    use crate::parser::{PkgbuildParser, StaticParser};
     use crate::types::ScanConfig;
     use std::path::PathBuf;
 
@@ -421,14 +422,20 @@ source=("http://example.com/file.tar.gz")
             "pkgname=t\npkgver=1\npkgrel=1\nsource=(\"git+https://github.com/u/r.git#branch=main\")\n",
         );
         let f = analyzer.analyze(&movable).await.unwrap();
-        assert!(f.iter().any(|x| x.id == "SRC-007"), "movable ref should trip SRC-007");
+        assert!(
+            f.iter().any(|x| x.id == "SRC-007"),
+            "movable ref should trip SRC-007"
+        );
 
         // Pinned commit -> no SRC-007.
         let pinned = create_test_context(
             "pkgname=t\npkgver=1\npkgrel=1\nsource=(\"git+https://github.com/u/r.git#commit=deadbeefcafebabe\")\n",
         );
         let f = analyzer.analyze(&pinned).await.unwrap();
-        assert!(!f.iter().any(|x| x.id == "SRC-007"), "pinned commit must not trip SRC-007");
+        assert!(
+            !f.iter().any(|x| x.id == "SRC-007"),
+            "pinned commit must not trip SRC-007"
+        );
     }
 
     #[tokio::test]
@@ -455,8 +462,9 @@ source=("https://pastebin.com/raw/abc123")
         // host that merely CONTAINS a trusted host as a substring is NOT.
         async fn fires(src: &str) -> bool {
             let analyzer = SourceAnalyzer::new();
-            let ctx =
-                create_test_context(&format!("pkgname=t\npkgver=1\npkgrel=1\nsource=(\"{src}\")\n"));
+            let ctx = create_test_context(&format!(
+                "pkgname=t\npkgver=1\npkgrel=1\nsource=(\"{src}\")\n"
+            ));
             analyzer
                 .analyze(&ctx)
                 .await

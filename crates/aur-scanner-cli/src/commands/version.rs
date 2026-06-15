@@ -1,7 +1,7 @@
 //! Version command implementation
 
-use colored::Colorize;
 use super::banner;
+use colored::Colorize;
 
 /// Run the version command
 pub fn run() {
@@ -29,7 +29,10 @@ pub fn run() {
     println!("  {} Pacman hook", "-".dimmed());
     println!();
 
-    println!("{} https://github.com/KiefStudioMA/ks-aur-scanner", "Repository:".dimmed());
+    println!(
+        "{} https://github.com/KiefStudioMA/ks-aur-scanner",
+        "Repository:".dimmed()
+    );
     println!("{} https://kief.studio", "Website:".dimmed());
     println!();
 }

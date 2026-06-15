@@ -111,12 +111,26 @@ fn write_summary<W: std::io::Write>(result: &ScanResult, w: &mut W) -> std::io::
     if result.findings.is_empty() {
         writeln!(w, "{}", "No security issues found.".green().bold())?;
     } else {
-        writeln!(w, "Found {} issue(s):", result.findings.len().to_string().bold())?;
+        writeln!(
+            w,
+            "Found {} issue(s):",
+            result.findings.len().to_string().bold()
+        )?;
         if *critical > 0 {
-            writeln!(w, "  {} {}", critical.to_string().red().bold(), "CRITICAL".red())?;
+            writeln!(
+                w,
+                "  {} {}",
+                critical.to_string().red().bold(),
+                "CRITICAL".red()
+            )?;
         }
         if *high > 0 {
-            writeln!(w, "  {} {}", high.to_string().yellow().bold(), "HIGH".yellow())?;
+            writeln!(
+                w,
+                "  {} {}",
+                high.to_string().yellow().bold(),
+                "HIGH".yellow()
+            )?;
         }
         if *medium > 0 {
             writeln!(w, "  {} {}", medium.to_string().cyan(), "MEDIUM".cyan())?;

@@ -15,14 +15,22 @@ pub fn print_banner() {
     println!("{}", "╔╝ ══║═╝╔═║║ ║╔╔╝═╝══║║  ╔═║║ ║║ ║╔═╝╔╔╝".cyan());
     println!("{}", "╝ ╝══╝  ╝ ╝══╝╝ ╝  ══╝══╝╝ ╝╝ ╝╝ ╝══╝╝ ╝".cyan());
     println!();
-    println!("  {} v{}  |  https://kief.studio", "Kief Studio".white().bold(), VERSION);
+    println!(
+        "  {} v{}  |  https://kief.studio",
+        "Kief Studio".white().bold(),
+        VERSION
+    );
     println!();
 }
 
 /// Print a compact header for subcommands
 pub fn print_header(title: &str) {
     println!();
-    println!("{} {}", "AUR Security Scanner".cyan().bold(), format!("| {}", title).dimmed());
+    println!(
+        "{} {}",
+        "AUR Security Scanner".cyan().bold(),
+        format!("| {}", title).dimmed()
+    );
     println!("{}", "=".repeat(60).dimmed());
 }
 
@@ -38,7 +46,13 @@ pub fn print_box(lines: &[&str]) {
 
     println!("{}", format!("+{}+", "-".repeat(width - 2)).dimmed());
     for line in lines {
-        println!("{} {:<width$} {}", "|".dimmed(), line, "|".dimmed(), width = max_len);
+        println!(
+            "{} {:<width$} {}",
+            "|".dimmed(),
+            line,
+            "|".dimmed(),
+            width = max_len
+        );
     }
     println!("{}", format!("+{}+", "-".repeat(width - 2)).dimmed());
 }
@@ -71,11 +85,13 @@ pub fn status_fail() -> String {
 /// Print a progress indicator
 pub fn progress(current: usize, total: usize, item: &str) {
     let pct = (current * 100).checked_div(total).unwrap_or(0);
-    print!("\r{} [{}/{}] {}...",
-           format!("{}%", pct).cyan(),
-           current,
-           total,
-           item);
+    print!(
+        "\r{} [{}/{}] {}...",
+        format!("{}%", pct).cyan(),
+        current,
+        total,
+        item
+    );
     use std::io::Write;
     std::io::stdout().flush().ok();
 }
