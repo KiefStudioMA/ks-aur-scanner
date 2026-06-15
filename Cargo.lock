@@ -163,7 +163,9 @@ version = "1.1.0-rc1"
 dependencies = [
  "anyhow",
  "aur-scanner-core",
+ "chrono",
  "colored",
+ "serde_json",
  "tokio",
  "tracing",
 ]

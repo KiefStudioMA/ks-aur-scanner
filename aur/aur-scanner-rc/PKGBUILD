@@ -27,7 +27,7 @@ depends=('gcc-libs' 'openssl')
 makedepends=('cargo' 'clang' 'git')
 provides=('aur-scan')
 conflicts=('aur-scanner' 'aur-scanner-git' 'ks-aur-scanner')
-options=('!debug')
+options=('!debug' '!strip')
 # Source is the GPG-signed pre-release tag, verified against our signing key.
 # Integrity comes from git + the tag signature (validpgpkeys), which is stronger
 # than hashing a GitHub-generated tarball -- so sha256sums is intentionally SKIP.

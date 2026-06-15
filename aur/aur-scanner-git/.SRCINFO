@@ -16,6 +16,7 @@ pkgbase = aur-scanner-git
 	conflicts = aur-scanner
 	conflicts = ks-aur-scanner
 	options = !debug
+	options = !strip
 	source = git+https://github.com/KiefStudioMA/ks-aur-scanner.git
 	validpgpkeys = 25631EAE3F43999050B7D7021132BF893C33FB51
 	sha256sums = SKIP
