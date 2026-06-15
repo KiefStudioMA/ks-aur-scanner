@@ -35,7 +35,9 @@ end
 # packages, and fills _AUR_SCAN_PKGS with the package operands. Bias: scan
 # whenever an install is possible (fail toward scanning, never silently skip).
 function _aur_scan_classify
-    set -g _AUR_SCAN_INSTALL 0
+    set -g _AUR_SCAN_IS_INSTALL 0
+    set -g _AUR_SCAN_IS_UPGRADE 0
+    set -g _AUR_SCAN_IS_GETPKGBUILD 0
     set -g _AUR_SCAN_PKGS
     set -l op ""
     set -l mods ""
@@ -56,6 +58,12 @@ function _aur_scan_classify
                 set op "$op"Q
             case '--remove'
                 set op "$op"R
+            case '--getpkgbuild'
+                set op "$op"G
+            case '--show'
+                set op "$op"P
+            case '--sysupgrade'
+                set mods "$mods"u
             case '--search'
                 set mods "$mods"s
             case '--info'
@@ -83,28 +91,46 @@ function _aur_scan_classify
     end
 
     set -l is_sync 0
-    set -l is_up 0
+    set -l is_upfile 0
+    set -l is_getpkgbuild 0
+    set -l sysupgrade 0
     set -l non_install 0
     set -l readonly_sync 0
     string match -q '*S*' -- $op; and set is_sync 1
-    string match -q '*U*' -- $op; and set is_up 1
-    string match -qr '[QRFDTV]' -- $op; and set non_install 1
+    string match -q '*U*' -- $op; and set is_upfile 1
+    string match -q '*G*' -- $op; and set is_getpkgbuild 1
+    string match -q '*u*' -- $mods; and set sysupgrade 1
+    # Never-install ops: pacman's QRFDTV plus -P (--show). -G handled below.
+    string match -qr '[QRFDTVP]' -- $op; and set non_install 1
     # Read-only sync sub-operations: search/info/list/groups/clean/print.
     string match -qr '[silgcp]' -- $mods; and set readonly_sync 1
 
-    if test "$non_install" = "1" -a "$is_sync" = "0" -a "$is_up" = "0"
+    # -G/--getpkgbuild only downloads a PKGBUILD to inspect -- scanned on opt-in.
+    if test "$is_getpkgbuild" = "1"
+        if test (count $_AUR_SCAN_PKGS) -gt 0
+            set -g _AUR_SCAN_IS_GETPKGBUILD 1
+        end
+        return
+    end
+    # Passthrough: a non-install op that is not also a sync/upgrade, or a
+    # read-only sync sub-op (search/info/list/...).
+    if test "$non_install" = "1" -a "$is_sync" = "0" -a "$is_upfile" = "0"
         return
     end
     if test "$is_sync" = "1" -a "$readonly_sync" = "1"
         return
     end
-    if test \( "$is_sync" = "1" -o "$is_up" = "1" \) -a (count $_AUR_SCAN_PKGS) -gt 0
-        set -g _AUR_SCAN_INSTALL 1
-        return
+    # System upgrade: -Syu/-Su, or the helper default (no op + no operands, e.g.
+    # bare `yay`). Packages aren't named, so the gate scans the AUR update set.
+    if test "$is_sync" = "1" -a "$sysupgrade" = "1"
+        set -g _AUR_SCAN_IS_UPGRADE 1
+    else if test -z "$op" -a (count $_AUR_SCAN_PKGS) -eq 0
+        set -g _AUR_SCAN_IS_UPGRADE 1
     end
-    # No recognized operation but bare operands present (helpers treat as install).
-    if test -z "$op" -a (count $_AUR_SCAN_PKGS) -gt 0
-        set -g _AUR_SCAN_INSTALL 1
+    # Named install: operands that are not a read-only op (covers -S pkg, bare
+    # `helper pkg`, yay -Y pkg). The pacman hook backstops the -Y menu selection.
+    if test (count $_AUR_SCAN_PKGS) -gt 0 -a "$readonly_sync" = "0"
+        set -g _AUR_SCAN_IS_INSTALL 1
     end
 end
 
@@ -119,19 +145,42 @@ function _aur_scan_gate
     end
 
     _aur_scan_classify $argv
-    if test "$_AUR_SCAN_INSTALL" = "1"
-        # Race-free mode: scan the exact bytes, then build them in dep order.
-        if test "$AUR_SCAN_MODE" = "install"
-            aur-scan install $_AUR_SCAN_PKGS
-            return $status
-        end
 
-        echo "AUR Security Scanner: Pre-checking packages..."
+    # Race-free mode applies to a NAMED install that is NOT also a system upgrade
+    # (a `-Syu pkg` must still let the helper do the upgrade).
+    if test "$_AUR_SCAN_IS_INSTALL" = "1" -a "$_AUR_SCAN_IS_UPGRADE" = "0" -a "$AUR_SCAN_MODE" = "install"
+        aur-scan install $_AUR_SCAN_PKGS
+        return $status
+    end
+
+    # Assemble the packages to pre-scan from the classified action(s) and the
+    # user's coverage settings (secure-by-default).
+    set -l to_scan
+    if test "$_AUR_SCAN_IS_INSTALL" = "1"
+        set -a to_scan $_AUR_SCAN_PKGS
+    end
+    # -G/--getpkgbuild: opt-in (default off) -- only fetches a PKGBUILD to review.
+    if test "$_AUR_SCAN_IS_GETPKGBUILD" = "1" -a "$AUR_SCAN_SCAN_GETPKGBUILD" = "1"
+        set -a to_scan $_AUR_SCAN_PKGS
+    end
+    # System upgrade: scan each AUR package with a pending update (default on;
+    # set AUR_SCAN_SCAN_UPGRADES=0 to disable).
+    if test "$_AUR_SCAN_IS_UPGRADE" = "1" -a "$AUR_SCAN_SCAN_UPGRADES" != "0"
+        set -l upd (command $helper -Quaq 2>/dev/null)
+        if test (count $upd) -gt 0
+            set -a to_scan $upd
+        end
+    end
+
+    if test (count $to_scan) -gt 0
+        # De-duplicate, preserving order.
+        set to_scan (printf '%s\n' $to_scan | awk 'NF && !seen[$0]++')
+        echo "AUR Security Scanner: pre-checking "(count $to_scan)" package(s)..."
         set -l scan_args --severity $AUR_SCAN_SEVERITY
         if test "$AUR_SCAN_INTERACTIVE" != "1"
             set -a scan_args --no-confirm
         end
-        if not aur-scan check $scan_args $_AUR_SCAN_PKGS
+        if not aur-scan check $scan_args $to_scan
             echo "Scan failed or user aborted. Not proceeding with $helper."
             return 1
         end

@@ -791,6 +791,10 @@ SARIF output is compatible with:
 | `AUR_SCAN_SEVERITY` | `high` | Minimum severity to display |
 | `AUR_SCAN_INTERACTIVE` | `1` | Prompt before proceeding |
 | `AUR_SCAN_COLOR` | `1` | Enable colored output |
+| `AUR_SCAN_SCAN_UPGRADES` | `1` | On a system upgrade (`-Syu`/`-Syyu`/bare `yay`), scan **each** AUR package that has a pending update (resolved via the helper's `-Quaq`). A hijacked *update* is the primary AUR threat, so this is on by default; set `0` to skip it. |
+| `AUR_SCAN_SCAN_GETPKGBUILD` | `0` | Also scan the package(s) on `-G`/`--getpkgbuild` (which only downloads a PKGBUILD to review). Off by default; set `1` to opt in. |
+
+The shell integration scans what's **named** on the command line — `-S pkg`, a bare `helper pkg`, `yay -Y pkg`, and (above) the upgrade set. It cannot see the package chosen *after* an interactive search-and-select menu (`yay`'s default `-Y` mode resolves it at runtime); for that — and for any helper or path the shell functions don't wrap — enable the opt-in **pacman hook**, which fires on the exact package set of every transaction. Only `paru` and `yay` are wrapped as shell functions (they share pacman's flag grammar); use the hook to cover others.
 
 ### Configuration File
 

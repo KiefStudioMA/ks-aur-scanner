@@ -72,7 +72,10 @@ fn classify(helper_args: &[&str]) -> Operation {
         || has('F', "files")
         || has('D', "database")
         || has('T', "deptest")
-        || has('V', "version");
+        || has('V', "version")
+        // yay/paru AUR extensions that are read-only and must never gate:
+        || has('G', "getpkgbuild") // downloads a PKGBUILD only
+        || has('P', "show"); // print stats / PKGBUILD to stdout
 
     // Read-only sync sub-operations that never install anything.
     let readonly_sync = long_opts.iter().any(|o| {
@@ -422,6 +425,9 @@ mod tests {
         assert_eq!(scanned(&["foo"]), Some(vec!["foo".into()]));
         // end-of-options: the name after -- is still an operand
         assert_eq!(scanned(&["-S", "--", "pkg"]), Some(vec!["pkg".into()]));
+        // yay's `-Y` (its default search-and-install) must be scanned (#12).
+        assert_eq!(scanned(&["-Y", "cheese"]), Some(vec!["cheese".into()]));
+        assert_eq!(scanned(&["--yay", "cheese"]), Some(vec!["cheese".into()]));
     }
 
     #[test]
@@ -437,6 +443,12 @@ mod tests {
         assert!(scanned(&["-Q"]).is_none());
         assert!(scanned(&["-R", "firefox"]).is_none()); // remove
         assert!(scanned(&["-Syu"]).is_none()); // upgrade, no operands
+        // yay/paru AUR extensions that only read: must not gate even with an
+        // operand (a malicious PKGBUILD fetched by -G is reviewed, not built).
+        assert!(scanned(&["-G", "firefox"]).is_none()); // getpkgbuild (download only)
+        assert!(scanned(&["--getpkgbuild", "firefox"]).is_none());
+        assert!(scanned(&["-P"]).is_none()); // show / print stats
+        assert!(scanned(&["-Y", "--gendb"]).is_none()); // -Y devel-db setup, no operands
     }
 
     #[test]
