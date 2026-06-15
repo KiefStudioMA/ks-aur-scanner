@@ -16,6 +16,7 @@ pub mod neturl;
 pub mod overlay;
 pub mod parser;
 pub mod provenance;
+pub mod resolve;
 pub mod rules;
 pub mod sbom;
 pub mod textutil;
