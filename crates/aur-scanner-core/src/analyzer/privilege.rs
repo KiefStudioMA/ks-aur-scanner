@@ -2,9 +2,34 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
+use crate::rules::informational_lines;
+use crate::textutil::logical_lines;
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use regex::Regex;
+
+/// Reduce a shell body to only the lines that are actually executed, so the
+/// privilege patterns never match printed text. Backslash-newline continuations
+/// are spliced; comment lines and informational lines (a non-redirected heredoc
+/// message body, or a pure `echo`/`msg "..."` print) are dropped using the exact
+/// same pre-filter the rule engine uses (`informational_lines`).
+///
+/// Without this, the analyzer matched its regexes over the raw function body and
+/// raised a Critical false positive on a benign package that merely *printed* a
+/// `sudo systemctl ...` instruction, or shipped a heredoc/`note` mentioning
+/// `/etc/sudoers` or `setcap` (defect #5). A printed mention is not an action.
+fn executable_body(content: &str) -> String {
+    let lines = logical_lines(content);
+    let strs: Vec<&str> = lines.iter().map(|(_, s)| s.as_str()).collect();
+    let info = informational_lines(&strs);
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(i, (_, l))| !l.trim_start().starts_with('#') && !info[*i])
+        .map(|(_, (_, l))| l.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// Analyzer for privilege escalation patterns
 pub struct PrivilegeAnalyzer {
@@ -50,10 +75,14 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
     async fn analyze(&self, context: &AnalysisContext) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        // Check functions for privilege escalation patterns
+        // Check functions for privilege escalation patterns. Match only the
+        // executable lines of the body (printed/informational lines stripped) so
+        // a documented `sudo`/`setcap`/`sudoers` mention cannot raise a Critical
+        // false positive (defect #5).
         for (func_name, func_body) in &context.pkgbuild.functions {
+            let body = executable_body(&func_body.content);
             // Check for sudo in build functions
-            if self.sudo_pattern.is_match(&func_body.content) {
+            if self.sudo_pattern.is_match(&body) {
                 let severity = if func_name == "build" || func_name.starts_with("package") {
                     Severity::Critical
                 } else {
@@ -85,7 +114,7 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
             }
 
             // Check for SUID bit setting
-            if self.suid_pattern.is_match(&func_body.content) {
+            if self.suid_pattern.is_match(&body) {
                 findings.push(Finding {
                     id: "PRIV-002".to_string(),
                     severity: Severity::Critical,
@@ -111,7 +140,7 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
             }
 
             // Check for sudoers modification
-            if self.sudoers_pattern.is_match(&func_body.content) {
+            if self.sudoers_pattern.is_match(&body) {
                 findings.push(Finding {
                     id: "PRIV-003".to_string(),
                     severity: Severity::Critical,
@@ -136,7 +165,7 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
             }
 
             // Check for capabilities setting (could be legitimate but worth noting)
-            if self.capabilities_pattern.is_match(&func_body.content) {
+            if self.capabilities_pattern.is_match(&body) {
                 findings.push(Finding {
                     id: "PRIV-004".to_string(),
                     severity: Severity::Medium,
@@ -161,9 +190,9 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
             }
 
             // Check for kernel module loading
-            if func_body.content.contains("insmod")
-                || func_body.content.contains("modprobe")
-                || func_body.content.contains("/lib/modules")
+            if body.contains("insmod")
+                || body.contains("modprobe")
+                || body.contains("/lib/modules")
             {
                 findings.push(Finding {
                     id: "PRIV-005".to_string(),
@@ -192,8 +221,9 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
         // Check install script if present
         if let Some(ref install_script) = context.install_script {
             for hook in &install_script.hooks {
+                let body = executable_body(&hook.content);
                 // Check for sudo in install hooks
-                if self.sudo_pattern.is_match(&hook.content) {
+                if self.sudo_pattern.is_match(&body) {
                     findings.push(Finding {
                         id: "PRIV-006".to_string(),
                         severity: Severity::High,
@@ -310,6 +340,60 @@ package() {
             !findings.iter().any(|f| f.id == "PRIV-002"),
             "benign chmod 644/755/700 and install -m644/755 must not trip PRIV-002, got: {:?}",
             findings.iter().filter(|f| f.id == "PRIV-002").collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_printed_privilege_message_is_not_flagged() {
+        // Defect #5: a package that merely PRINTS a sudo/setcap/sudoers
+        // instruction (or documents one in a non-redirected heredoc) must NOT
+        // raise a Critical privilege finding. A mention is not an action.
+        let analyzer = PrivilegeAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+package() {
+    echo "To enable the service, run: sudo systemctl enable test.service"
+    msg "Grant the capability with: setcap cap_net_raw+ep /usr/bin/test"
+    cat <<EOF
+After install, add a rule to /etc/sudoers.d/test if you want passwordless use.
+EOF
+}
+"#,
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f.id.as_str(), "PRIV-001" | "PRIV-003" | "PRIV-004")),
+            "printed sudo/sudoers/setcap messages must not raise a privilege finding, got: {:?}",
+            findings.iter().map(|f| &f.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_real_sudo_still_detected_alongside_printed_message() {
+        // The filter must not blind us: a printed note PLUS a real `sudo` action
+        // still fires PRIV-001 (the action is on its own executable line).
+        let analyzer = PrivilegeAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+build() {
+    echo "this build uses sudo for nothing, ignore"
+    sudo make install
+}
+"#,
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(
+            findings.iter().any(|f| f.id == "PRIV-001"),
+            "a real sudo action must still be detected: {:?}",
+            findings.iter().map(|f| &f.id).collect::<Vec<_>>()
         );
     }
 
