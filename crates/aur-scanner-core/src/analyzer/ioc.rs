@@ -7,6 +7,7 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
+use crate::rules::informational_lines;
 use crate::textutil::deobfuscate_text;
 use crate::threat_intel::IocDatabase;
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
@@ -87,6 +88,13 @@ impl IocAnalyzer {
         text: &str,
         findings: &mut Vec<Finding>,
     ) {
+        // Blank out comment lines and printed/informational lines (a
+        // non-redirected heredoc body or a pure `echo`/`msg "..."` print) before
+        // matching, so a package that merely DOCUMENTS an indicator (e.g. a
+        // post_install note "do not install atomic-lockfile") does not raise an
+        // IOC finding. Blanking (not deleting) preserves line numbers so a real
+        // hit still reports its true line.
+        let scannable = mask_informational(text);
         let mut seen: HashSet<(String, String, usize)> = HashSet::new();
         let mut collect = |content: &str, findings: &mut Vec<Finding>| {
             for hit in self.db.scan_content(content) {
@@ -96,12 +104,32 @@ impl IocAnalyzer {
                 }
             }
         };
-        collect(text, findings);
-        let decoded = deobfuscate_text(text);
-        if decoded != text {
+        collect(&scannable, findings);
+        let decoded = deobfuscate_text(&scannable);
+        if decoded != scannable {
             collect(&decoded, findings);
         }
     }
+}
+
+/// Replace comment lines and printed/informational lines with empty lines,
+/// preserving the total line count (so IOC hit line numbers stay accurate). Uses
+/// the shared `informational_lines` pre-filter over physical lines, since the IOC
+/// database reports physical line numbers.
+fn mask_informational(text: &str) -> String {
+    let phys: Vec<&str> = text.lines().collect();
+    let informational = informational_lines(&phys);
+    phys.iter()
+        .enumerate()
+        .map(|(i, l)| {
+            if informational[i] || l.trim_start().starts_with('#') {
+                ""
+            } else {
+                *l
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[async_trait]
@@ -155,7 +183,7 @@ mod tests {
         let parser = StaticParser::new();
         let pkgbuild = parser
             .parse(
-                "pkgname=x\npkgver=1\npkgrel=1\npackage() {\n npm install \"ato\"\"mic-lockfile\"\n echo js-digest\n}\n",
+                "pkgname=x\npkgver=1\npkgrel=1\npackage() {\n npm install \"ato\"\"mic-lockfile\"\n bun add js-digest\n}\n",
             )
             .unwrap();
         let context = AnalysisContext {
@@ -178,5 +206,29 @@ mod tests {
             .filter(|f| f.metadata["ioc_value"] == "js-digest")
             .count();
         assert_eq!(js_digest, 1, "plain IOC must not be double-reported: {findings:?}");
+    }
+
+    #[tokio::test]
+    async fn documented_ioc_in_printed_message_not_flagged() {
+        // Task 4050a: a printed warning that merely NAMES an indicator (e.g. a
+        // post_install note) must not raise IOC-001 — only executed lines count.
+        let parser = StaticParser::new();
+        let pkgbuild = parser
+            .parse(
+                "pkgname=x\npkgver=1\npkgrel=1\npackage() {\n echo \"warning: do not install atomic-lockfile\"\n}\n",
+            )
+            .unwrap();
+        let context = AnalysisContext {
+            pkgbuild,
+            install_script: None,
+            config: ScanConfig::default(),
+            file_path: PathBuf::from("PKGBUILD"),
+        };
+        let analyzer = IocAnalyzer::new(Arc::new(IocDatabase::embedded()));
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(
+            !findings.iter().any(|f| f.id == "IOC-001"),
+            "a printed message naming an IOC must not raise IOC-001: {findings:?}"
+        );
     }
 }

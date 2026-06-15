@@ -415,4 +415,69 @@ build() {
             );
         }
     }
+
+    #[tokio::test]
+    async fn test_redirected_heredoc_privilege_still_fires() {
+        // Boundary lock (task 4050b): the informational carve-out must NOT
+        // suppress a heredoc that is REDIRECTED to a file. Writing a setcap/SUID
+        // script INTO a file is an action, not a printed message, so the body
+        // must still be scanned and fire.
+        let analyzer = PrivilegeAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+package() {
+    cat <<EOF > "$pkgdir/usr/bin/setup-helper.sh"
+setcap cap_net_raw+ep /usr/bin/victim
+chmod 4755 /usr/bin/victim
+EOF
+}
+"#,
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        let ids: Vec<&String> = findings.iter().map(|f| &f.id).collect();
+        assert!(
+            findings.iter().any(|f| f.id == "PRIV-002"),
+            "SUID inside a REDIRECTED heredoc must still fire PRIV-002: {ids:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.id == "PRIV-004"),
+            "setcap inside a REDIRECTED heredoc must still fire PRIV-004: {ids:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_privilege_action_after_heredoc_still_fires() {
+        // Boundary lock (task 4050b): a non-redirected heredoc message is
+        // suppressed, but a real privilege action AFTER the terminator must NOT
+        // be swallowed by the carve-out — the informational state resets at EOF.
+        let analyzer = PrivilegeAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+package() {
+    cat <<EOF
+Reminder: you may want to run sudo systemctl enable test.service
+EOF
+    install -Dm4755 evil "$pkgdir/usr/bin/evil"
+}
+"#,
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        let ids: Vec<&String> = findings.iter().map(|f| &f.id).collect();
+        // The printed reminder must NOT fire...
+        assert!(
+            !findings.iter().any(|f| f.id == "PRIV-001"),
+            "the printed sudo reminder must not fire PRIV-001: {ids:?}"
+        );
+        // ...but the real SUID install AFTER the heredoc must.
+        assert!(
+            findings.iter().any(|f| f.id == "PRIV-002"),
+            "a real SUID install after a heredoc must still fire PRIV-002: {ids:?}"
+        );
+    }
 }

