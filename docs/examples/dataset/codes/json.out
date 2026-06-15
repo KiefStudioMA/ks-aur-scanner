@@ -16,7 +16,7 @@
       "name": "Node/Bun package manager in install hook",
       "severity": "critical",
       "category": "malicious_code",
-      "description": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase.",
+      "description": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.",
       "recommendation": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.",
       "cwe": "CWE-494",
       "owner": "rules",
@@ -349,6 +349,28 @@
       "description": "Launches a fetched/dropped payload detached from the build (setsid/nohup), so it keeps running after install.",
       "recommendation": "Review the detached process; this outlives the install.",
       "cwe": "CWE-506",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "EXEC-006",
+      "name": "sqlite3 shell-command execution",
+      "severity": "high",
+      "category": "malicious_code",
+      "description": "sqlite3's `.shell`/`.system` dot-commands run an arbitrary shell command, and `.import` can read an attacker-controlled file — an exec/RCE vector hidden inside what looks like a database call. Legitimate packages do not drive sqlite3 through these meta-commands.",
+      "recommendation": "Do not build. sqlite3 .shell/.system run arbitrary commands; report the package.",
+      "cwe": "CWE-94",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "EXEC-007",
+      "name": "make reads a Makefile from stdin",
+      "severity": "high",
+      "category": "command_injection",
+      "description": "`make -f -` / `make -f /dev/stdin` executes a Makefile fed on standard input (commonly the tail of a `curl ... | make -f -` fetch-and-run). A Makefile is arbitrary shell recipes, so this is RCE from an unverified source. Normal `make` / `make -f Makefile` builds are unaffected.",
+      "recommendation": "Review the Makefile source; building a Makefile read from stdin/a pipe runs unverified recipes.",
+      "cwe": "CWE-94",
       "owner": "rules",
       "pattern_based": true
     },

@@ -9,7 +9,7 @@
       "title": "Systemd masquerading",
       "description": "Binary named like systemd component is suspicious. CHAOS RAT used 'systemd-initd'.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/PKGBUILD",
+        "file": "tests/fixtures/malicious/chaos-rat/PKGBUILD",
         "line": 21,
         "column": 20,
         "snippet": "    install -Dm755 systemd-initd \"${pkgdir}/usr/local/share/systemd-initd\""
@@ -27,7 +27,7 @@
       "title": "Python execution in install script (install script)",
       "description": "Executing Python in post_install is suspicious. Used in July 2025 CHAOS RAT attack.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install",
+        "file": "tests/fixtures/malicious/chaos-rat/firefox-patch.install",
         "line": 5,
         "column": 5,
         "snippet": "    python /opt/firefox-patch-bin/patches/main.py"
@@ -46,7 +46,7 @@
       "title": "Systemd service creation in install (install script)",
       "description": "Creating systemd services in install scripts enables persistence. Used in 2018 xeactor and 2025 CHAOS RAT attacks.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install",
+        "file": "tests/fixtures/malicious/chaos-rat/firefox-patch.install",
         "line": 8,
         "column": 11,
         "snippet": "    cat > /etc/systemd/system/firefox-update.service << EOF"
@@ -65,7 +65,7 @@
       "title": "Systemd service creation in install (install script)",
       "description": "Creating systemd services in install scripts enables persistence. Used in 2018 xeactor and 2025 CHAOS RAT attacks.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install",
+        "file": "tests/fixtures/malicious/chaos-rat/firefox-patch.install",
         "line": 23,
         "column": 5,
         "snippet": "    systemctl daemon-reload"
@@ -84,7 +84,7 @@
       "title": "Systemd service creation in install (install script)",
       "description": "Creating systemd services in install scripts enables persistence. Used in 2018 xeactor and 2025 CHAOS RAT attacks.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install",
+        "file": "tests/fixtures/malicious/chaos-rat/firefox-patch.install",
         "line": 24,
         "column": 5,
         "snippet": "    systemctl enable firefox-update.service"
@@ -103,7 +103,7 @@
       "title": "Systemd service creation in install (install script)",
       "description": "Creating systemd services in install scripts enables persistence. Used in 2018 xeactor and 2025 CHAOS RAT attacks.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install",
+        "file": "tests/fixtures/malicious/chaos-rat/firefox-patch.install",
         "line": 25,
         "column": 5,
         "snippet": "    systemctl start firefox-update.service"
@@ -122,7 +122,7 @@
       "title": "Systemd masquerading (install script)",
       "description": "Binary named like systemd component is suspicious. CHAOS RAT used 'systemd-initd'.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install",
+        "file": "tests/fixtures/malicious/chaos-rat/firefox-patch.install",
         "line": 15,
         "column": 28,
         "snippet": "ExecStart=/usr/local/share/systemd-initd"
@@ -141,7 +141,7 @@
       "title": "Provides impersonation",
       "description": "Package provides another package name, may be impersonating. CHAOS RAT used this technique.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/PKGBUILD",
+        "file": "tests/fixtures/malicious/chaos-rat/PKGBUILD",
         "line": 12,
         "column": 1,
         "snippet": "provides=('firefox-fix')"
@@ -159,7 +159,7 @@
       "title": "VCS source not pinned to a commit",
       "description": "Source #1 is a VCS checkout on a movable ref (branch/tag or none): git+https://github.com/danikpapas/zenbrowser-patch.git. Its content is not integrity-pinned and can change between scan and build.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/PKGBUILD",
+        "file": "tests/fixtures/malicious/chaos-rat/PKGBUILD",
         "line": null,
         "column": null,
         "snippet": "source=(\"git+https://github.com/danikpapas/zenbrowser-patch.git\")"
@@ -178,7 +178,7 @@
       "title": "VCS source not pinned to a commit",
       "description": "Source #2 is a VCS checkout on a movable ref (branch/tag or none): git+https://github.com/attacker/malicious-patches.git. Its content is not integrity-pinned and can change between scan and build.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/PKGBUILD",
+        "file": "tests/fixtures/malicious/chaos-rat/PKGBUILD",
         "line": null,
         "column": null,
         "snippet": "source=(\"git+https://github.com/attacker/malicious-patches.git\")"
@@ -192,9 +192,9 @@
     }
   ],
   "scanned_files": [
-    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/PKGBUILD",
-    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install"
+    "tests/fixtures/malicious/chaos-rat/PKGBUILD",
+    "tests/fixtures/malicious/chaos-rat/firefox-patch.install"
   ],
-  "timestamp": "2026-06-15T01:57:16.312819243Z",
-  "scan_duration_ms": 3
+  "timestamp": "2026-06-15T10:43:29.901482738Z",
+  "scan_duration_ms": 6
 }

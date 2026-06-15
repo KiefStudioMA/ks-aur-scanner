@@ -1,0 +1,754 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 17
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
+          },
+          "ruleId": "DLE-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 31
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Downloading and executing remote scripts via wget"
+          },
+          "ruleId": "DLE-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/launcher-shell.install"
+                },
+                "region": {
+                  "startLine": 5
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
+          },
+          "ruleId": "DLE-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/launcher-shell.install"
+                },
+                "region": {
+                  "startLine": 7
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
+          },
+          "ruleId": "DLE-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/launcher-shell.install"
+                },
+                "region": {
+                  "startLine": 5
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Install scripts should not make network connections"
+          },
+          "ruleId": "INSTALL-003"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/launcher-shell.install"
+                },
+                "region": {
+                  "startLine": 7
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Install scripts should not make network connections"
+          },
+          "ruleId": "INSTALL-003"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 17
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This package downloads and executes code from https://evil.example/install.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+          },
+          "ruleId": "EXEC-REMOTE"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 19
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This package downloads and executes code from https://evil.example/y.py at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+          },
+          "ruleId": "EXEC-REMOTE"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 21
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This package downloads and executes code from https://evil.example/p.py at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+          },
+          "ruleId": "EXEC-REMOTE"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 22
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This package downloads and executes code from https://evil.example/p.pl at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+          },
+          "ruleId": "EXEC-REMOTE"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 24
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This package downloads and executes code from https://evil.example/p.php at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+          },
+          "ruleId": "EXEC-REMOTE"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 31
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This package downloads and executes code from https://evil.example/stage2.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+          },
+          "ruleId": "EXEC-REMOTE"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/launcher-shell.install"
+                },
+                "region": {
+                  "startLine": 5
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This package downloads and executes code from https://evil.example/postinstall.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+          },
+          "ruleId": "EXEC-REMOTE"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/launcher-shell.install"
+                },
+                "region": {
+                  "startLine": 7
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This package downloads and executes code from https://evil.example/s at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+          },
+          "ruleId": "EXEC-REMOTE"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 26
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "curl uploading a local file (-T/--upload-file/-F/--data-urlencode) — used to send harvested data to an attacker endpoint."
+          },
+          "ruleId": "EXFIL-006"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 26
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "`make -f -` / `make -f /dev/stdin` executes a Makefile fed on standard input (commonly the tail of a `curl ... | make -f -` fetch-and-run). A Makefile is arbitrary shell recipes, so this is RCE from an unverified source. Normal `make` / `make -f Makefile` builds are unaffected."
+          },
+          "ruleId": "EXEC-007"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/launcher-shell.install"
+                },
+                "region": {
+                  "startLine": 7
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "sqlite3's `.shell`/`.system` dot-commands run an arbitrary shell command, and `.import` can read an attacker-controlled file — an exec/RCE vector hidden inside what looks like a database call. Legitimate packages do not drive sqlite3 through these meta-commands."
+          },
+          "ruleId": "EXEC-006"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 29
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Function 'package' contains network access command 'wget'"
+          },
+          "ruleId": "FUNC-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 15
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Function 'build' contains network access command 'curl'"
+          },
+          "ruleId": "FUNC-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 15
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Function 'build' contains network access command 'wget'"
+          },
+          "ruleId": "FUNC-001"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/launcher-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Package has build() function but no source array"
+          },
+          "ruleId": "SRC-005"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
+              },
+              "help": {
+                "text": "Download scripts first, review them, then execute"
+              },
+              "id": "DLE-001",
+              "name": "Curl pipe to shell",
+              "shortDescription": {
+                "text": "Curl pipe to shell"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Downloading and executing remote scripts via wget"
+              },
+              "help": {
+                "text": "Download scripts first, review them, then execute"
+              },
+              "id": "DLE-002",
+              "name": "Wget pipe to shell",
+              "shortDescription": {
+                "text": "Wget pipe to shell"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
+              },
+              "help": {
+                "text": "Download scripts first, review them, then execute"
+              },
+              "id": "DLE-001",
+              "name": "Curl pipe to shell (install script)",
+              "shortDescription": {
+                "text": "Curl pipe to shell (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
+              },
+              "help": {
+                "text": "Download scripts first, review them, then execute"
+              },
+              "id": "DLE-001",
+              "name": "Curl pipe to shell (install script)",
+              "shortDescription": {
+                "text": "Curl pipe to shell (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Install scripts should not make network connections"
+              },
+              "help": {
+                "text": "Install scripts should never download additional content"
+              },
+              "id": "INSTALL-003",
+              "name": "Network access in install script (install script)",
+              "shortDescription": {
+                "text": "Network access in install script (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Install scripts should not make network connections"
+              },
+              "help": {
+                "text": "Install scripts should never download additional content"
+              },
+              "id": "INSTALL-003",
+              "name": "Network access in install script (install script)",
+              "shortDescription": {
+                "text": "Network access in install script (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "This package downloads and executes code from https://evil.example/install.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+              },
+              "help": {
+                "text": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code."
+              },
+              "id": "EXEC-REMOTE",
+              "name": "Fetches and runs code from https://evil.example/install.sh",
+              "shortDescription": {
+                "text": "Fetches and runs code from https://evil.example/install.sh"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "This package downloads and executes code from https://evil.example/y.py at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+              },
+              "help": {
+                "text": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code."
+              },
+              "id": "EXEC-REMOTE",
+              "name": "Fetches and runs code from https://evil.example/y.py",
+              "shortDescription": {
+                "text": "Fetches and runs code from https://evil.example/y.py"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "This package downloads and executes code from https://evil.example/p.py at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+              },
+              "help": {
+                "text": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code."
+              },
+              "id": "EXEC-REMOTE",
+              "name": "Fetches and runs code from https://evil.example/p.py",
+              "shortDescription": {
+                "text": "Fetches and runs code from https://evil.example/p.py"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "This package downloads and executes code from https://evil.example/p.pl at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+              },
+              "help": {
+                "text": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code."
+              },
+              "id": "EXEC-REMOTE",
+              "name": "Fetches and runs code from https://evil.example/p.pl",
+              "shortDescription": {
+                "text": "Fetches and runs code from https://evil.example/p.pl"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "This package downloads and executes code from https://evil.example/p.php at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+              },
+              "help": {
+                "text": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code."
+              },
+              "id": "EXEC-REMOTE",
+              "name": "Fetches and runs code from https://evil.example/p.php",
+              "shortDescription": {
+                "text": "Fetches and runs code from https://evil.example/p.php"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "This package downloads and executes code from https://evil.example/stage2.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+              },
+              "help": {
+                "text": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code."
+              },
+              "id": "EXEC-REMOTE",
+              "name": "Fetches and runs code from https://evil.example/stage2.sh",
+              "shortDescription": {
+                "text": "Fetches and runs code from https://evil.example/stage2.sh"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "This package downloads and executes code from https://evil.example/postinstall.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+              },
+              "help": {
+                "text": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code."
+              },
+              "id": "EXEC-REMOTE",
+              "name": "Fetches and runs code from https://evil.example/postinstall.sh (install script)",
+              "shortDescription": {
+                "text": "Fetches and runs code from https://evil.example/postinstall.sh (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "This package downloads and executes code from https://evil.example/s at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+              },
+              "help": {
+                "text": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code."
+              },
+              "id": "EXEC-REMOTE",
+              "name": "Fetches and runs code from https://evil.example/s (install script)",
+              "shortDescription": {
+                "text": "Fetches and runs code from https://evil.example/s (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "curl uploading a local file (-T/--upload-file/-F/--data-urlencode) — used to send harvested data to an attacker endpoint."
+              },
+              "help": {
+                "text": "Verify what is being uploaded and to where."
+              },
+              "id": "EXFIL-006",
+              "name": "HTTP upload exfiltration",
+              "shortDescription": {
+                "text": "HTTP upload exfiltration"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "`make -f -` / `make -f /dev/stdin` executes a Makefile fed on standard input (commonly the tail of a `curl ... | make -f -` fetch-and-run). A Makefile is arbitrary shell recipes, so this is RCE from an unverified source. Normal `make` / `make -f Makefile` builds are unaffected."
+              },
+              "help": {
+                "text": "Review the Makefile source; building a Makefile read from stdin/a pipe runs unverified recipes."
+              },
+              "id": "EXEC-007",
+              "name": "make reads a Makefile from stdin",
+              "shortDescription": {
+                "text": "make reads a Makefile from stdin"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "sqlite3's `.shell`/`.system` dot-commands run an arbitrary shell command, and `.import` can read an attacker-controlled file — an exec/RCE vector hidden inside what looks like a database call. Legitimate packages do not drive sqlite3 through these meta-commands."
+              },
+              "help": {
+                "text": "Do not build. sqlite3 .shell/.system run arbitrary commands; report the package."
+              },
+              "id": "EXEC-006",
+              "name": "sqlite3 shell-command execution (install script)",
+              "shortDescription": {
+                "text": "sqlite3 shell-command execution (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Function 'package' contains network access command 'wget'"
+              },
+              "help": {
+                "text": "Network access should happen in source= array, not build functions"
+              },
+              "id": "FUNC-001",
+              "name": "Network access in build function",
+              "shortDescription": {
+                "text": "Network access in build function"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Function 'build' contains network access command 'curl'"
+              },
+              "help": {
+                "text": "Network access should happen in source= array, not build functions"
+              },
+              "id": "FUNC-001",
+              "name": "Network access in build function",
+              "shortDescription": {
+                "text": "Network access in build function"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Function 'build' contains network access command 'wget'"
+              },
+              "help": {
+                "text": "Network access should happen in source= array, not build functions"
+              },
+              "id": "FUNC-001",
+              "name": "Network access in build function",
+              "shortDescription": {
+                "text": "Network access in build function"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Package has build() function but no source array"
+              },
+              "help": {
+                "text": "Verify this is intentional; build() usually needs sources"
+              },
+              "id": "SRC-005",
+              "name": "No sources with build function",
+              "shortDescription": {
+                "text": "No sources with build function"
+              }
+            }
+          ],
+          "version": "1.1.0-rc3"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

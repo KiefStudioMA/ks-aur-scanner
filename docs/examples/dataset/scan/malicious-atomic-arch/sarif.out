@@ -9,7 +9,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+                  "uri": "tests/fixtures/malicious/atomic-arch/alvr.install"
                 },
                 "region": {
                   "startLine": 4
@@ -28,7 +28,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+                  "uri": "tests/fixtures/malicious/atomic-arch/alvr.install"
                 },
                 "region": {
                   "startLine": 9
@@ -47,7 +47,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+                  "uri": "tests/fixtures/malicious/atomic-arch/alvr.install"
                 },
                 "region": {
                   "startLine": 4
@@ -56,7 +56,7 @@
             }
           ],
           "message": {
-            "text": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase."
+            "text": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`."
           },
           "ruleId": "ATOMIC-002"
         },
@@ -66,7 +66,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+                  "uri": "tests/fixtures/malicious/atomic-arch/alvr.install"
                 },
                 "region": {
                   "startLine": 9
@@ -75,7 +75,7 @@
             }
           ],
           "message": {
-            "text": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase."
+            "text": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`."
           },
           "ruleId": "ATOMIC-002"
         },
@@ -85,7 +85,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+                  "uri": "tests/fixtures/malicious/atomic-arch/alvr.install"
                 },
                 "region": {
                   "startLine": 4
@@ -104,7 +104,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
+                  "uri": "tests/fixtures/malicious/atomic-arch/alvr.install"
                 },
                 "region": {
                   "startLine": 9
@@ -123,7 +123,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/atomic-arch/PKGBUILD"
                 },
                 "region": {
                   "startLine": 1
@@ -179,7 +179,7 @@
                 "level": "error"
               },
               "fullDescription": {
-                "text": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase."
+                "text": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`."
               },
               "help": {
                 "text": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers."
@@ -195,7 +195,7 @@
                 "level": "error"
               },
               "fullDescription": {
-                "text": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase."
+                "text": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`."
               },
               "help": {
                 "text": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers."
@@ -255,7 +255,7 @@
               }
             }
           ],
-          "version": "1.1.0-rc2"
+          "version": "1.1.0-rc3"
         }
       }
     }

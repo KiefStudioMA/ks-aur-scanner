@@ -108,16 +108,16 @@
       "name": "example-package",
       "type": "application"
     },
-    "timestamp": "2026-06-15T01:57:18.337066740+00:00",
+    "timestamp": "2026-06-15T10:43:32.145415973+00:00",
     "tools": [
       {
         "name": "aur-scan",
         "vendor": "Kief Studio",
-        "version": "1.1.0-rc2"
+        "version": "1.1.0-rc3"
       }
     ]
   },
-  "serialNumber": "urn:uuid:b3e30064-a1d7-1a27-77a3-148e973568c2",
+  "serialNumber": "urn:uuid:f9ac272a-3e7d-c8bb-1b74-42be0c404cf5",
   "specVersion": "1.5",
   "version": 1,
   "vulnerabilities": []

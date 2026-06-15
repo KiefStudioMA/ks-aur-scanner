@@ -9,7 +9,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
                 },
                 "region": {
                   "startLine": 14
@@ -28,7 +28,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
                 },
                 "region": {
                   "startLine": 17
@@ -47,7 +47,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
                 },
                 "region": {
                   "startLine": 20
@@ -66,7 +66,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
                 },
                 "region": {
                   "startLine": 23
@@ -85,7 +85,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
                 },
                 "region": {
                   "startLine": 23
@@ -104,7 +104,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
                 },
                 "region": {
                   "startLine": 14
@@ -123,7 +123,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
                 },
                 "region": {
                   "startLine": 17
@@ -142,7 +142,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
                 },
                 "region": {
                   "startLine": 20
@@ -161,45 +161,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
-                },
-                "region": {
-                  "startLine": 14
-                }
-              }
-            }
-          ],
-          "message": {
-            "text": "Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp."
-          },
-          "ruleId": "HIDDEN-002"
-        },
-        {
-          "level": "error",
-          "locations": [
-            {
-              "physicalLocation": {
-                "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
-                },
-                "region": {
-                  "startLine": 20
-                }
-              }
-            }
-          ],
-          "message": {
-            "text": "Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp."
-          },
-          "ruleId": "HIDDEN-002"
-        },
-        {
-          "level": "error",
-          "locations": [
-            {
-              "physicalLocation": {
-                "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
                 },
                 "region": {
                   "startLine": 12
@@ -218,7 +180,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
                 },
                 "region": {
                   "startLine": 1
@@ -370,38 +332,6 @@
                 "level": "error"
               },
               "fullDescription": {
-                "text": "Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp."
-              },
-              "help": {
-                "text": "Packages should not execute from /tmp"
-              },
-              "id": "HIDDEN-002",
-              "name": "Tmp directory execution",
-              "shortDescription": {
-                "text": "Tmp directory execution"
-              }
-            },
-            {
-              "defaultConfiguration": {
-                "level": "error"
-              },
-              "fullDescription": {
-                "text": "Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp."
-              },
-              "help": {
-                "text": "Packages should not execute from /tmp"
-              },
-              "id": "HIDDEN-002",
-              "name": "Tmp directory execution",
-              "shortDescription": {
-                "text": "Tmp directory execution"
-              }
-            },
-            {
-              "defaultConfiguration": {
-                "level": "error"
-              },
-              "fullDescription": {
                 "text": "Function 'build' contains network access command 'curl'"
               },
               "help": {
@@ -430,7 +360,7 @@
               }
             }
           ],
-          "version": "1.1.0-rc2"
+          "version": "1.1.0-rc3"
         }
       }
     }

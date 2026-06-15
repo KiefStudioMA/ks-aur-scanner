@@ -3,8 +3,8 @@
   "package_version": "1.0.0-1",
   "findings": [],
   "scanned_files": [
-    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/clean/example-package/PKGBUILD"
+    "tests/fixtures/clean/example-package/PKGBUILD"
   ],
-  "timestamp": "2026-06-15T01:57:15.910944918Z",
-  "scan_duration_ms": 2
+  "timestamp": "2026-06-15T10:43:29.479513497Z",
+  "scan_duration_ms": 5
 }

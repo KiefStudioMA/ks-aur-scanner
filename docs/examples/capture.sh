@@ -116,6 +116,22 @@ for sub in scan check install system rules explain codes ioc version; do
 done
 capture "$STAGING/version" "$BIN" --version
 
+# --- 5b. canonicalize paths ---------------------------------------------------
+# The scanner echoes the (absolute) path it was given into every finding's
+# `file` field. Strip the absolute repo + staging prefixes so the committed
+# dataset is byte-identical regardless of WHERE it was generated (no
+# /home/<user> leak; no churn between the repo root and a .mycelium clone).
+echo ">> canonicalizing paths (repo-relative)"
+# Order matters: the staging temp dir and the repo root are stripped to a
+# relative form first; anything else under the maintainer's $HOME (e.g. a
+# ~/.cache path an SBOM run might emit) falls back to a "~/"-relative form so
+# the username never lands in the committed dataset.
+find "$STAGING" -type f \( -name '*.out' -o -name '*.err' -o -name '*.json' -o -name '*.txt' \) \
+    -exec sed -i \
+        -e "s#${STAGING}/#staging/#g" \
+        -e "s#${REPO}/##g" \
+        -e "s#${HOME:-/__no_home__}/#~/#g" {} +
+
 # --- 5. validate before swap --------------------------------------------------
 echo ">> validating"
 fail=0
@@ -131,6 +147,15 @@ while IFS= read -r pkgdir; do
     valid_json "$STAGING/scan/$slug/sarif.out"
 done < <(find "$FIXTURES" -name PKGBUILD -printf '%h\n' | sort -u)
 need_nonempty "$STAGING/codes/text.out"; valid_json "$STAGING/codes/json.out"
+
+# Privacy guard (fail closed): the maintainer's absolute home must never survive
+# canonicalization into the committed dataset. If it does, keep the existing
+# dataset rather than swap in a leaky one.
+if grep -rIlF "${HOME:-/__no_home__}/" "$STAGING" >/dev/null 2>&1; then
+    echo "   LEAK: maintainer home path survived canonicalization:" >&2
+    grep -rIlF "${HOME:-/__no_home__}/" "$STAGING" | sed "s#^$STAGING/#     #" >&2
+    fail=1
+fi
 
 # A malicious fixture must NOT come back clean (catches a silently-broken binary).
 if grep -qiE 'No (security )?(issues|findings)' "$STAGING/scan/malicious-curl-bash/text.out" 2>/dev/null; then

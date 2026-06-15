@@ -4,56 +4,56 @@ Scan Results: firefox-patch-bin
 
 [CRITICAL] PERSIST-006 Systemd masquerading
     Binary named like systemd component is suspicious. CHAOS RAT used 'systemd-initd'.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/PKGBUILD:21
+    Location: tests/fixtures/malicious/chaos-rat/PKGBUILD:21
     Code:     install -Dm755 systemd-initd "${pkgdir}/usr/local/share/systemd-initd"
     Recommendation: Verify this is a legitimate systemd component
     Reference: CWE-506
 
 [CRITICAL] INSTALL-001 Python execution in install script (install script)
     Executing Python in post_install is suspicious. Used in July 2025 CHAOS RAT attack.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install:5
+    Location: tests/fixtures/malicious/chaos-rat/firefox-patch.install:5
     Code:     python /opt/firefox-patch-bin/patches/main.py
     Recommendation: Install scripts should not execute Python code
     Reference: CWE-94
 
 [CRITICAL] PERSIST-001 Systemd service creation in install (install script)
     Creating systemd services in install scripts enables persistence. Used in 2018 xeactor and 2025 CHAOS RAT attacks.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install:8
+    Location: tests/fixtures/malicious/chaos-rat/firefox-patch.install:8
     Code:     cat > /etc/systemd/system/firefox-update.service << EOF
     Recommendation: Services should be enabled by the user, not automatically
     Reference: CWE-506
 
 [CRITICAL] PERSIST-001 Systemd service creation in install (install script)
     Creating systemd services in install scripts enables persistence. Used in 2018 xeactor and 2025 CHAOS RAT attacks.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install:23
+    Location: tests/fixtures/malicious/chaos-rat/firefox-patch.install:23
     Code:     systemctl daemon-reload
     Recommendation: Services should be enabled by the user, not automatically
     Reference: CWE-506
 
 [CRITICAL] PERSIST-001 Systemd service creation in install (install script)
     Creating systemd services in install scripts enables persistence. Used in 2018 xeactor and 2025 CHAOS RAT attacks.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install:24
+    Location: tests/fixtures/malicious/chaos-rat/firefox-patch.install:24
     Code:     systemctl enable firefox-update.service
     Recommendation: Services should be enabled by the user, not automatically
     Reference: CWE-506
 
 [CRITICAL] PERSIST-001 Systemd service creation in install (install script)
     Creating systemd services in install scripts enables persistence. Used in 2018 xeactor and 2025 CHAOS RAT attacks.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install:25
+    Location: tests/fixtures/malicious/chaos-rat/firefox-patch.install:25
     Code:     systemctl start firefox-update.service
     Recommendation: Services should be enabled by the user, not automatically
     Reference: CWE-506
 
 [CRITICAL] PERSIST-006 Systemd masquerading (install script)
     Binary named like systemd component is suspicious. CHAOS RAT used 'systemd-initd'.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install:15
+    Location: tests/fixtures/malicious/chaos-rat/firefox-patch.install:15
     Code: ExecStart=/usr/local/share/systemd-initd
     Recommendation: Verify this is a legitimate systemd component
     Reference: CWE-506
 
 [LOW] META-001 Provides impersonation
     Package provides another package name, may be impersonating. CHAOS RAT used this technique.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/PKGBUILD:12
+    Location: tests/fixtures/malicious/chaos-rat/PKGBUILD:12
     Code: provides=('firefox-fix')
     Recommendation: Verify this package is a legitimate alternative
 
@@ -73,7 +73,7 @@ Scan Results: firefox-patch-bin
 
 ============================================================
 Package: firefox-patch-bin v1.0.0-1
-Scan duration: 3ms
+Scan duration: 6ms
 
 Found 10 issue(s):
   7 CRITICAL

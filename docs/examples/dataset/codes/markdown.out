@@ -1,6 +1,6 @@
 # Detection Codes
 
-_106 codes across 13 categories. Generated from the catalog; do not edit by hand._
+_108 codes across 13 categories. Generated from the catalog; do not edit by hand._
 
 ## CRITICAL severity
 
@@ -73,6 +73,8 @@ _106 codes across 13 categories. Generated from the catalog; do not edit by hand
 | `DEEP-002` | Large embedded encoded blob | Obfuscation | deep | CWE-506 |
 | `DEP-003` | Package index/registry override | Dependencies | rules | CWE-494 |
 | `ENV-002` | PATH manipulation | Malicious Code | rules | CWE-426 |
+| `EXEC-006` | sqlite3 shell-command execution | Malicious Code | rules | CWE-94 |
+| `EXEC-007` | make reads a Makefile from stdin | Command Injection | rules | CWE-94 |
 | `EXFIL-006` | HTTP upload exfiltration | Data Exfiltration | rules | CWE-200 |
 | `EXFIL-007` | wget POST exfiltration | Data Exfiltration | rules | CWE-200 |
 | `EXFIL-009` | Anonymous file-drop / tunnel host | Data Exfiltration | rules | CWE-200 |

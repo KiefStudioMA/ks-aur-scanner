@@ -1,10 +1,10 @@
 
 ============================================================
 Package: malicious-credential-theft v1.0.0-1
-Scan duration: 2ms
+Scan duration: 4ms
 
-Found 12 issue(s):
+Found 10 issue(s):
   5 CRITICAL
-  6 HIGH
+  4 HIGH
   1 MEDIUM
 ============================================================

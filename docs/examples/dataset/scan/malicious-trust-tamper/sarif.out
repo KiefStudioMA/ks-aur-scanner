@@ -9,7 +9,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install"
+                  "uri": "tests/fixtures/malicious/trust-tamper/sysprep.install"
                 },
                 "region": {
                   "startLine": 2
@@ -28,7 +28,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install"
+                  "uri": "tests/fixtures/malicious/trust-tamper/sysprep.install"
                 },
                 "region": {
                   "startLine": 6
@@ -47,7 +47,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install"
+                  "uri": "tests/fixtures/malicious/trust-tamper/sysprep.install"
                 },
                 "region": {
                   "startLine": 3
@@ -66,7 +66,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install"
+                  "uri": "tests/fixtures/malicious/trust-tamper/sysprep.install"
                 },
                 "region": {
                   "startLine": 5
@@ -85,7 +85,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install"
+                  "uri": "tests/fixtures/malicious/trust-tamper/sysprep.install"
                 },
                 "region": {
                   "startLine": 4
@@ -185,7 +185,7 @@
               }
             }
           ],
-          "version": "1.1.0-rc2"
+          "version": "1.1.0-rc3"
         }
       }
     }

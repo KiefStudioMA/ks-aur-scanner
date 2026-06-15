@@ -1,9 +1,9 @@
 
 ============================================================
 Package: netutil-bin v1.0.0-1
-Scan duration: 3ms
+Scan duration: 5ms
 
-Found 6 issue(s):
+Found 5 issue(s):
   4 CRITICAL
-  2 HIGH
+  1 HIGH
 ============================================================

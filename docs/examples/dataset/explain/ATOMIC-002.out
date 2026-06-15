@@ -7,11 +7,14 @@ Category:
   Malicious Code  (detector: rules)
 
 Description:
-  Invokes npm/pnpm/yarn/bun to install packages from an install
-  hook. The June 2026 'Atomic Arch' campaign added post-install
-  hooks running `npm install atomic-lockfile` / `bun install
-  js-digest`. Legitimate packages never fetch npm/bun packages
-  during the install phase.
+  Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or
+  run packages from an install hook. The June 2026 'Atomic Arch'
+  campaign added post-install hooks running `npm install
+  atomic-lockfile` / `bun install js-digest`. Legitimate packages
+  never fetch or execute npm/bun packages during the install phase.
+  `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and
+  the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run
+  lifecycle/remote code just like `install`.
 
 Recommendation:
   Install scripts must never fetch or install npm/bun packages.

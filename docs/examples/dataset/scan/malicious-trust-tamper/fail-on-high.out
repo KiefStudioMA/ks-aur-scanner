@@ -4,35 +4,35 @@ Scan Results: sysprep
 
 [CRITICAL] PRIV-007 Privileged account manipulation (install script)
     Creates or elevates an account to uid 0 / the wheel or sudo group — a backdoor-admin pattern.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install:2
+    Location: tests/fixtures/malicious/trust-tamper/sysprep.install:2
     Code:   useradd -ou 0 -g 0 backdoor
     Recommendation: Do not build. This grants an account administrative access.
     Reference: CWE-269
 
 [CRITICAL] PRIV-008 Password manipulation (install script)
     Sets, resets, or clears an account password (chpasswd / passwd -d / piped passwd).
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install:6
+    Location: tests/fixtures/malicious/trust-tamper/sysprep.install:6
     Code:   echo 'root:evilpass' | chpasswd
     Recommendation: Do not build. This changes account credentials.
     Reference: CWE-269
 
 [CRITICAL] TAMPER-002 doas/sudoers nopasswd grant (install script)
     Grants passwordless privilege via /etc/doas.conf or a NOPASSWD sudoers rule.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install:3
+    Location: tests/fixtures/malicious/trust-tamper/sysprep.install:3
     Code:   echo 'backdoor ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/backdoor
     Recommendation: Do not build. This grants passwordless root.
     Reference: CWE-269
 
 [CRITICAL] TAMPER-011 pacman signature downgrade (install script)
     Sets SigLevel = Never in /etc/pacman.conf, disabling package signature verification so future malicious updates are accepted silently.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install:5
+    Location: tests/fixtures/malicious/trust-tamper/sysprep.install:5
     Code:   sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf
     Recommendation: Do not build. This disables pacman signature checking.
     Reference: CWE-347
 
 [HIGH] TRUST-001 pacman keyring poisoning (install script)
     Imports and locally-signs an arbitrary key into pacman's trust store (pacman-key --recv-keys/--lsign) so attacker-signed packages are accepted.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/trust-tamper/sysprep.install:4
+    Location: tests/fixtures/malicious/trust-tamper/sysprep.install:4
     Code:   pacman-key --recv-keys DEADBEEFDEADBEEF && pacman-key --lsign-key DEADBEEFDEADBEEF
     Recommendation: Do not build. Packages ship keys via keyring packages, not by importing at build time.
     Reference: CWE-494
@@ -41,7 +41,7 @@ Scan Results: sysprep
 
 ============================================================
 Package: sysprep v1.0.0-1
-Scan duration: 2ms
+Scan duration: 5ms
 
 Found 5 issue(s):
   4 CRITICAL

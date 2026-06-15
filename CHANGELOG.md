@@ -4,6 +4,52 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0-rc3] - 2026-06-15
+
+Security-hardening release: an adversarial pre-ship review of the rc2 code closed
+six real defects across the gate, parser, and detection layers, plus an
+exhaustive expansion of shell/interpreter download-exec coverage. **Release
+candidate.**
+
+### Gate — fail closed
+- The AUR-membership classifier no longer treats a network/lookup error as
+  "not an AUR package" (which could let an install proceed unscanned); an
+  indeterminate result now fails closed and is scanned. The `install` consent
+  prompt requires a TTY — a piped `y` no longer counts as consent.
+
+### Parser — no silent evasion, no panic
+- Closed a quote-state desync between the array terminator and the inline-comment
+  stripper that could silently drop a crafted `source=()`/`sha256sums=()`
+  continuation line, hiding a source from every analyzer. An unterminated array is
+  now flushed to the analyzers (and warned), never dropped.
+- Fixed a panic on a CRLF + multibyte `.install` (byte offset could land
+  mid-codepoint).
+
+### Detection
+- The privilege analyzer now shares the informational-line filter, so a printed
+  `sudo`/`setcap`/`sudoers` message or heredoc no longer raises a Critical finding.
+- The printed-message filter is now **quote-aware**: a `;`/`|`/`&`/`>` *inside* a
+  quoted `echo`/`msg` string is literal text, so a benign note like
+  `echo "config lives in ~/.config; ..."` no longer trips `HIDDEN-001`. An
+  unquoted chain (`echo x; touch ~/.evilrc`) and in-string command substitution
+  (`"$(curl …)"`) are still scanned.
+- De-obfuscation now decodes 2-char quote-splitting and backslash escapes, catches
+  `dash` and other shells the old alternation missed, and runs in the deep /
+  remote-exec / IOC analyzers too.
+- **Exhaustive download-exec sink coverage** — every common shell and interpreter
+  reachable via `curl | …`, `<(curl)`, `-c/-e/-r "$(curl)"`, here-strings, path
+  prefixes (`/bin/sh`), launchers (`busybox`/`env`/…), and double-launchers
+  (24 shells + 20+ interpreters). `npx`/`bunx` lifecycle runners (`ATOMIC-002`).
+  New `EXEC-006` (`sqlite3 .shell/.system/.import`) and `EXEC-007`
+  (`make -f -` / `make -f /dev/stdin`).
+- `HIDDEN-002`/`INSTALL-002` now require an execution context (no longer fire on
+  `TMPDIR=/tmp/…`, `mktemp -d /tmp/…`, `./configure`).
+
+### Pacman hook
+- The privilege-drop decision/guard logic is now test-covered: it refuses a uid-0
+  *or* gid-0 drop target, refuses a symlinked/non-regular PKGBUILD, and fails
+  closed on a scan error or a critical finding.
+
 ## [1.1.0-rc2] - 2026-06-14
 
 Proactive detection expansion, driven by a live obfuscated AUR campaign and an

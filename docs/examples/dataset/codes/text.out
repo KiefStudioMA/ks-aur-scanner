@@ -1,11 +1,12 @@
 AUR Security Scanner - Detection Codes
 ============================================================
-106 codes across 13 categories
+108 codes across 13 categories
 
 [Command Injection]
   DLE-001 [Critical] Curl pipe to shell
   DLE-002 [Critical] Wget pipe to shell
   DLE-003 [Critical] Curl output executed
+  EXEC-007 [High] make reads a Makefile from stdin
   OBF-002 [High] Eval usage
 
 [Configuration]
@@ -55,6 +56,7 @@ AUR Security Scanner - Detection Codes
   ENV-002 [High] PATH manipulation
   EXEC-002 [Critical] Shell -c command substitution fetch
   EXEC-005 [Medium] Detached background execution
+  EXEC-006 [High] sqlite3 shell-command execution
   EXEC-REMOTE [Critical] Fetches and runs external code (remote_exec)
   HIDDEN-001 [High] Hidden file creation in home
   HIDDEN-002 [High] Tmp directory execution

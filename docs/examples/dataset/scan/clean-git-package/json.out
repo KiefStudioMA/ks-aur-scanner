@@ -9,7 +9,7 @@
       "title": "Provides impersonation",
       "description": "Package provides another package name, may be impersonating. CHAOS RAT used this technique.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/clean/git-package/PKGBUILD",
+        "file": "tests/fixtures/clean/git-package/PKGBUILD",
         "line": 13,
         "column": 1,
         "snippet": "provides=('git-package')"
@@ -27,7 +27,7 @@
       "title": "VCS source not pinned to a commit",
       "description": "Source #1 is a VCS checkout on a movable ref (branch/tag or none): git+https://github.com/example/git-package.git. Its content is not integrity-pinned and can change between scan and build.",
       "location": {
-        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/clean/git-package/PKGBUILD",
+        "file": "tests/fixtures/clean/git-package/PKGBUILD",
         "line": null,
         "column": null,
         "snippet": "source=(\"git+https://github.com/example/git-package.git\")"
@@ -41,8 +41,8 @@
     }
   ],
   "scanned_files": [
-    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/clean/git-package/PKGBUILD"
+    "tests/fixtures/clean/git-package/PKGBUILD"
   ],
-  "timestamp": "2026-06-15T01:57:16.041097789Z",
-  "scan_duration_ms": 2
+  "timestamp": "2026-06-15T10:43:29.614844660Z",
+  "scan_duration_ms": 5
 }

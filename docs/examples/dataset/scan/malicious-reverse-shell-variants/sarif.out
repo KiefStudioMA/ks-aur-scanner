@@ -9,7 +9,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
+                  "uri": "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
                 },
                 "region": {
                   "startLine": 3
@@ -28,7 +28,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
+                  "uri": "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
                 },
                 "region": {
                   "startLine": 2
@@ -47,7 +47,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
+                  "uri": "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
                 },
                 "region": {
                   "startLine": 4
@@ -66,7 +66,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
+                  "uri": "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
                 },
                 "region": {
                   "startLine": 3
@@ -85,26 +85,7 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
-                },
-                "region": {
-                  "startLine": 3
-                }
-              }
-            }
-          ],
-          "message": {
-            "text": "Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp."
-          },
-          "ruleId": "HIDDEN-002"
-        },
-        {
-          "level": "error",
-          "locations": [
-            {
-              "physicalLocation": {
-                "artifactLocation": {
-                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/PKGBUILD"
+                  "uri": "tests/fixtures/malicious/reverse-shell-variants/PKGBUILD"
                 },
                 "region": {
                   "startLine": 1
@@ -192,22 +173,6 @@
                 "level": "error"
               },
               "fullDescription": {
-                "text": "Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp."
-              },
-              "help": {
-                "text": "Packages should not execute from /tmp"
-              },
-              "id": "HIDDEN-002",
-              "name": "Tmp directory execution (install script)",
-              "shortDescription": {
-                "text": "Tmp directory execution (install script)"
-              }
-            },
-            {
-              "defaultConfiguration": {
-                "level": "error"
-              },
-              "fullDescription": {
                 "text": "No integrity verification is performed on 1 non-VCS source(s)"
               },
               "help": {
@@ -220,7 +185,7 @@
               }
             }
           ],
-          "version": "1.1.0-rc2"
+          "version": "1.1.0-rc3"
         }
       }
     }

