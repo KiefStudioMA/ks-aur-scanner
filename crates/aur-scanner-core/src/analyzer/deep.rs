@@ -16,18 +16,25 @@ use regex::Regex;
 
 lazy_static! {
     /// A decoding/decompression operation that produces executable text.
+    /// `(?i)` so `BASE64`/`XXD`/`OpenSSL` case variants cannot evade the decode
+    /// step (audit HI-6) -- these are all command names, none case-canonical.
     static ref DECODE: Regex = Regex::new(
-        r"base64\s+(-d|--decode|-[a-zA-Z]*d)|xxd\s+-r|\bbase32\s+-d|openssl\s+enc\s+.*-d|(gunzip|zcat|xz\s+-d|\bunzip)\b|\btr\s+.*\|"
+        r"(?i)base64\s+(-d|--decode|-[a-zA-Z]*d)|xxd\s+-r|\bbase32\s+-d|openssl\s+enc\s+.*-d|(gunzip|zcat|xz\s+-d|\bunzip)\b|\btr\s+.*\|"
     ).unwrap();
-    /// Hex-escaped payloads (several escapes, not an isolated byte).
+    /// Hex-escaped payloads (several escapes, not an isolated byte). Intentionally
+    /// case-sensitive: a bash ANSI-C escape is lowercase `\x`; the hex digits
+    /// already accept both cases via the `[0-9a-fA-F]` class.
     static ref HEX_BLOB: Regex = Regex::new(r"(\\x[0-9a-fA-F]{2}){4,}").unwrap();
     /// A sink that executes dynamically-produced text. Shell sinks come from the
     /// shared `SHELLS` constant so `dash`/`zsh`/`ksh -c`/here-strings are covered
-    /// like `sh`/`bash` (defect #6).
+    /// like `sh`/`bash` (defect #6). `(?i)` so `BASH`/`EVAL`/`SH -c` case variants
+    /// cannot evade the exec sink (audit HI-6).
     static ref EXEC_SINK: Regex = Regex::new(&format!(
-        r"\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b|\beval\b|{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s+-c\b|{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s*<<<|source\s+/dev/stdin|/dev/stdin"
+        r"(?i)\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b|\beval\b|{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s+-c\b|{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s*<<<|source\s+/dev/stdin|/dev/stdin"
     )).unwrap();
-    /// A long base64-looking blob in a single assignment/string.
+    /// A long base64-looking blob in a single assignment/string. Intentionally
+    /// case-sensitive: this matches the canonical Base64 ALPHABET, not a keyword,
+    /// so it must not be folded to case-insensitive.
     static ref LONG_B64: Regex = Regex::new(r"[A-Za-z0-9+/]{200,}={0,2}").unwrap();
 }
 
@@ -187,6 +194,19 @@ mod tests {
         assert!(
             !findings.iter().any(|f| f.id == "DEEP-001"),
             "documented decode|exec in a printed heredoc must not fire DEEP-001: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn case_variation_decode_then_exec_still_flags() {
+        // Audit HI-6: `BASE64 -d` into `EVAL`/`SH` (upper/mixed case) must still
+        // form DEEP-001 — DECODE and EXEC_SINK are `(?i)`.
+        let a = DeepAnalyzer::new();
+        let text = "p=$(echo aGVsbG8= | BASE64 -d)\nEVAL \"$p\"";
+        let findings = a.analyze_text(text, Path::new("PKGBUILD"));
+        assert!(
+            findings.iter().any(|f| f.id == "DEEP-001"),
+            "case-variant decode->exec must trip DEEP-001: {findings:?}"
         );
     }
 

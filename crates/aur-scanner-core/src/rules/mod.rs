@@ -44,6 +44,14 @@ pub struct Rule {
     /// Whether this rule is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Opt out of the case-insensitive default for this rule's regex patterns.
+    /// Rules are compiled `(?i)` by default (audit HI-6) so trivial case variation
+    /// (`CURL`, `Wget`) cannot evade them; set this `true` for rules keyed on
+    /// canonical casing -- environment-variable NAMEs (case-sensitive in bash),
+    /// base64/base32 alphabets, or `\xHH` hex assembly -- where folding the case
+    /// would over-match. A single span can instead opt out inline with `(?-i:…)`.
+    #[serde(default)]
+    pub case_sensitive: bool,
 }
 
 fn default_true() -> bool {
@@ -102,15 +110,15 @@ pub enum CompiledPattern {
 
 /// Compile a rule regex with safe defaults.
 ///
-/// * Case-insensitive by default so trivial case variation (`CURL`, `Xmrig`)
-///   cannot evade a rule. A pattern that needs case sensitivity for a specific
-///   span (e.g. a Base58 address class) opts out inline with `(?-i:...)`.
+/// * Case-insensitive UNLESS the owning rule opted out (`case_sensitive`), so
+///   trivial case variation (`CURL`, `Xmrig`) cannot evade a rule. A single span
+///   can instead opt out inline with `(?-i:...)` (e.g. a Base58 address class).
 /// * Explicit size/DFA limits: rule patterns can come from filesystem
 ///   `rules.d` files, so bound compiled-program and DFA memory rather than
 ///   trusting every author.
-fn compile_regex(pattern: &str) -> Result<Regex> {
+fn compile_regex(pattern: &str, case_sensitive: bool) -> Result<Regex> {
     RegexBuilder::new(pattern)
-        .case_insensitive(true)
+        .case_insensitive(!case_sensitive)
         .size_limit(4 * 1024 * 1024)
         .dfa_size_limit(16 * 1024 * 1024)
         .build()
@@ -118,11 +126,13 @@ fn compile_regex(pattern: &str) -> Result<Regex> {
 }
 
 impl CompiledPattern {
-    /// Compile a pattern
-    pub fn compile(pattern: &Pattern) -> Result<Self> {
+    /// Compile a pattern. `case_sensitive` is the owning rule's opt-out flag: when
+    /// `false` (the default) regex patterns compile case-insensitively (audit
+    /// HI-6). `Pattern::Literal` carries its own per-pattern `case_sensitive`.
+    pub fn compile(pattern: &Pattern, case_sensitive: bool) -> Result<Self> {
         match pattern {
             Pattern::Regex { pattern } => {
-                let re = compile_regex(pattern)?;
+                let re = compile_regex(pattern, case_sensitive)?;
                 Ok(CompiledPattern::Regex(re))
             }
             Pattern::Literal {
@@ -133,10 +143,10 @@ impl CompiledPattern {
                 case_sensitive: *case_sensitive,
             }),
             Pattern::Function { name, body_pattern } => {
-                let name_re = compile_regex(name)?;
+                let name_re = compile_regex(name, case_sensitive)?;
                 let body_re = body_pattern
                     .as_ref()
-                    .map(|p| compile_regex(p))
+                    .map(|p| compile_regex(p, case_sensitive))
                     .transpose()?;
                 Ok(CompiledPattern::Function {
                     name: name_re,
@@ -146,7 +156,7 @@ impl CompiledPattern {
             Pattern::Variable { name, value_pattern } => {
                 let value_re = value_pattern
                     .as_ref()
-                    .map(|p| compile_regex(p))
+                    .map(|p| compile_regex(p, case_sensitive))
                     .transpose()?;
                 Ok(CompiledPattern::Variable {
                     name: name.clone(),
@@ -209,7 +219,7 @@ impl RuleEngine {
 
         let mut compiled_patterns = Vec::new();
         for pattern in &rule.patterns {
-            compiled_patterns.push(CompiledPattern::compile(pattern)?);
+            compiled_patterns.push(CompiledPattern::compile(pattern, rule.case_sensitive)?);
         }
 
         let compiled = CompiledRule {
@@ -580,6 +590,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Download scripts first, review them, then execute".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "DLE-002".to_string(),
@@ -594,6 +605,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Download scripts first, review them, then execute".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "DLE-003".to_string(),
@@ -613,6 +625,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Review downloaded scripts before execution".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -636,6 +649,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Never download code from paste sites - this is a major red flag".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -658,6 +672,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Remove reverse shell code immediately".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SHELL-002".to_string(),
@@ -680,6 +695,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Remove reverse shell code immediately".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SHELL-003".to_string(),
@@ -699,6 +715,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Remove reverse shell code immediately".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SHELL-004".to_string(),
@@ -718,6 +735,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Socat TCP connections are suspicious in build scripts".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -744,6 +762,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Package should never access user SSH keys".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "CRED-002".to_string(),
@@ -763,6 +782,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Package should never access user GPG keys".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "CRED-003".to_string(),
@@ -791,6 +811,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Package should never access credential stores".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -826,6 +847,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Package should never access browser profiles".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "BROWSER-002".to_string(),
@@ -851,6 +873,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Package should never access browser databases".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // NOTE: privilege escalation (PRIV-001..006: sudo, SUID/SGID, sudoers,
@@ -879,6 +902,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Install scripts should not execute Python code".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "INSTALL-002".to_string(),
@@ -909,6 +933,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Review any binary execution during installation".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "INSTALL-003".to_string(),
@@ -925,6 +950,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Install scripts should never download additional content".to_string(),
             cwe_id: Some("CWE-494".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "INSTALL-004".to_string(),
@@ -948,6 +974,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Install hooks must never fetch or install packages. Declare real dependencies in depends/makedepends and handle sources in the source= array; report the package to the AUR maintainers.".to_string(),
             cwe_id: Some("CWE-494".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -974,6 +1001,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Services should be enabled by the user, not automatically".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "PERSIST-002".to_string(),
@@ -996,6 +1024,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Timers should be user-controlled; review carefully".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "PERSIST-003".to_string(),
@@ -1015,6 +1044,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Cron jobs should be managed by the user".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "PERSIST-004".to_string(),
@@ -1034,6 +1064,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Packages should not modify boot scripts".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "PERSIST-005".to_string(),
@@ -1053,6 +1084,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Autostart entries should be user-controlled".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "PERSIST-006".to_string(),
@@ -1072,6 +1104,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Verify this is a legitimate systemd component".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1095,6 +1128,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Remove cryptomining components".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "CRYPTO-002".to_string(),
@@ -1111,6 +1145,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Remove cryptomining components".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "CRYPTO-003".to_string(),
@@ -1150,6 +1185,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Wallet addresses in packages are highly suspicious".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1173,6 +1209,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Build/install should not send data externally".to_string(),
             cwe_id: Some("CWE-200".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "EXFIL-002".to_string(),
@@ -1192,6 +1229,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Netcat should not be piping data in build scripts".to_string(),
             cwe_id: Some("CWE-200".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "EXFIL-003".to_string(),
@@ -1211,6 +1249,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Webhook URLs in packages are highly suspicious".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1234,6 +1273,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Decode and review the base64 content manually".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "OBF-002".to_string(),
@@ -1248,6 +1288,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Avoid eval; use direct commands instead".to_string(),
             cwe_id: Some("CWE-95".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "OBF-003".to_string(),
@@ -1267,6 +1308,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Decode and review hex-encoded content".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "OBF-004".to_string(),
@@ -1283,6 +1325,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Review concatenated strings carefully".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "OBF-005".to_string(),
@@ -1302,6 +1345,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Decompress and review content before execution".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "OBF-006".to_string(),
@@ -1322,6 +1366,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
                 "De-obfuscate the command and review what it actually runs.".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1340,6 +1385,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Use domain names from trusted sources".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "URL-002".to_string(),
@@ -1356,6 +1402,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Always use full URLs from trusted sources".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "URL-003".to_string(),
@@ -1375,6 +1422,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Dynamic DNS domains are suspicious in packages".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         // NOTE: insecure transport (git://, git+http://, http://, ftp://) and
         // weak checksums (md5/sha1) are intentionally NOT pattern rules. They
@@ -1404,6 +1452,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Packages should not create hidden files in user home".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "HIDDEN-002".to_string(),
@@ -1433,6 +1482,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Packages should not execute from /tmp".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "HIDDEN-003".to_string(),
@@ -1449,6 +1499,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Binaries should be placed in standard locations".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1472,6 +1523,11 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "LD_PRELOAD manipulation is extremely suspicious".to_string(),
             cwe_id: Some("CWE-426".to_string()),
             enabled: true,
+            // Env-var NAMEs are case-sensitive in bash, and `/etc/ld.so.preload`
+            // is a fixed lowercase path: a lowercase `ld_preload=` does NOT set
+            // the real variable, so matching case-insensitively would only add
+            // false positives without catching any real attack (audit HI-6 caveat).
+            case_sensitive: true,
         },
         Rule {
             id: "ENV-002".to_string(),
@@ -1491,6 +1547,10 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "PATH manipulation in install scripts is suspicious".to_string(),
             cwe_id: Some("CWE-426".to_string()),
             enabled: true,
+            // `PATH` is a canonical upper-case env-var NAME; a lowercase `path=`
+            // is an ordinary local variable, so keep this case-sensitive to avoid
+            // false positives (audit HI-6 caveat).
+            case_sensitive: true,
         },
         Rule {
             id: "ENV-003".to_string(),
@@ -1510,6 +1570,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Packages should not modify shell configuration".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1530,6 +1591,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Verify this package is a legitimate alternative".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1552,6 +1614,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do NOT build. This is a known-malicious dependency. Remove the package and treat the host as compromised: rotate credentials (SSH, npm/GitHub tokens, browser sessions).".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "ATOMIC-002".to_string(),
@@ -1589,6 +1652,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.".to_string(),
             cwe_id: Some("CWE-494".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "ATOMIC-003".to_string(),
@@ -1608,6 +1672,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "This is a rootkit dropper artifact. Do not build; treat the host as compromised and reinstall rather than clean.".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1629,6 +1694,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This is a remote shell.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SHELL-006".to_string(),
@@ -1641,6 +1707,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This is a remote shell.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SHELL-007".to_string(),
@@ -1657,6 +1724,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This is a remote shell.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SHELL-008".to_string(),
@@ -1669,6 +1737,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This is a remote shell.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SHELL-009".to_string(),
@@ -1681,6 +1750,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This is an encrypted remote shell.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SHELL-010".to_string(),
@@ -1693,6 +1763,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This is a remote shell.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SHELL-011".to_string(),
@@ -1709,6 +1780,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This is a remote shell.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // --- exfiltration channels ---
@@ -1726,6 +1798,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Review the destination domain; this pattern smuggles data over DNS.".to_string(),
             cwe_id: Some("CWE-200".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "EXFIL-006".to_string(),
@@ -1738,6 +1811,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Verify what is being uploaded and to where.".to_string(),
             cwe_id: Some("CWE-200".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "EXFIL-007".to_string(),
@@ -1750,6 +1824,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Verify what is being posted and to where.".to_string(),
             cwe_id: Some("CWE-200".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "EXFIL-008".to_string(),
@@ -1765,6 +1840,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Remove. Packages do not post to chat webhooks during build/install.".to_string(),
             cwe_id: Some("CWE-200".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "EXFIL-009".to_string(),
@@ -1777,6 +1853,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Review the destination; these are common exfil/C2 hosts.".to_string(),
             cwe_id: Some("CWE-200".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "CRED-008".to_string(),
@@ -1789,6 +1866,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Remove. Packages have no reason to dump the environment.".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // --- broadened credential-store targets ---
@@ -1803,6 +1881,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Verify why a build/install touches credential files.".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "CRED-005".to_string(),
@@ -1815,6 +1894,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This harvests secrets/wallets.".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // --- account / auth / system tampering ---
@@ -1835,6 +1915,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This grants an account administrative access.".to_string(),
             cwe_id: Some("CWE-269".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "PRIV-008".to_string(),
@@ -1851,6 +1932,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This changes account credentials.".to_string(),
             cwe_id: Some("CWE-269".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "TAMPER-001".to_string(),
@@ -1863,6 +1945,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This edits the live auth database.".to_string(),
             cwe_id: Some("CWE-269".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "TAMPER-002".to_string(),
@@ -1879,6 +1962,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This grants passwordless root.".to_string(),
             cwe_id: Some("CWE-269".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "TAMPER-005".to_string(),
@@ -1894,6 +1978,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This tampers with authentication.".to_string(),
             cwe_id: Some("CWE-287".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "TAMPER-011".to_string(),
@@ -1906,6 +1991,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This disables pacman signature checking.".to_string(),
             cwe_id: Some("CWE-347".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "TAMPER-013".to_string(),
@@ -1922,6 +2008,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This weakens host security controls.".to_string(),
             cwe_id: Some("CWE-693".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "TAMPER-017".to_string(),
@@ -1937,6 +2024,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Verify the certificate; a rogue trust anchor enables TLS MITM.".to_string(),
             cwe_id: Some("CWE-295".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // --- supply-chain trust manipulation ---
@@ -1951,6 +2039,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. Packages ship keys via keyring packages, not by importing at build time.".to_string(),
             cwe_id: Some("CWE-494".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "TRUST-002".to_string(),
@@ -1963,6 +2052,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Verify the key; importing a key to satisfy validpgpkeys from an untrusted source defeats the check.".to_string(),
             cwe_id: Some("CWE-494".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "DEP-003".to_string(),
@@ -1970,11 +2060,20 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             description: "Redirects a language package manager to a non-default index/registry (pip --index-url, npm registry, GOPROXY, etc.) — a dependency-confusion vector.".to_string(),
             severity: Severity::High,
             category: Category::Dependencies,
-            patterns: vec![Pattern::Regex { pattern: r"(--index-url|--extra-index-url|PIP_INDEX_URL=|npm_config_registry=|--registry\s+https?|GOPROXY=|--default-registry)".to_string() }],
+            // The rule stays case-insensitive overall (flags like `--index-url`
+            // and npm's `npm_config_registry`, which npm honours in BOTH cases,
+            // should match any spelling). But `PIP_INDEX_URL` and `GOPROXY` are
+            // pinned case-exact with `(?-i:…)`: pip/go read only the upper-case
+            // env var, so a lower-case `pip_index_url=`/`goproxy=` is an inert
+            // local variable and matching it would be a false positive
+            // (audit HI-6 env-NAME caveat; the rest of the env-NAME family is
+            // handled rule-level via `case_sensitive`).
+            patterns: vec![Pattern::Regex { pattern: r"(--index-url|--extra-index-url|(?-i:PIP_INDEX_URL)=|npm_config_registry=|--registry\s+https?|(?-i:GOPROXY)=|--default-registry)".to_string() }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Verify the index host; overriding the registry redirects dependencies to an attacker source.".to_string(),
             cwe_id: Some("CWE-494".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SRC-009".to_string(),
@@ -1993,6 +2092,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Resolve and review the host; obfuscated IPs hide the real destination.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // --- additional obfuscation / encoding ---
@@ -2007,6 +2107,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Decode the printf escapes and review the assembled command.".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "OBF-008".to_string(),
@@ -2019,6 +2120,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Decode and review the content.".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "OBF-011".to_string(),
@@ -2031,6 +2133,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Review the here-string; this executes an assembled command.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // --- additional remote-exec forms ---
@@ -2045,6 +2148,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. This runs code fetched from a URL.".to_string(),
             cwe_id: Some("CWE-494".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "EXEC-005".to_string(),
@@ -2057,6 +2161,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Review the detached process; this outlives the install.".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "EXEC-006".to_string(),
@@ -2074,6 +2179,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do not build. sqlite3 .shell/.system run arbitrary commands; report the package.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "EXEC-007".to_string(),
@@ -2090,6 +2196,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Review the Makefile source; building a Makefile read from stdin/a pipe runs unverified recipes.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
     ]
 }
@@ -2538,6 +2645,56 @@ mod tests {
                 "non-shell pipe target must not trip DLE-001: {s} -> {m:?}"
             );
         }
+    }
+
+    #[test]
+    fn env_name_rules_stay_case_sensitive() {
+        // Audit HI-6 caveat: env-var NAME rules opt out of the `(?i)` default via
+        // the new `case_sensitive` field, so the real upper-case env var still
+        // fires while a benign lowercase local variable does not false-positive.
+        let engine = RuleEngine::default();
+
+        // ENV-002 (PATH manipulation, install scripts).
+        let hit = engine.match_content("export PATH=/evil/bin:$PATH", FileType::InstallScript);
+        assert!(hit.iter().any(|m| m.rule_id == "ENV-002"), "export PATH= must fire ENV-002");
+        let miss = engine.match_content("export path=/home/me/scratch", FileType::InstallScript);
+        assert!(
+            !miss.iter().any(|m| m.rule_id == "ENV-002"),
+            "lowercase local `path=` must NOT fire ENV-002 (case_sensitive opt-out)"
+        );
+
+        // ENV-001 (LD_PRELOAD).
+        let hit2 = engine.match_content("LD_PRELOAD=/tmp/evil.so make", FileType::Pkgbuild);
+        assert!(hit2.iter().any(|m| m.rule_id == "ENV-001"), "LD_PRELOAD= must fire ENV-001");
+        let miss2 = engine.match_content("ld_preload=localvalue", FileType::Pkgbuild);
+        assert!(
+            !miss2.iter().any(|m| m.rule_id == "ENV-001"),
+            "lowercase `ld_preload=` must NOT fire ENV-001 (case_sensitive opt-out)"
+        );
+    }
+
+    #[test]
+    fn dep003_registry_env_names_respect_canonical_case() {
+        // DEP-003 mixes tokens of different canonical casing. pip/go env vars are
+        // upper-case only, so a lower-case `pip_index_url=`/`goproxy=` is inert and
+        // must NOT fire; the real upper-case names + npm (both cases) + flags must.
+        let engine = RuleEngine::default();
+        let fires = |s: &str| {
+            engine
+                .match_content(s, FileType::Pkgbuild)
+                .iter()
+                .any(|m| m.rule_id == "DEP-003")
+        };
+        // Real / canonical forms fire.
+        assert!(fires("PIP_INDEX_URL=https://evil/idx pip install x"), "PIP_INDEX_URL= must fire");
+        assert!(fires("GOPROXY=https://evil go build"), "GOPROXY= must fire");
+        assert!(fires("pip install --index-url https://evil/idx x"), "--index-url must fire");
+        // npm honours both cases, so both must fire.
+        assert!(fires("npm_config_registry=https://evil npm i"), "npm_config_registry= must fire");
+        assert!(fires("NPM_CONFIG_REGISTRY=https://evil npm i"), "NPM_CONFIG_REGISTRY= must fire");
+        // Inert lower-case pip/go env vars must NOT false-positive.
+        assert!(!fires("pip_index_url=/home/me/notes"), "lowercase pip_index_url= must NOT fire (inert)");
+        assert!(!fires("goproxy=somelocalnote"), "lowercase goproxy= must NOT fire (inert)");
     }
 
     #[test]

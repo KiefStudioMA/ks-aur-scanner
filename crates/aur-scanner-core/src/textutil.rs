@@ -327,16 +327,19 @@ pub const SHELLS: &str = r"(?:elvish|xonsh|ksh93|pdksh|loksh|rbash|bash|dash|mks
 /// by `python(?:3(?:\.\d+)?|2)?`.
 ///
 /// Ordering matters only where one name prefixes another: `perl6` before `perl`,
-/// `nodejs` before `node`, `Rscript` before the single-letter `R` (which is kept
-/// LAST and — because `INTERPRETERS` is only embedded in the case-SENSITIVE
-/// analyzer regexes — matches an upper-case `R` only, so a lower-case `r` cannot
-/// trip it). The single-/double-letter members (`R`, `bb`) are safe because every
-/// sink anchors them with `\b…\b` in command position (`| Rfoo`, `VAR=R make`,
-/// `| bbtool` stay clean). The `awk` family is the highest FP-risk member (a
-/// fetched stream can be legitimately awk-processed) but is a genuine code-exec
-/// boundary in the fetch→pipe→interpreter context and is kept per
-/// exhaustive-coverage. Non-capturing for safe embedding.
-pub const INTERPRETERS: &str = r"(?:powershell|runhaskell|runghc|python(?:3(?:\.\d+)?|2)?|pypy|perl6|perl|ruby|php|nodejs|node|luajit|lua|tclsh|wish|deno|bun|Rscript|julia|gawk|mawk|nawk|awk|groovy|expect|guile|scala|clojure|clj|racket|chicken|csi|elixir|iex|raku|crystal|babashka|bb|ts-node|tsx|pwsh|R)";
+/// `nodejs` before `node`, `Rscript` before the single-letter `R` (kept LAST).
+///
+/// The R-language names `Rscript` and the single-letter `R` are wrapped in
+/// `(?-i:…)` so they match their CANONICAL upper-case spelling even when a
+/// consumer compiles the whole pattern case-insensitively (the audit-HI-6
+/// analyzer sinks now do). Without this, a case-insensitive `R` would match a
+/// lower-case `r` — an extremely common token — and trip a `fetch | r` FP storm.
+/// Every other member is a normal command name where case-folding is wanted
+/// (`PYTHON`/`PERL`/`NODE` should match). The double-letter `bb` and the `awk`
+/// family stay case-foldable: uppercase `BB`/`AWK` are not common false tokens
+/// and every sink anchors them with `\b…\b` in command position. Non-capturing
+/// for safe embedding.
+pub const INTERPRETERS: &str = r"(?:powershell|runhaskell|runghc|python(?:3(?:\.\d+)?|2)?|pypy|perl6|perl|ruby|php|nodejs|node|luajit|lua|tclsh|wish|deno|bun|(?-i:Rscript)|julia|gawk|mawk|nawk|awk|groovy|expect|guile|scala|clojure|clj|racket|chicken|csi|elixir|iex|raku|crystal|babashka|bb|ts-node|tsx|pwsh|(?-i:R))";
 
 /// Optional path prefix before a launcher word or a shell/interpreter, e.g.
 /// `/bin/`, `/usr/bin/`. `\S+` is greedy and eats interior slashes, so

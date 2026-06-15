@@ -43,23 +43,32 @@ impl PrivilegeAnalyzer {
     /// Create a new privilege analyzer
     pub fn new() -> Self {
         Self {
-            sudo_pattern: Regex::new(r"\bsudo\b").unwrap(),
+            // `(?i)` so `SUDO`/`Sudo` cannot evade PRIV-001 (audit HI-6). The
+            // analyzer matches only `executable_body()` (printed/informational
+            // lines stripped), so a documented mention still cannot false-fire.
+            sudo_pattern: Regex::new(r"(?i)\bsudo\b").unwrap(),
             // SUID/SGID is the *special* permission bit. In numeric form it only
             // exists in a 4-digit octal mode whose leading digit has the suid (4)
             // or sgid (2) bit set, i.e. leading digit 2-7 (a leading 0 = no special
             // bit, 1 = sticky only). Plain 3-digit modes (755, 644, 700) CANNOT set
             // suid/sgid and must never match. Symbolic forms (u+s, g+s, +s) and
             // `install -m<mode>` with a special bit are also covered.
+            // `(?ix)` so `CHMOD`/`INSTALL` case variants cannot evade PRIV-002
+            // (audit HI-6). The octal mode digits are case-irrelevant; `(?i)` only
+            // additionally lets the symbolic suid bit match `S` as well as `s`,
+            // which is still a suid set.
             suid_pattern: Regex::new(
-                r"(?x)
+                r"(?ix)
                   chmod \s+ (?:-[A-Za-z]+ \s+)* 0?[2-7][0-7]{3} \b   # chmod [flags] 4755 / 02755
                 | chmod \s+ [ugoa]* [-+=] [rwxXt]* s \b              # chmod u+s / g+s / +s
                 | install \s [^\n]* -[A-Za-z]*m [=\s]? 0?[2-7][0-7]{3} \b  # install -m4755 / -Dm4755
                 ",
             )
             .unwrap(),
-            sudoers_pattern: Regex::new(r"/etc/sudoers").unwrap(),
-            capabilities_pattern: Regex::new(r"setcap\s+").unwrap(),
+            // `(?i)` for audit HI-6 consistency; printed mentions are already
+            // stripped by `executable_body()` so this adds no false positives.
+            sudoers_pattern: Regex::new(r"(?i)/etc/sudoers").unwrap(),
+            capabilities_pattern: Regex::new(r"(?i)setcap\s+").unwrap(),
         }
     }
 }
@@ -313,6 +322,29 @@ package() {
 
         let findings = analyzer.analyze(&context).await.unwrap();
         assert!(findings.iter().any(|f| f.id == "PRIV-002"));
+    }
+
+    #[tokio::test]
+    async fn case_variation_does_not_evade_privilege() {
+        // Audit HI-6: upper/mixed-case privilege tokens must still fire. sudo
+        // (PRIV-001), setcap (PRIV-004), and CHMOD/INSTALL suid modes (PRIV-002).
+        let analyzer = PrivilegeAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+package() {
+    SUDO make install
+    SETCAP cap_setuid+ep "$pkgdir/usr/bin/x"
+    CHMOD 4755 "$pkgdir/usr/bin/y"
+}
+"#,
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(findings.iter().any(|f| f.id == "PRIV-001"), "SUDO must fire PRIV-001");
+        assert!(findings.iter().any(|f| f.id == "PRIV-004"), "SETCAP must fire PRIV-004");
+        assert!(findings.iter().any(|f| f.id == "PRIV-002"), "CHMOD 4755 must fire PRIV-002");
     }
 
     #[tokio::test]
