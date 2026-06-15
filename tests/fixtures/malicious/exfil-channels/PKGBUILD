@@ -1,0 +1,10 @@
+# Maintainer: hijacked <attacker@evil.example>
+pkgname=stats-collector
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="collects stats"
+arch=('x86_64')
+url="https://example.com"
+license=('custom')
+install="${pkgname}.install"
+source=()

