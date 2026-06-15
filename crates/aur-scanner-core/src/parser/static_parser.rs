@@ -16,9 +16,9 @@ lazy_static! {
     // Array patterns. Group 2 captures an optional `+` so `name+=(...)` (append)
     // is parsed instead of silently dropped -- a second `source+=(...)` would
     // otherwise never reach the source/checksum analyzers. A single-line array
-    // is handled by ARRAY_MULTILINE_START's `ends_with(')')` fast path (its `.+`
-    // also matches the closing paren), so no separate single-line pattern is
-    // needed.
+    // is handled by ARRAY_MULTILINE_START whose content is fed to the quote-aware
+    // `array_terminator` scanner (which finds the real closing paren on the same
+    // line), so no separate single-line pattern is needed.
     static ref ARRAY_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)(\+?)=\($"#).unwrap();
     // Array that starts with content on the first line (single- or multi-line).
     static ref ARRAY_MULTILINE_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)(\+?)=\((.+)$"#).unwrap();
@@ -184,15 +184,23 @@ impl PkgbuildParser for StaticParser {
             // a value (a VCS `#commit=` fragment, a URL anchor) is preserved.
             let code = strip_inline_comment(trimmed);
 
-            // Handle multi-line array continuation
-            if let Some((name, append, ref mut collected)) = pending_array.as_mut() {
-                collected.push(' ');
-                collected.push_str(code.trim_end_matches(')'));
+            // Handle multi-line array continuation. The array only ends at a `)`
+            // that is unquoted and at paren-depth 0 (`array_terminator`); a `)`
+            // inside a quoted value -- e.g. a multi-line quoted source whose first
+            // physical line ends in `)` -- must NOT close it, or every following
+            // source/checksum line would be dropped before reaching the analyzers
+            // (defect #3). `take()` so we can re-store the buffer without a borrow
+            // conflict when the array is not yet closed.
+            if let Some((name, append, mut collected)) = pending_array.take() {
+                collected.push('\n');
+                collected.push_str(code);
 
-                if code.ends_with(')') {
-                    let elements = self.parse_array_elements(collected);
-                    self.assign_array(&mut pkgbuild, name, elements, *append);
-                    pending_array = None;
+                if let Some(end) = array_terminator(&collected) {
+                    let elements = self.parse_array_elements(&collected[..end]);
+                    self.assign_array(&mut pkgbuild, &name, elements, append);
+                    // pending_array already None (taken); leave it closed.
+                } else {
+                    pending_array = Some((name, append, collected));
                 }
                 i += 1;
                 continue;
@@ -212,10 +220,10 @@ impl PkgbuildParser for StaticParser {
                 let name = caps.get(1).unwrap().as_str().to_string();
                 let append = !caps.get(2).unwrap().as_str().is_empty();
                 let first_content = caps.get(3).unwrap().as_str();
-                // Check if it actually ends with ) - could be single line
-                if first_content.ends_with(')') {
-                    let content = first_content.trim_end_matches(')');
-                    let elements = self.parse_array_elements(content);
+                // Single-line only when the closing `)` is unquoted at depth 0.
+                // A quoted `)` in the first element does not close the array.
+                if let Some(end) = array_terminator(first_content) {
+                    let elements = self.parse_array_elements(&first_content[..end]);
                     self.assign_array(&mut pkgbuild, &name, elements, append);
                 } else {
                     pending_array = Some((name, append, first_content.to_string()));
@@ -415,6 +423,47 @@ fn strip_inline_comment(line: &str) -> &str {
     line
 }
 
+/// Find the byte index of the `)` that closes an array body, where `buf` is the
+/// accumulated text *after* the opening `name=(`. The terminator is the first
+/// `)` that is **unquoted** and at **nested-paren depth 0**. Single/double quote
+/// and backslash-escape state is tracked across the whole buffer (matching
+/// [`crate::textutil::BraceScanner`]'s convention: `\` escapes outside single
+/// quotes; single quotes are literal), so a `)` inside a quoted value -- or a
+/// balanced `(...)` inside an unquoted value -- is not mistaken for the end of
+/// the array. Returns `None` when the array is still open (more lines follow).
+///
+/// This is the quote-aware replacement for the old `ends_with(')')` /
+/// `trim_end_matches(')')` heuristic, which let an attacker terminate the array
+/// early with a quoted `)` and hide every following source/checksum line from
+/// the analyzers (defect #3).
+fn array_terminator(buf: &str) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut depth: u32 = 0;
+
+    for (idx, ch) in buf.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if !in_single => escaped = true,
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '(' if !in_single && !in_double => depth += 1,
+            ')' if !in_single && !in_double => {
+                if depth == 0 {
+                    return Some(idx);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,6 +587,70 @@ package() {
         let parser = StaticParser::strict();
         let result = parser.parse("pkgdesc='test'");
         assert!(matches!(result, Err(ParseError::MissingField(_))));
+    }
+
+    #[test]
+    fn quoted_paren_does_not_terminate_array_early() {
+        // Defect #3 (parser evasion): the first element opens a `"` whose value
+        // contains `)` and spans to the next physical line. The first line ends
+        // with `)`, but it is INSIDE the quote, so the array must NOT close there.
+        // Before the fix, the array terminated on line 1 and the entire malicious
+        // `https://evil/backdoor.sh` source was dropped before any analyzer saw it.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"https://legit/a.tar.gz)\n",
+            "        x\" \"https://evil/backdoor.sh\")\n",
+        );
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert!(
+            urls.iter().any(|u| u.contains("evil/backdoor.sh")),
+            "malicious source must not be hidden by a quoted `)`; got {urls:?}"
+        );
+        assert_eq!(result.source.len(), 2, "both array elements must survive: {urls:?}");
+    }
+
+    #[test]
+    fn quoted_paren_in_continuation_keeps_following_lines() {
+        // Same evasion across an empty-first-line multi-line array: a quoted `)`
+        // on a continuation line must not drop the checksum line that follows.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\n",
+            "        \"git+https://h/r.git#branch=v1)\n",
+            "        more\"\n",
+            "        \"https://evil/backdoor.sh\")\n",
+            "sha256sums=('AAA'\n",
+            "            'BBB')\n",
+        );
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert!(
+            urls.iter().any(|u| u.contains("evil/backdoor.sh")),
+            "source after a quoted `)` continuation line must survive; got {urls:?}"
+        );
+        // The checksum array (after the source array) must still be parsed.
+        assert_eq!(
+            result.checksums.sha256sums.len(),
+            2,
+            "checksum array following the evaded source array must not be dropped"
+        );
+    }
+
+    #[test]
+    fn nested_parens_in_unquoted_value_do_not_terminate_early() {
+        // A balanced `(...)` inside an array value must not be read as the close.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"https://example.com/file-(1).tar.gz\"\n",
+            "        \"https://example.com/second.tar.gz\")\n",
+        );
+        let result = parser.parse(content).unwrap();
+        assert_eq!(result.source.len(), 2);
+        assert!(result.source[1].url.contains("second.tar.gz"));
     }
 
     #[test]

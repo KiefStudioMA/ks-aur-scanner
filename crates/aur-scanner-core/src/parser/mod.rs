@@ -323,17 +323,23 @@ pub fn parse_install_hooks(content: &str) -> Vec<InstallHook> {
         "post_remove",
     ];
 
+    // `offset` is the real byte offset of the current line's start in `content`.
+    // It is NEVER reconstructed from `lines()` lengths: `str::lines()` strips the
+    // line terminator (`\n` *and* a preceding `\r`), so summing `len() + 1` under-
+    // counts by one byte per CRLF line. With multibyte content that drift lands
+    // mid-codepoint and `&content[offset..]` panics (scan DoS on a crafted
+    // `.install`), and the body starts at the wrong place on every CRLF file
+    // (defect #4). Instead we advance past the actual terminator present in the
+    // bytes, so `offset` is always a valid char boundary.
+    let mut offset = 0usize;
     for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
         for hook_name in &hook_names {
-            if line.trim().starts_with(&format!("{}()", hook_name))
-                || line.trim().starts_with(&format!("{} ()", hook_name))
+            if trimmed.starts_with(&format!("{}()", hook_name))
+                || trimmed.starts_with(&format!("{} ()", hook_name))
             {
-                // Find the function body
-                let remaining = &content[content
-                    .lines()
-                    .take(line_num)
-                    .map(|l| l.len() + 1)
-                    .sum::<usize>()..];
+                // Find the function body from this line's real byte offset.
+                let remaining = &content[offset..];
                 if let Some(body) = extract_function_body(remaining) {
                     hooks.push(InstallHook {
                         name: hook_name.to_string(),
@@ -342,6 +348,16 @@ pub fn parse_install_hooks(content: &str) -> Vec<InstallHook> {
                     });
                 }
             }
+        }
+
+        // Advance past this line and whatever terminator actually follows it
+        // (`\r\n`, `\n`, or nothing at EOF).
+        offset += line.len();
+        let rest = &content[offset..];
+        if rest.starts_with("\r\n") {
+            offset += 2;
+        } else if rest.starts_with('\n') {
+            offset += 1;
         }
     }
 
@@ -399,6 +415,34 @@ mod tests {
             Protocol::Git
         );
         assert_eq!(Protocol::from_url("local-file.tar.gz"), Protocol::File);
+    }
+
+    #[test]
+    fn crlf_multibyte_install_does_not_panic() {
+        // Defect #4: with CRLF line endings the old offset math (`len()+1` per
+        // line) under-counts by one byte per preceding line. With multibyte
+        // content above the hook, the resulting offset lands mid-UTF-8-codepoint
+        // and `&content[offset..]` panics -- a scan DoS on a crafted `.install`.
+        // Several CRLF-terminated multibyte lines precede the hook so the drift
+        // reaches into a 3-byte char rather than a terminator byte.
+        let content = "pkgname=x\r\ny=1\r\n# \u{8a9e}\r\npost_install() {\r\n  echo hi\r\n}\r\n";
+        let hooks = parse_install_hooks(content);
+        assert_eq!(hooks.len(), 1, "post_install hook must be detected on a CRLF file");
+        assert_eq!(hooks[0].name, "post_install");
+        assert!(
+            hooks[0].content.contains("echo hi"),
+            "hook body must start at the right offset on a CRLF file, got: {:?}",
+            hooks[0].content
+        );
+    }
+
+    #[test]
+    fn lf_install_hook_body_is_correct() {
+        // Guard the LF path still works (regression net for the offset rewrite).
+        let content = "pkgname=x\npost_install() {\n  echo done\n}\n";
+        let hooks = parse_install_hooks(content);
+        assert_eq!(hooks.len(), 1);
+        assert!(hooks[0].content.contains("echo done"));
     }
 
     #[test]
