@@ -173,8 +173,14 @@ impl PkgbuildParser for StaticParser {
             let line = lines[i];
             let trimmed = line.trim();
 
-            // Skip comments and empty lines
-            if trimmed.is_empty() || COMMENT.is_match(trimmed) {
+            // Skip blank lines and whole-line comments -- but ONLY when we are
+            // not in the middle of a multi-line array. Inside an open array a
+            // `#`-leading (or blank) physical line can be content inside a quote
+            // opened on an earlier line (bash keeps it as part of the value), so
+            // it must reach the continuation handler below, which strips comments
+            // quote-awarely. Dropping it here would silently delete quoted
+            // content -- the same comment/quote desync class as defect #3.
+            if pending_array.is_none() && (trimmed.is_empty() || COMMENT.is_match(trimmed)) {
                 i += 1;
                 continue;
             }
@@ -192,8 +198,27 @@ impl PkgbuildParser for StaticParser {
             // (defect #3). `take()` so we can re-store the buffer without a borrow
             // conflict when the array is not yet closed.
             if let Some((name, append, mut collected)) = pending_array.take() {
+                // Strip THIS continuation line's inline comment using the quote
+                // state carried from the buffer so far -- NOT the per-line `code`
+                // (which `strip_inline_comment` computed with a fresh quote state).
+                // A `#` on a continuation line that is still inside a quote opened
+                // on an earlier array line is part of the value, not a comment;
+                // stripping it with a reset state would delete the real closing
+                // quote/paren and silently drop the whole array (the desync that
+                // re-opened defect #3).
+                //
+                // The join `\n` is pushed BEFORE computing the carried state so a
+                // trailing `\` line-continuation escapes the newline exactly as
+                // `array_terminator` (which re-scans the whole buffer) sees it. If
+                // the state were computed first, the seed would carry escaped=true
+                // into the next line while array_terminator carries escaped=false
+                // after consuming the `\n` -- they would disagree, and a leading
+                // `"` on the next line would be eaten as escaped, exposing its `#`
+                // as a bogus comment and silently dropping the trailing source.
                 collected.push('\n');
-                collected.push_str(code);
+                let (in_single, in_double, escaped) = quote_state_at_end(&collected);
+                let cline = strip_inline_comment_stateful(trimmed, in_single, in_double, escaped);
+                collected.push_str(cline);
 
                 if let Some(end) = array_terminator(&collected) {
                     let elements = self.parse_array_elements(&collected[..end]);
@@ -281,6 +306,23 @@ impl PkgbuildParser for StaticParser {
             }
 
             i += 1;
+        }
+
+        // Defense in depth: an array whose closing `)` never arrived (an
+        // unbalanced quote/paren in a crafted PKGBUILD) must NOT be silently
+        // dropped -- that would re-blind the source/checksum analyzers, which
+        // iterate the parsed `source`/`checksums` fields rather than the raw
+        // text (the defect #3 evasion class). Flush the buffered content
+        // best-effort so it still reaches the analyzers, and warn loudly.
+        if let Some((name, append, collected)) = pending_array.take() {
+            tracing::warn!(
+                "unterminated array `{}=(` at end of PKGBUILD: flushing {} buffered bytes so the \
+                 contents are still scanned (possible evasion attempt or malformed PKGBUILD)",
+                name,
+                collected.len()
+            );
+            let elements = self.parse_array_elements(&collected);
+            self.assign_array(&mut pkgbuild, &name, elements, append);
         }
 
         // Validate required fields in strict mode
@@ -389,10 +431,27 @@ impl StaticParser {
 /// starts a comment when it is unquoted and preceded by whitespace (or starts
 /// the line) -- matching how the shell tokenizes comments.
 fn strip_inline_comment(line: &str) -> &str {
+    strip_inline_comment_stateful(line, false, false, false)
+}
+
+/// Like [`strip_inline_comment`], but seeded with the quote/escape state carried
+/// from preceding physical lines of the SAME multi-line array value.
+///
+/// `strip_inline_comment` resets quote state at the start of every line, which is
+/// correct for a standalone line but WRONG for an array continuation line that is
+/// still inside a quote opened on an earlier line: there a `#` is part of the
+/// quoted value, not a comment. Stripping it with a reset state deletes the real
+/// closing quote/paren so [`array_terminator`] never finds the terminator and the
+/// whole array is silently dropped -- the desync that re-opened defect #3. The
+/// caller seeds this with [`quote_state_at_end`] of the accumulated buffer so the
+/// two scanners agree on what is quoted.
+fn strip_inline_comment_stateful(
+    line: &str,
+    mut in_single: bool,
+    mut in_double: bool,
+    mut escaped: bool,
+) -> &str {
     let bytes = line.as_bytes();
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escaped = false;
     let mut prev_ws = true; // start-of-line counts as a word boundary
     for (i, &b) in bytes.iter().enumerate() {
         if escaped {
@@ -421,6 +480,33 @@ fn strip_inline_comment(line: &str) -> &str {
         }
     }
     line
+}
+
+/// Quote/escape state (in_single, in_double, escaped) after scanning `buf`.
+///
+/// Used to seed [`strip_inline_comment_stateful`] for the next physical line of a
+/// multi-line array, so comment-stripping agrees with [`array_terminator`] (which
+/// re-scans the whole accumulated buffer). Mirrors the same quoting rules: `\`
+/// escapes only outside single quotes; single quotes are literal; `"`/`'` toggle.
+/// Parens and `#` are irrelevant to quote state and ignored here (the buffer this
+/// scans has already had its unquoted comments stripped).
+fn quote_state_at_end(buf: &str) -> (bool, bool, bool) {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    for ch in buf.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if !in_single => escaped = true,
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            _ => {}
+        }
+    }
+    (in_single, in_double, escaped)
 }
 
 /// Find the byte index of the `)` that closes an array body, where `buf` is the
@@ -651,6 +737,135 @@ package() {
         let result = parser.parse(content).unwrap();
         assert_eq!(result.source.len(), 2);
         assert!(result.source[1].url.contains("second.tar.gz"));
+    }
+
+    #[test]
+    fn hash_inside_single_quoted_continuation_is_not_a_comment() {
+        // Task 4049 (defect #3 redux): a single quote opened on array line 1 is
+        // still open on the continuation line, so the ` # rm -rf` there is part of
+        // the quoted value, NOT a comment. The old per-line strip_inline_comment
+        // reset quote state and stripped it, deleting the closing `'`/`)` so the
+        // whole source AND sha256sums arrays were silently dropped (re-blinding
+        // source.rs / checksum.rs). They must survive now.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=('http://legit.example/a.tar.gz\n",
+            "  payload # rm -rf')\n",
+            "sha256sums=('SKIP')\n",
+        );
+        let result = parser.parse(content).unwrap();
+        // The array must NOT be dropped (bash sees one multi-line single-quoted
+        // element containing both the URL and the payload text).
+        assert!(!result.source.is_empty(), "source must not be silently dropped");
+        let joined = result.source.iter().map(|s| s.url.as_str()).collect::<String>();
+        assert!(joined.contains("http://legit.example/a.tar.gz"), "URL must reach the analyzers: {joined:?}");
+        assert!(joined.contains("payload"), "hidden payload text must reach the analyzers: {joined:?}");
+        // sha256sums was being swallowed into the dropped buffer too.
+        assert_eq!(result.checksums.sha256sums.len(), 1, "checksum array must still parse");
+    }
+
+    #[test]
+    fn hash_inside_double_quoted_continuation_is_preserved() {
+        // Same desync, double-quoted multi-line value; the `#` between the open
+        // and close `"` must stay in the element and the trailing source survives.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"multi\n",
+            "line # value\"\n",
+            "        \"https://evil/backdoor.sh\")\n",
+        );
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert!(urls.iter().any(|u| u.contains("evil/backdoor.sh")), "trailing source must survive: {urls:?}");
+        assert!(urls.iter().any(|u| u.contains("# value")), "quoted `#` must be preserved in the value: {urls:?}");
+    }
+
+    #[test]
+    fn real_comment_on_continuation_line_is_still_stripped() {
+        // The other direction: an UNQUOTED `#` on a continuation line is a real
+        // comment and must still be stripped -- including a `)` inside it, which
+        // must not be mistaken for the array terminator.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"a\"\n",
+            "        \"b\"  # ) trailing note, not a terminator\n",
+            "        \"c\")\n",
+        );
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(urls, vec!["a", "b", "c"], "real comment (and its `)`) must be stripped: {urls:?}");
+    }
+
+    #[test]
+    fn unterminated_array_is_flushed_not_dropped() {
+        // A genuinely unterminated array (no closing quote/paren ever) must be
+        // flushed best-effort so its contents still reach the analyzers, never
+        // silently dropped.
+        let parser = StaticParser::new();
+        let content = "pkgname=t\npkgver=1\npkgrel=1\nsource=('http://legit.example/x.tar.gz\n";
+        let result = parser.parse(content).unwrap();
+        assert!(!result.source.is_empty(), "unterminated array must be flushed, not dropped");
+        assert!(result.source.iter().any(|s| s.url.contains("http://legit.example/x.tar.gz")));
+    }
+
+    #[test]
+    fn escaped_eol_double_quote_does_not_drop_trailing_source() {
+        // Task 4049 round 2 (Echo's seam catch): a trailing `\` line-continuation
+        // escapes the join newline. The carried-state seed must be computed AFTER
+        // the `\n` is pushed (so the escape is absorbed exactly like
+        // array_terminator sees it); otherwise the next line's leading `"` is
+        // eaten as escaped, its `#` becomes a bogus comment, and the trailing
+        // `http://evil/x` source is silently dropped. Bash builds three sources;
+        // the scanner must see evil/x.
+        let parser = StaticParser::new();
+        let content = "pkgname=t\npkgver=1\npkgrel=1\nsource=(http://legit/a \\\n\" #) x\" http://evil/x)\n";
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert!(urls.iter().any(|u| u.contains("http://evil/x")), "trailing source must not be dropped: {urls:?}");
+        assert!(urls.iter().any(|u| u.contains("http://legit/a")), "first source must survive: {urls:?}");
+    }
+
+    #[test]
+    fn escaped_eol_single_quote_sibling_does_not_drop_trailing_source() {
+        // Single-quote sibling of the escaped-EOL seam.
+        let parser = StaticParser::new();
+        let content = "pkgname=t\npkgver=1\npkgrel=1\nsource=(http://legit/a \\\n' #) x' http://evil/x)\n";
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert!(urls.iter().any(|u| u.contains("http://evil/x")), "trailing source must not be dropped: {urls:?}");
+        assert!(urls.iter().any(|u| u.contains("http://legit/a")), "first source must survive: {urls:?}");
+    }
+
+    #[test]
+    fn comment_leading_line_inside_open_quote_is_not_dropped() {
+        // Sibling seam (same desync class): a continuation line that STARTS with
+        // `#` while inside a quote opened on an earlier array line must NOT be
+        // dropped by the top-of-loop whole-line comment skip -- bash keeps it as
+        // quoted content. The `#http://evil/x` line must reach the analyzers.
+        let parser = StaticParser::new();
+        let content = "pkgname=t\npkgver=1\npkgrel=1\nsource=(\"http://legit/a\n#http://evil/x\n\")\n";
+        let result = parser.parse(content).unwrap();
+        let joined = result.source.iter().map(|s| s.url.clone()).collect::<String>();
+        assert!(joined.contains("http://evil/x"), "comment-leading line inside an open quote must not be dropped: {joined:?}");
+    }
+
+    #[test]
+    fn comment_line_between_array_elements_is_still_ignored() {
+        // Control: a genuine whole-line comment BETWEEN elements (not inside a
+        // quote) is still ignored, and a `)` inside it does not terminate.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"a\"\n",
+            "        # a comment ) with a paren\n",
+            "        \"b\")\n",
+        );
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(urls, vec!["a", "b"], "comment line between elements must be ignored: {urls:?}");
     }
 
     #[test]
