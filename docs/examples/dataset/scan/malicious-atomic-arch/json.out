@@ -144,6 +144,6 @@
     "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/PKGBUILD",
     "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/atomic-arch/alvr.install"
   ],
-  "timestamp": "2026-06-14T16:42:02.548603972Z",
+  "timestamp": "2026-06-15T01:57:16.166241564Z",
   "scan_duration_ms": 2
 }

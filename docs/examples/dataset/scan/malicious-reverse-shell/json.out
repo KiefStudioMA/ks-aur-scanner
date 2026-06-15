@@ -76,6 +76,6 @@
   "scanned_files": [
     "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell/PKGBUILD"
   ],
-  "timestamp": "2026-06-14T16:42:03.042822422Z",
+  "timestamp": "2026-06-15T01:57:17.176909787Z",
   "scan_duration_ms": 1
 }

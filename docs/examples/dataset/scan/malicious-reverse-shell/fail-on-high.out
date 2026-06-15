@@ -30,7 +30,7 @@ Scan Results: malicious-reverse-shell
 
 ============================================================
 Package: malicious-reverse-shell v1.0.0-1
-Scan duration: 2ms
+Scan duration: 1ms
 
 Found 4 issue(s):
   2 CRITICAL

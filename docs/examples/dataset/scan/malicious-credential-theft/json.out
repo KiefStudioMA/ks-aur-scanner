@@ -221,6 +221,6 @@
   "scanned_files": [
     "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/credential-theft/PKGBUILD"
   ],
-  "timestamp": "2026-06-14T16:42:02.716999254Z",
-  "scan_duration_ms": 1
+  "timestamp": "2026-06-15T01:57:16.467072010Z",
+  "scan_duration_ms": 2
 }

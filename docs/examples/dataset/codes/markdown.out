@@ -1,6 +1,6 @@
 # Detection Codes
 
-_73 codes across 12 categories. Generated from the catalog; do not edit by hand._
+_106 codes across 13 categories. Generated from the catalog; do not edit by hand._
 
 ## CRITICAL severity
 
@@ -14,6 +14,7 @@ _73 codes across 12 categories. Generated from the catalog; do not edit by hand.
 | `CRED-001` | SSH key access | Credential Theft | rules | CWE-522 |
 | `CRED-002` | GPG key access | Credential Theft | rules | CWE-522 |
 | `CRED-003` | Password file access | Credential Theft | rules | CWE-522 |
+| `CRED-005` | Keyring / wallet access | Credential Theft | rules | CWE-522 |
 | `CRYPTO-001` | Mining pool connection | Cryptomining | rules | CWE-506 |
 | `CRYPTO-002` | Cryptominer binary | Cryptomining | rules | CWE-506 |
 | `CRYPTO-003` | Monero/Bitcoin wallet address | Cryptomining | rules | CWE-506 |
@@ -23,10 +24,13 @@ _73 codes across 12 categories. Generated from the catalog; do not edit by hand.
 | `DLE-003` | Curl output executed | Command Injection | rules | CWE-94 |
 | `ENV-001` | LD_PRELOAD manipulation | Malicious Code | rules | CWE-426 |
 | `ENV-003` | Bashrc/profile modification | Persistence | rules | CWE-506 |
+| `EXEC-002` | Shell -c command substitution fetch | Malicious Code | rules | CWE-494 |
 | `EXEC-REMOTE` | Fetches and runs external code | Malicious Code | remote_exec | CWE-494 |
 | `EXFIL-001` | Curl POST data exfiltration | Data Exfiltration | rules | CWE-200 |
 | `EXFIL-002` | Netcat data transfer | Data Exfiltration | rules | CWE-200 |
 | `EXFIL-003` | Discord/Telegram webhook | Data Exfiltration | rules | CWE-506 |
+| `EXFIL-004` | DNS exfiltration | Data Exfiltration | rules | CWE-200 |
+| `EXFIL-008` | Slack/Teams webhook exfiltration | Data Exfiltration | rules | CWE-200 |
 | `INSTALL-001` | Python execution in install script | Malicious Code | rules | CWE-94 |
 | `INSTALL-003` | Network access in install script | Network Security | rules | CWE-494 |
 | `INSTALL-004` | Language package manager invoked in install hook | Malicious Code | rules | CWE-494 |
@@ -39,10 +43,23 @@ _73 codes across 12 categories. Generated from the catalog; do not edit by hand.
 | `PRIV-001` | Sudo usage in a build function | Privilege Escalation | privilege | CWE-250 |
 | `PRIV-002` | SUID/SGID bit set in a function | Privilege Escalation | privilege | CWE-732 |
 | `PRIV-003` | Sudoers modification | Privilege Escalation | privilege | CWE-250 |
+| `PRIV-007` | Privileged account manipulation | Privilege Escalation | rules | CWE-269 |
+| `PRIV-008` | Password manipulation | Privilege Escalation | rules | CWE-269 |
 | `SHELL-001` | Bash reverse shell | Malicious Code | rules | CWE-506 |
 | `SHELL-002` | Netcat reverse shell | Malicious Code | rules | CWE-506 |
 | `SHELL-003` | Python reverse shell | Malicious Code | rules | CWE-506 |
 | `SHELL-004` | Socat shell | Malicious Code | rules | CWE-506 |
+| `SHELL-005` | Perl reverse shell | Malicious Code | rules | CWE-94 |
+| `SHELL-006` | PHP reverse shell | Malicious Code | rules | CWE-94 |
+| `SHELL-007` | Ruby/Lua/AWK reverse shell | Malicious Code | rules | CWE-94 |
+| `SHELL-008` | Node.js reverse shell | Malicious Code | rules | CWE-94 |
+| `SHELL-009` | OpenSSL-encrypted reverse shell | Malicious Code | rules | CWE-94 |
+| `SHELL-010` | Named-pipe (mkfifo) reverse shell | Malicious Code | rules | CWE-94 |
+| `SHELL-011` | Busybox/telnet/ncat-ssl shell | Malicious Code | rules | CWE-94 |
+| `TAMPER-001` | Auth database write | Privilege Escalation | rules | CWE-269 |
+| `TAMPER-002` | doas/sudoers nopasswd grant | Privilege Escalation | rules | CWE-269 |
+| `TAMPER-005` | PAM tampering | Privilege Escalation | rules | CWE-287 |
+| `TAMPER-011` | pacman signature downgrade | Malicious Code | rules | CWE-347 |
 
 ## HIGH severity
 
@@ -51,8 +68,14 @@ _73 codes across 12 categories. Generated from the catalog; do not edit by hand.
 | `CHK-001` | No checksums for sources | Cryptography | checksum | CWE-354 |
 | `CHK-005` | All non-VCS sources use SKIP | Cryptography | checksum | CWE-354 |
 | `CHK-006` | Checksum count mismatch | Configuration | checksum | - |
+| `CRED-004` | Cloud / CI credential file access | Credential Theft | rules | CWE-522 |
+| `CRED-008` | Environment/secret dump | Credential Theft | rules | CWE-522 |
 | `DEEP-002` | Large embedded encoded blob | Obfuscation | deep | CWE-506 |
+| `DEP-003` | Package index/registry override | Dependencies | rules | CWE-494 |
 | `ENV-002` | PATH manipulation | Malicious Code | rules | CWE-426 |
+| `EXFIL-006` | HTTP upload exfiltration | Data Exfiltration | rules | CWE-200 |
+| `EXFIL-007` | wget POST exfiltration | Data Exfiltration | rules | CWE-200 |
+| `EXFIL-009` | Anonymous file-drop / tunnel host | Data Exfiltration | rules | CWE-200 |
 | `FUNC-001` | Network access in a build function | Network Security | pattern | - |
 | `HIDDEN-001` | Hidden file creation in home | Malicious Code | rules | - |
 | `HIDDEN-002` | Tmp directory execution | Malicious Code | rules | - |
@@ -62,6 +85,10 @@ _73 codes across 12 categories. Generated from the catalog; do not edit by hand.
 | `OBF-002` | Eval usage | Command Injection | rules | CWE-95 |
 | `OBF-003` | Hex-encoded payload | Obfuscation | rules | CWE-506 |
 | `OBF-005` | Gzip decode execution | Obfuscation | rules | CWE-94 |
+| `OBF-006` | Quote-splitting / character obfuscation | Obfuscation | rules | CWE-506 |
+| `OBF-007` | printf character assembly | Obfuscation | rules | CWE-506 |
+| `OBF-008` | Alternate-encoding decode | Obfuscation | rules | CWE-506 |
+| `OBF-011` | Interpreter here-string execution | Obfuscation | rules | CWE-94 |
 | `PERSIST-003` | Cron job creation | Persistence | rules | - |
 | `PERSIST-005` | XDG autostart creation | Persistence | rules | - |
 | `PRIV-005` | Kernel module operations | Privilege Escalation | privilege | - |
@@ -70,6 +97,10 @@ _73 codes across 12 categories. Generated from the catalog; do not edit by hand.
 | `SRC-002` | Suspicious source domain | Network Security | source | - |
 | `SRC-003` | Raw IP address in source URL | Network Security | source | - |
 | `SRC-004` | URL shortener in source | Network Security | source | - |
+| `SRC-009` | Obfuscated IP in URL | Network Security | rules | CWE-94 |
+| `TAMPER-013` | Security control disabled | Malicious Code | rules | CWE-693 |
+| `TAMPER-017` | CA trust anchor injection | Malicious Code | rules | CWE-295 |
+| `TRUST-001` | pacman keyring poisoning | Malicious Code | rules | CWE-494 |
 | `URL-001` | Raw IP in URL | Network Security | rules | - |
 | `URL-002` | URL shortener | Network Security | rules | - |
 | `URL-003` | Dynamic DNS domain | Network Security | rules | - |
@@ -81,10 +112,12 @@ _73 codes across 12 categories. Generated from the catalog; do not edit by hand.
 | `CHK-002` | MD5 checksums used | Cryptography | checksum | CWE-328 |
 | `CHK-003` | SHA1 checksums used | Cryptography | checksum | CWE-328 |
 | `CHK-004` | Some sources use SKIP checksum | Cryptography | checksum | CWE-354 |
+| `EXEC-005` | Detached background execution | Malicious Code | rules | CWE-506 |
 | `OBF-004` | String concatenation obfuscation | Obfuscation | rules | - |
 | `PRIV-004` | Capabilities being set | Privilege Escalation | privilege | CWE-250 |
 | `SRC-001` | Insecure source/transport protocol | Network Security | source | CWE-319 |
 | `SRC-005` | No sources with a build function | Configuration | source | - |
+| `TRUST-002` | GPG key import at build time | Malicious Code | rules | CWE-494 |
 
 ## LOW severity
 

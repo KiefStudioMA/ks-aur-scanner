@@ -98,6 +98,6 @@
   "scanned_files": [
     "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/curl-bash/PKGBUILD"
   ],
-  "timestamp": "2026-06-14T16:42:02.879085228Z",
-  "scan_duration_ms": 1
+  "timestamp": "2026-06-15T01:57:16.698707464Z",
+  "scan_duration_ms": 2
 }

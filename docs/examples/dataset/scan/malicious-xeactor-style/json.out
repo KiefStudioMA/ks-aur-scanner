@@ -185,6 +185,6 @@
   "scanned_files": [
     "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/xeactor-style/PKGBUILD"
   ],
-  "timestamp": "2026-06-14T16:42:03.125398325Z",
-  "scan_duration_ms": 1
+  "timestamp": "2026-06-15T01:57:17.534522143Z",
+  "scan_duration_ms": 2
 }

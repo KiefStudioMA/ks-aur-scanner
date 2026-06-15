@@ -16,7 +16,7 @@ Dependency tree (review before installing):
 [repo] ninja
 [repo] openssl
 
-SBOM: CycloneDX SBOM written to /tmp/aur-scan-dataset.EoBMkG/sbom/clean-example-package.cdx.json
+SBOM: CycloneDX SBOM written to /tmp/aur-scan-dataset.XSLsgs/sbom/clean-example-package.cdx.json
 
 ============================================================
 Tree totals: no critical/high findings

@@ -94,6 +94,6 @@
   "scanned_files": [
     "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated/PKGBUILD"
   ],
-  "timestamp": "2026-06-14T16:42:02.961554028Z",
+  "timestamp": "2026-06-15T01:57:16.938093409Z",
   "scan_duration_ms": 1
 }

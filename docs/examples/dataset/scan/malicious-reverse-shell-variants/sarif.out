@@ -1,0 +1,229 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
+                },
+                "region": {
+                  "startLine": 3
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Using netcat to transfer data externally"
+          },
+          "ruleId": "EXFIL-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
+                },
+                "region": {
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "A Perl socket reverse shell (Socket + connect/exec)."
+          },
+          "ruleId": "SHELL-005"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
+                },
+                "region": {
+                  "startLine": 4
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "openssl s_client used as an encrypted C2 channel."
+          },
+          "ruleId": "SHELL-009"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
+                },
+                "region": {
+                  "startLine": 3
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "mkfifo paired with nc/openssl/ /dev/tcp — the classic backpipe reverse shell that evades `nc -e` detection."
+          },
+          "ruleId": "SHELL-010"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
+                },
+                "region": {
+                  "startLine": 3
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp."
+          },
+          "ruleId": "HIDDEN-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "No integrity verification is performed on 1 non-VCS source(s)"
+          },
+          "ruleId": "CHK-005"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Using netcat to transfer data externally"
+              },
+              "help": {
+                "text": "Netcat should not be piping data in build scripts"
+              },
+              "id": "EXFIL-002",
+              "name": "Netcat data transfer (install script)",
+              "shortDescription": {
+                "text": "Netcat data transfer (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "A Perl socket reverse shell (Socket + connect/exec)."
+              },
+              "help": {
+                "text": "Do not build. This is a remote shell."
+              },
+              "id": "SHELL-005",
+              "name": "Perl reverse shell (install script)",
+              "shortDescription": {
+                "text": "Perl reverse shell (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "openssl s_client used as an encrypted C2 channel."
+              },
+              "help": {
+                "text": "Do not build. This is an encrypted remote shell."
+              },
+              "id": "SHELL-009",
+              "name": "OpenSSL-encrypted reverse shell (install script)",
+              "shortDescription": {
+                "text": "OpenSSL-encrypted reverse shell (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "mkfifo paired with nc/openssl/ /dev/tcp — the classic backpipe reverse shell that evades `nc -e` detection."
+              },
+              "help": {
+                "text": "Do not build. This is a remote shell."
+              },
+              "id": "SHELL-010",
+              "name": "Named-pipe (mkfifo) reverse shell (install script)",
+              "shortDescription": {
+                "text": "Named-pipe (mkfifo) reverse shell (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp."
+              },
+              "help": {
+                "text": "Packages should not execute from /tmp"
+              },
+              "id": "HIDDEN-002",
+              "name": "Tmp directory execution (install script)",
+              "shortDescription": {
+                "text": "Tmp directory execution (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "No integrity verification is performed on 1 non-VCS source(s)"
+              },
+              "help": {
+                "text": "Provide real checksums for non-VCS sources"
+              },
+              "id": "CHK-005",
+              "name": "All non-VCS sources use SKIP checksum",
+              "shortDescription": {
+                "text": "All non-VCS sources use SKIP checksum"
+              }
+            }
+          ],
+          "version": "1.1.0-rc2"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

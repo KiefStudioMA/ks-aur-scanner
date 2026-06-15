@@ -155,6 +155,39 @@
       "pattern_based": true
     },
     {
+      "id": "CRED-004",
+      "name": "Cloud / CI credential file access",
+      "severity": "high",
+      "category": "credential_theft",
+      "description": "Reads cloud or CI credential files (gcloud, docker config, npmrc, pypirc, cargo/terraform credentials, git-credentials).",
+      "recommendation": "Verify why a build/install touches credential files.",
+      "cwe": "CWE-522",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "CRED-005",
+      "name": "Keyring / wallet access",
+      "severity": "critical",
+      "category": "credential_theft",
+      "description": "Reads OS keyrings (gnome-keyring/kwallet/secret-tool) or crypto wallet files (electrum/bitcoin/metamask/keystore).",
+      "recommendation": "Do not build. This harvests secrets/wallets.",
+      "cwe": "CWE-522",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "CRED-008",
+      "name": "Environment/secret dump",
+      "severity": "high",
+      "category": "credential_theft",
+      "description": "Dumping the environment (env/printenv) to a file or pipe to curl/nc/base64 — harvests tokens and secrets exposed as env vars.",
+      "recommendation": "Remove. Packages have no reason to dump the environment.",
+      "cwe": "CWE-522",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
       "id": "CRYPTO-001",
       "name": "Mining pool connection",
       "severity": "critical",
@@ -208,6 +241,17 @@
       "cwe": "CWE-506",
       "owner": "deep",
       "pattern_based": false
+    },
+    {
+      "id": "DEP-003",
+      "name": "Package index/registry override",
+      "severity": "high",
+      "category": "dependencies",
+      "description": "Redirects a language package manager to a non-default index/registry (pip --index-url, npm registry, GOPROXY, etc.) — a dependency-confusion vector.",
+      "recommendation": "Verify the index host; overriding the registry redirects dependencies to an attacker source.",
+      "cwe": "CWE-494",
+      "owner": "rules",
+      "pattern_based": true
     },
     {
       "id": "DLE-001",
@@ -287,6 +331,28 @@
       "pattern_based": true
     },
     {
+      "id": "EXEC-002",
+      "name": "Shell -c command substitution fetch",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "sh -c \"$(curl ...)\" — fetches and runs remote code without an explicit pipe, evading the curl|sh rules.",
+      "recommendation": "Do not build. This runs code fetched from a URL.",
+      "cwe": "CWE-494",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "EXEC-005",
+      "name": "Detached background execution",
+      "severity": "medium",
+      "category": "malicious_code",
+      "description": "Launches a fetched/dropped payload detached from the build (setsid/nohup), so it keeps running after install.",
+      "recommendation": "Review the detached process; this outlives the install.",
+      "cwe": "CWE-506",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
       "id": "EXEC-REMOTE",
       "name": "Fetches and runs external code",
       "severity": "critical",
@@ -327,6 +393,61 @@
       "description": "Webhook URLs can be used for C2 communication or data exfiltration",
       "recommendation": "Webhook URLs in packages are highly suspicious",
       "cwe": "CWE-506",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "EXFIL-004",
+      "name": "DNS exfiltration",
+      "severity": "critical",
+      "category": "data_exfiltration",
+      "description": "Data smuggled out via DNS lookups (dig/nslookup/host of a command-substituted subdomain, or a TXT query to an attacker domain).",
+      "recommendation": "Review the destination domain; this pattern smuggles data over DNS.",
+      "cwe": "CWE-200",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "EXFIL-006",
+      "name": "HTTP upload exfiltration",
+      "severity": "high",
+      "category": "data_exfiltration",
+      "description": "curl uploading a local file (-T/--upload-file/-F/--data-urlencode) — used to send harvested data to an attacker endpoint.",
+      "recommendation": "Verify what is being uploaded and to where.",
+      "cwe": "CWE-200",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "EXFIL-007",
+      "name": "wget POST exfiltration",
+      "severity": "high",
+      "category": "data_exfiltration",
+      "description": "wget --post-data/--post-file sending local data to a remote endpoint.",
+      "recommendation": "Verify what is being posted and to where.",
+      "cwe": "CWE-200",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "EXFIL-008",
+      "name": "Slack/Teams webhook exfiltration",
+      "severity": "critical",
+      "category": "data_exfiltration",
+      "description": "Posting to a Slack or Microsoft Teams incoming webhook — a common low-friction exfil/C2 channel.",
+      "recommendation": "Remove. Packages do not post to chat webhooks during build/install.",
+      "cwe": "CWE-200",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "EXFIL-009",
+      "name": "Anonymous file-drop / tunnel host",
+      "severity": "high",
+      "category": "data_exfiltration",
+      "description": "Uploads to a throwaway file-drop or tunnels through ngrok/webhook.site/requestbin/IPFS — exfil and ad-hoc C2 endpoints.",
+      "recommendation": "Review the destination; these are common exfil/C2 hosts.",
+      "cwe": "CWE-200",
       "owner": "rules",
       "pattern_based": true
     },
@@ -496,6 +617,50 @@
       "pattern_based": true
     },
     {
+      "id": "OBF-006",
+      "name": "Quote-splitting / character obfuscation",
+      "severity": "high",
+      "category": "obfuscation",
+      "description": "A command is assembled from adjacent single-character quoted fragments (e.g. \"b\"'u''n') or ANSI-C escapes to hide it from literal matching. This is almost exclusively a malware evasion technique; aur-scan also reports the decoded command via its other rules.",
+      "recommendation": "De-obfuscate the command and review what it actually runs.",
+      "cwe": "CWE-506",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "OBF-007",
+      "name": "printf character assembly",
+      "severity": "high",
+      "category": "obfuscation",
+      "description": "A command assembled from printf hex/octal escapes (printf '\\x63\\x64' = 'cd') to hide it from literal matching.",
+      "recommendation": "Decode the printf escapes and review the assembled command.",
+      "cwe": "CWE-506",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "OBF-008",
+      "name": "Alternate-encoding decode",
+      "severity": "high",
+      "category": "obfuscation",
+      "description": "Decoding base32/base16 (an alternative to base64) to reconstruct a hidden payload.",
+      "recommendation": "Decode and review the content.",
+      "cwe": "CWE-506",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "OBF-011",
+      "name": "Interpreter here-string execution",
+      "severity": "high",
+      "category": "obfuscation",
+      "description": "Feeding an assembled string to a shell via a here-string (sh <<< ...) — a common way to run a string that was built to dodge matching.",
+      "recommendation": "Review the here-string; this executes an assembled command.",
+      "cwe": "CWE-94",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
       "id": "PASTE-001",
       "name": "Pastebin download",
       "severity": "critical",
@@ -639,6 +804,28 @@
       "pattern_based": false
     },
     {
+      "id": "PRIV-007",
+      "name": "Privileged account manipulation",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "description": "Creates or elevates an account to uid 0 / the wheel or sudo group — a backdoor-admin pattern.",
+      "recommendation": "Do not build. This grants an account administrative access.",
+      "cwe": "CWE-269",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "PRIV-008",
+      "name": "Password manipulation",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "description": "Sets, resets, or clears an account password (chpasswd / passwd -d / piped passwd).",
+      "recommendation": "Do not build. This changes account credentials.",
+      "cwe": "CWE-269",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
       "id": "PROV-001",
       "name": "Package gained risky behavior",
       "severity": "high",
@@ -690,6 +877,83 @@
       "description": "Socat can be used for reverse shells",
       "recommendation": "Socat TCP connections are suspicious in build scripts",
       "cwe": "CWE-506",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "SHELL-005",
+      "name": "Perl reverse shell",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "A Perl socket reverse shell (Socket + connect/exec).",
+      "recommendation": "Do not build. This is a remote shell.",
+      "cwe": "CWE-94",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "SHELL-006",
+      "name": "PHP reverse shell",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "A PHP reverse shell using fsockopen.",
+      "recommendation": "Do not build. This is a remote shell.",
+      "cwe": "CWE-94",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "SHELL-007",
+      "name": "Ruby/Lua/AWK reverse shell",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "A reverse shell via Ruby TCPSocket, Lua socket, or AWK /inet/.",
+      "recommendation": "Do not build. This is a remote shell.",
+      "cwe": "CWE-94",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "SHELL-008",
+      "name": "Node.js reverse shell",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "A Node.js reverse shell using the net module.",
+      "recommendation": "Do not build. This is a remote shell.",
+      "cwe": "CWE-94",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "SHELL-009",
+      "name": "OpenSSL-encrypted reverse shell",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "openssl s_client used as an encrypted C2 channel.",
+      "recommendation": "Do not build. This is an encrypted remote shell.",
+      "cwe": "CWE-94",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "SHELL-010",
+      "name": "Named-pipe (mkfifo) reverse shell",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "mkfifo paired with nc/openssl/ /dev/tcp — the classic backpipe reverse shell that evades `nc -e` detection.",
+      "recommendation": "Do not build. This is a remote shell.",
+      "cwe": "CWE-94",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "SHELL-011",
+      "name": "Busybox/telnet/ncat-ssl shell",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "A reverse shell via busybox nc -e, telnet piped to a shell, or ncat --ssl -e.",
+      "recommendation": "Do not build. This is a remote shell.",
+      "cwe": "CWE-94",
       "owner": "rules",
       "pattern_based": true
     },
@@ -769,6 +1033,105 @@
       "cwe": "CWE-494",
       "owner": "source",
       "pattern_based": false
+    },
+    {
+      "id": "SRC-009",
+      "name": "Obfuscated IP in URL",
+      "severity": "high",
+      "category": "network_security",
+      "description": "A source/download URL using an IPv6, hex, octal, or decimal IP literal to evade plain-IPv4 detection.",
+      "recommendation": "Resolve and review the host; obfuscated IPs hide the real destination.",
+      "cwe": "CWE-94",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "TAMPER-001",
+      "name": "Auth database write",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "description": "Writes directly to /etc/passwd, /etc/shadow, /etc/group or /etc/gshadow — a direct backdoor-account injection.",
+      "recommendation": "Do not build. This edits the live auth database.",
+      "cwe": "CWE-269",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "TAMPER-002",
+      "name": "doas/sudoers nopasswd grant",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "description": "Grants passwordless privilege via /etc/doas.conf or a NOPASSWD sudoers rule.",
+      "recommendation": "Do not build. This grants passwordless root.",
+      "cwe": "CWE-269",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "TAMPER-005",
+      "name": "PAM tampering",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "description": "Inserts a permissive PAM module (pam_permit.so) or writes into /etc/pam.d — an authentication bypass.",
+      "recommendation": "Do not build. This tampers with authentication.",
+      "cwe": "CWE-287",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "TAMPER-011",
+      "name": "pacman signature downgrade",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "Sets SigLevel = Never in /etc/pacman.conf, disabling package signature verification so future malicious updates are accepted silently.",
+      "recommendation": "Do not build. This disables pacman signature checking.",
+      "cwe": "CWE-347",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "TAMPER-013",
+      "name": "Security control disabled",
+      "severity": "high",
+      "category": "malicious_code",
+      "description": "Disables a firewall, SELinux/AppArmor, or stops a security/audit service.",
+      "recommendation": "Do not build. This weakens host security controls.",
+      "cwe": "CWE-693",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "TAMPER-017",
+      "name": "CA trust anchor injection",
+      "severity": "high",
+      "category": "malicious_code",
+      "description": "Installs a CA certificate into the system trust store — enables MITM of TLS for the whole system.",
+      "recommendation": "Verify the certificate; a rogue trust anchor enables TLS MITM.",
+      "cwe": "CWE-295",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "TRUST-001",
+      "name": "pacman keyring poisoning",
+      "severity": "high",
+      "category": "malicious_code",
+      "description": "Imports and locally-signs an arbitrary key into pacman's trust store (pacman-key --recv-keys/--lsign) so attacker-signed packages are accepted.",
+      "recommendation": "Do not build. Packages ship keys via keyring packages, not by importing at build time.",
+      "cwe": "CWE-494",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "TRUST-002",
+      "name": "GPG key import at build time",
+      "severity": "medium",
+      "category": "malicious_code",
+      "description": "Imports or fetches a GPG key during build/install (gpg --import/--recv-keys/--keyserver).",
+      "recommendation": "Verify the key; importing a key to satisfy validpgpkeys from an untrusted source defeats the check.",
+      "cwe": "CWE-494",
+      "owner": "rules",
+      "pattern_based": true
     },
     {
       "id": "URL-001",

@@ -18,7 +18,7 @@ Scan Results: git-package-git
 
 ============================================================
 Package: git-package-git vr100.abc1234-1
-Scan duration: 1ms
+Scan duration: 3ms
 
 Found 2 issue(s):
   2 LOW

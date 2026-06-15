@@ -1,0 +1,159 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install"
+                },
+                "region": {
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase."
+          },
+          "ruleId": "ATOMIC-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install"
+                },
+                "region": {
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Hex encoding can hide malicious payloads"
+          },
+          "ruleId": "OBF-003"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install"
+                },
+                "region": {
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "A command is assembled from adjacent single-character quoted fragments (e.g. \"b\"'u''n') or ANSI-C escapes to hide it from literal matching. This is almost exclusively a malware evasion technique; aur-scan also reports the decoded command via its other rules."
+          },
+          "ruleId": "OBF-006"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/obfuscated-install/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "No integrity verification is performed on 1 non-VCS source(s)"
+          },
+          "ruleId": "CHK-005"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase."
+              },
+              "help": {
+                "text": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers."
+              },
+              "id": "ATOMIC-002",
+              "name": "Node/Bun package manager in install hook (install script)",
+              "shortDescription": {
+                "text": "Node/Bun package manager in install hook (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Hex encoding can hide malicious payloads"
+              },
+              "help": {
+                "text": "Decode and review hex-encoded content"
+              },
+              "id": "OBF-003",
+              "name": "Hex-encoded payload (install script)",
+              "shortDescription": {
+                "text": "Hex-encoded payload (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "A command is assembled from adjacent single-character quoted fragments (e.g. \"b\"'u''n') or ANSI-C escapes to hide it from literal matching. This is almost exclusively a malware evasion technique; aur-scan also reports the decoded command via its other rules."
+              },
+              "help": {
+                "text": "De-obfuscate the command and review what it actually runs."
+              },
+              "id": "OBF-006",
+              "name": "Quote-splitting / character obfuscation (install script)",
+              "shortDescription": {
+                "text": "Quote-splitting / character obfuscation (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "No integrity verification is performed on 1 non-VCS source(s)"
+              },
+              "help": {
+                "text": "Provide real checksums for non-VCS sources"
+              },
+              "id": "CHK-005",
+              "name": "All non-VCS sources use SKIP checksum",
+              "shortDescription": {
+                "text": "All non-VCS sources use SKIP checksum"
+              }
+            }
+          ],
+          "version": "1.1.0-rc2"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

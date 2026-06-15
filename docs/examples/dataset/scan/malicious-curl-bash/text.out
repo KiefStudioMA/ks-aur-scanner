@@ -35,7 +35,7 @@ Scan Results: malicious-curl-bash
 
 ============================================================
 Package: malicious-curl-bash v1.0.0-1
-Scan duration: 1ms
+Scan duration: 2ms
 
 Found 5 issue(s):
   3 CRITICAL

@@ -1,0 +1,369 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install"
+                },
+                "region": {
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Install scripts should not make network connections"
+          },
+          "ruleId": "INSTALL-003"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install"
+                },
+                "region": {
+                  "startLine": 4
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Install scripts should not make network connections"
+          },
+          "ruleId": "INSTALL-003"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install"
+                },
+                "region": {
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sending data to external servers via curl POST"
+          },
+          "ruleId": "EXFIL-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install"
+                },
+                "region": {
+                  "startLine": 3
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Data smuggled out via DNS lookups (dig/nslookup/host of a command-substituted subdomain, or a TXT query to an attacker domain)."
+          },
+          "ruleId": "EXFIL-004"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install"
+                },
+                "region": {
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Posting to a Slack or Microsoft Teams incoming webhook — a common low-friction exfil/C2 channel."
+          },
+          "ruleId": "EXFIL-008"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install"
+                },
+                "region": {
+                  "startLine": 4
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Creating hidden files in user home directory"
+          },
+          "ruleId": "HIDDEN-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install"
+                },
+                "region": {
+                  "startLine": 4
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "curl uploading a local file (-T/--upload-file/-F/--data-urlencode) — used to send harvested data to an attacker endpoint."
+          },
+          "ruleId": "EXFIL-006"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install"
+                },
+                "region": {
+                  "startLine": 4
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Uploads to a throwaway file-drop or tunnels through ngrok/webhook.site/requestbin/IPFS — exfil and ad-hoc C2 endpoints."
+          },
+          "ruleId": "EXFIL-009"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install"
+                },
+                "region": {
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Dumping the environment (env/printenv) to a file or pipe to curl/nc/base64 — harvests tokens and secrets exposed as env vars."
+          },
+          "ruleId": "CRED-008"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install"
+                },
+                "region": {
+                  "startLine": 4
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Reads cloud or CI credential files (gcloud, docker config, npmrc, pypirc, cargo/terraform credentials, git-credentials)."
+          },
+          "ruleId": "CRED-004"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Install scripts should not make network connections"
+              },
+              "help": {
+                "text": "Install scripts should never download additional content"
+              },
+              "id": "INSTALL-003",
+              "name": "Network access in install script (install script)",
+              "shortDescription": {
+                "text": "Network access in install script (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Install scripts should not make network connections"
+              },
+              "help": {
+                "text": "Install scripts should never download additional content"
+              },
+              "id": "INSTALL-003",
+              "name": "Network access in install script (install script)",
+              "shortDescription": {
+                "text": "Network access in install script (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Sending data to external servers via curl POST"
+              },
+              "help": {
+                "text": "Build/install should not send data externally"
+              },
+              "id": "EXFIL-001",
+              "name": "Curl POST data exfiltration (install script)",
+              "shortDescription": {
+                "text": "Curl POST data exfiltration (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Data smuggled out via DNS lookups (dig/nslookup/host of a command-substituted subdomain, or a TXT query to an attacker domain)."
+              },
+              "help": {
+                "text": "Review the destination domain; this pattern smuggles data over DNS."
+              },
+              "id": "EXFIL-004",
+              "name": "DNS exfiltration (install script)",
+              "shortDescription": {
+                "text": "DNS exfiltration (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Posting to a Slack or Microsoft Teams incoming webhook — a common low-friction exfil/C2 channel."
+              },
+              "help": {
+                "text": "Remove. Packages do not post to chat webhooks during build/install."
+              },
+              "id": "EXFIL-008",
+              "name": "Slack/Teams webhook exfiltration (install script)",
+              "shortDescription": {
+                "text": "Slack/Teams webhook exfiltration (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Creating hidden files in user home directory"
+              },
+              "help": {
+                "text": "Packages should not create hidden files in user home"
+              },
+              "id": "HIDDEN-001",
+              "name": "Hidden file creation in home (install script)",
+              "shortDescription": {
+                "text": "Hidden file creation in home (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "curl uploading a local file (-T/--upload-file/-F/--data-urlencode) — used to send harvested data to an attacker endpoint."
+              },
+              "help": {
+                "text": "Verify what is being uploaded and to where."
+              },
+              "id": "EXFIL-006",
+              "name": "HTTP upload exfiltration (install script)",
+              "shortDescription": {
+                "text": "HTTP upload exfiltration (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Uploads to a throwaway file-drop or tunnels through ngrok/webhook.site/requestbin/IPFS — exfil and ad-hoc C2 endpoints."
+              },
+              "help": {
+                "text": "Review the destination; these are common exfil/C2 hosts."
+              },
+              "id": "EXFIL-009",
+              "name": "Anonymous file-drop / tunnel host (install script)",
+              "shortDescription": {
+                "text": "Anonymous file-drop / tunnel host (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Dumping the environment (env/printenv) to a file or pipe to curl/nc/base64 — harvests tokens and secrets exposed as env vars."
+              },
+              "help": {
+                "text": "Remove. Packages have no reason to dump the environment."
+              },
+              "id": "CRED-008",
+              "name": "Environment/secret dump (install script)",
+              "shortDescription": {
+                "text": "Environment/secret dump (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Reads cloud or CI credential files (gcloud, docker config, npmrc, pypirc, cargo/terraform credentials, git-credentials)."
+              },
+              "help": {
+                "text": "Verify why a build/install touches credential files."
+              },
+              "id": "CRED-004",
+              "name": "Cloud / CI credential file access (install script)",
+              "shortDescription": {
+                "text": "Cloud / CI credential file access (install script)"
+              }
+            }
+          ],
+          "version": "1.1.0-rc2"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

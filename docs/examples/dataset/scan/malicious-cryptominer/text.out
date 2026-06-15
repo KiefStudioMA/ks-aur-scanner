@@ -64,7 +64,7 @@ Scan Results: malicious-cryptominer
 
 ============================================================
 Package: malicious-cryptominer v1.0.0-1
-Scan duration: 1ms
+Scan duration: 2ms
 
 Found 9 issue(s):
   5 CRITICAL

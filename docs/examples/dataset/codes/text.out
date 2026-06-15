@@ -1,6 +1,6 @@
 AUR Security Scanner - Detection Codes
 ============================================================
-73 codes across 12 categories
+106 codes across 13 categories
 
 [Command Injection]
   DLE-001 [Critical] Curl pipe to shell
@@ -19,6 +19,9 @@ AUR Security Scanner - Detection Codes
   CRED-001 [Critical] SSH key access
   CRED-002 [Critical] GPG key access
   CRED-003 [Critical] Password file access
+  CRED-004 [High] Cloud / CI credential file access
+  CRED-005 [Critical] Keyring / wallet access
+  CRED-008 [High] Environment/secret dump
 
 [Cryptography]
   CHK-001 [High] No checksums for sources (checksum)
@@ -36,12 +39,22 @@ AUR Security Scanner - Detection Codes
   EXFIL-001 [Critical] Curl POST data exfiltration
   EXFIL-002 [Critical] Netcat data transfer
   EXFIL-003 [Critical] Discord/Telegram webhook
+  EXFIL-004 [Critical] DNS exfiltration
+  EXFIL-006 [High] HTTP upload exfiltration
+  EXFIL-007 [High] wget POST exfiltration
+  EXFIL-008 [Critical] Slack/Teams webhook exfiltration
+  EXFIL-009 [High] Anonymous file-drop / tunnel host
+
+[Dependencies]
+  DEP-003 [High] Package index/registry override
 
 [Malicious Code]
   ATOMIC-001 [Critical] Atomic Arch malicious npm/bun package
   ATOMIC-002 [Critical] Node/Bun package manager in install hook
   ENV-001 [Critical] LD_PRELOAD manipulation
   ENV-002 [High] PATH manipulation
+  EXEC-002 [Critical] Shell -c command substitution fetch
+  EXEC-005 [Medium] Detached background execution
   EXEC-REMOTE [Critical] Fetches and runs external code (remote_exec)
   HIDDEN-001 [High] Hidden file creation in home
   HIDDEN-002 [High] Tmp directory execution
@@ -55,6 +68,18 @@ AUR Security Scanner - Detection Codes
   SHELL-002 [Critical] Netcat reverse shell
   SHELL-003 [Critical] Python reverse shell
   SHELL-004 [Critical] Socat shell
+  SHELL-005 [Critical] Perl reverse shell
+  SHELL-006 [Critical] PHP reverse shell
+  SHELL-007 [Critical] Ruby/Lua/AWK reverse shell
+  SHELL-008 [Critical] Node.js reverse shell
+  SHELL-009 [Critical] OpenSSL-encrypted reverse shell
+  SHELL-010 [Critical] Named-pipe (mkfifo) reverse shell
+  SHELL-011 [Critical] Busybox/telnet/ncat-ssl shell
+  TAMPER-011 [Critical] pacman signature downgrade
+  TAMPER-013 [High] Security control disabled
+  TAMPER-017 [High] CA trust anchor injection
+  TRUST-001 [High] pacman keyring poisoning
+  TRUST-002 [Medium] GPG key import at build time
 
 [Network Security]
   FUNC-001 [High] Network access in a build function (pattern)
@@ -65,6 +90,7 @@ AUR Security Scanner - Detection Codes
   SRC-004 [High] URL shortener in source (source)
   SRC-006 [Low] VCS source from non-standard host (source)
   SRC-007 [Low] VCS source not pinned to a commit (source)
+  SRC-009 [High] Obfuscated IP in URL
   URL-001 [High] Raw IP in URL
   URL-002 [High] URL shortener
   URL-003 [High] Dynamic DNS domain
@@ -76,6 +102,10 @@ AUR Security Scanner - Detection Codes
   OBF-003 [High] Hex-encoded payload
   OBF-004 [Medium] String concatenation obfuscation
   OBF-005 [High] Gzip decode execution
+  OBF-006 [High] Quote-splitting / character obfuscation
+  OBF-007 [High] printf character assembly
+  OBF-008 [High] Alternate-encoding decode
+  OBF-011 [High] Interpreter here-string execution
 
 [Persistence]
   ATOMIC-003 [Critical] eBPF rootkit / payload artifact
@@ -94,6 +124,11 @@ AUR Security Scanner - Detection Codes
   PRIV-004 [Medium] Capabilities being set (privilege)
   PRIV-005 [High] Kernel module operations (privilege)
   PRIV-006 [High] Sudo in an install hook (privilege)
+  PRIV-007 [Critical] Privileged account manipulation
+  PRIV-008 [Critical] Password manipulation
+  TAMPER-001 [Critical] Auth database write
+  TAMPER-002 [Critical] doas/sudoers nopasswd grant
+  TAMPER-005 [Critical] PAM tampering
 
 [Suspicious Metadata]
   META-001 [Low] Provides impersonation

