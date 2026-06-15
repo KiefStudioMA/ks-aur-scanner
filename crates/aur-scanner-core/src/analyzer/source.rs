@@ -226,7 +226,20 @@ impl SecurityAnalyzer for SourceAnalyzer {
                     "salsa.debian.org",
                     "git.savannah.gnu.org",
                 ];
-                if !trusted_vcs_hosts.iter().any(|h| lurl.contains(h)) {
+                // Match on the PARSED host at label boundaries, not a raw
+                // substring: `git+https://github.com.evil.tld/x` merely *contains*
+                // `github.com` but its host is `github.com.evil.tld` (untrusted),
+                // and `https://github.com@evil.tld/x` resolves to `evil.tld`. An
+                // unparseable host fails closed (treated as untrusted -> flagged).
+                let trusted = crate::neturl::extract_host(&source.url)
+                    .as_deref()
+                    .map(|host| {
+                        trusted_vcs_hosts
+                            .iter()
+                            .any(|t| crate::neturl::host_matches(host, t))
+                    })
+                    .unwrap_or(false);
+                if !trusted {
                     findings.push(Finding {
                         id: "SRC-006".to_string(),
                         severity: Severity::Low,
@@ -358,5 +371,33 @@ source=("https://pastebin.com/raw/abc123")
 
         let findings = analyzer.analyze(&context).await.unwrap();
         assert!(findings.iter().any(|f| f.id == "SRC-002"));
+    }
+
+    #[tokio::test]
+    async fn test_src006_trusts_host_not_substring() {
+        // Task 4120: SRC-006 must match the trusted host on label boundaries,
+        // not as a raw substring. A trusted host (or its subdomain) is OK; a
+        // host that merely CONTAINS a trusted host as a substring is NOT.
+        async fn fires(src: &str) -> bool {
+            let analyzer = SourceAnalyzer::new();
+            let ctx =
+                create_test_context(&format!("pkgname=t\npkgver=1\npkgrel=1\nsource=(\"{src}\")\n"));
+            analyzer
+                .analyze(&ctx)
+                .await
+                .unwrap()
+                .iter()
+                .any(|f| f.id == "SRC-006")
+        }
+
+        // TRUSTED: exact host and a subdomain of a trusted host -> no SRC-006.
+        assert!(!fires("git+https://github.com/u/r.git#commit=deadbeefcafebabe").await);
+        assert!(!fires("git+https://git.sr.ht/~u/r").await);
+
+        // UNTRUSTED via the substring-bypass class -> SRC-006 MUST fire:
+        // left-extended host, userinfo confusion, and a genuinely untrusted host.
+        assert!(fires("git+https://github.com.evil.tld/u/r.git").await);
+        assert!(fires("git+https://github.com@evil.tld/u/r.git").await);
+        assert!(fires("git+https://evil.example/u/r.git").await);
     }
 }
