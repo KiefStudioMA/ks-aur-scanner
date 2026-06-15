@@ -295,7 +295,8 @@ enum PrivilegeDecision {
 /// Decide the privilege action from `(is_root, SUDO_UID, SUDO_GID, SUDO_USER,
 /// USER)`. Fail-closed: when running as root, the only outcome that scans is a
 /// fully-specified, non-root `SUDO_*` target; anything missing/unparseable, or a
-/// target uid of 0, yields `SkipRootNoTarget` rather than scanning as root.
+/// target uid OR gid of 0, yields `SkipRootNoTarget` rather than scanning with a
+/// root credential.
 fn decide_privilege_drop(
     is_root: bool,
     sudo_uid: Option<&str>,
@@ -320,8 +321,13 @@ fn decide_privilege_drop(
         Some((uid, gid, user))
     })();
     match target {
-        Some((uid, gid, user)) if uid != 0 => PrivilegeDecision::DropTo { uid, gid, user },
-        // missing/unparseable field, or a uid-0 target ("never drop to root").
+        // Require BOTH a non-root uid AND a non-root gid: a uid-0 target keeps
+        // the root user, and a gid-0 target keeps the ROOT GROUP (setgid(0)) --
+        // neither is a real privilege drop, so refuse to scan with either.
+        Some((uid, gid, user)) if uid != 0 && gid != 0 => {
+            PrivilegeDecision::DropTo { uid, gid, user }
+        }
+        // missing/unparseable field, or a uid-0 / gid-0 target.
         _ => PrivilegeDecision::SkipRootNoTarget,
     }
 }
@@ -455,12 +461,17 @@ mod tests {
     }
 
     #[test]
-    fn root_never_drops_to_uid_zero() {
-        // A uid-0 SUDO target must never be treated as a drop -- skip instead.
-        assert_eq!(
-            decide_privilege_drop(true, Some("0"), Some("0"), Some("root"), None),
-            PrivilegeDecision::SkipRootNoTarget
-        );
+    fn root_never_drops_to_uid_or_gid_zero() {
+        // A uid-0 target keeps the root user; a gid-0 target keeps the root group
+        // (setgid(0)). Neither is a real drop -- skip rather than scan with any
+        // root credential. Covers uid=0/gid=0, uid=0 alone, and gid=0 alone.
+        for (uid, gid) in [("0", "0"), ("0", "1000"), ("1000", "0")] {
+            assert_eq!(
+                decide_privilege_drop(true, Some(uid), Some(gid), Some("alice"), None),
+                PrivilegeDecision::SkipRootNoTarget,
+                "uid={uid} gid={gid} must not be treated as a drop"
+            );
+        }
     }
 
     #[test]
