@@ -34,6 +34,12 @@ aur/*/ks-aur-scanner/
 *.log
 blog/
 
+# Mycelium swarm scratch: isolated workspace clones + HYPHA.md + tool-output.
+# Anchored to the repo root (a bare `.mycelium` would also ignore any nested
+# path component of that name). The tool also drops a nested .mycelium/.gitignore
+# of '*'; this tracked entry is the belt-and-suspenders so it can never be staged.
+/.mycelium/
+
 # The tagged-release packaging dirs are independent AUR git repositories (each
 # has its own .git and history) checked out here for convenience. They are NOT
 # part of this repo's tree -- committing them would create a broken embedded
