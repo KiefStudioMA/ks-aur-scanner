@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 use aur_scanner_core::aur::AurClient;
@@ -42,6 +42,34 @@ pub struct InstallArgs {
     /// Keep the per-package build directories after a successful install.
     /// Default is to clean them up (the install tidies after itself).
     pub keep_build: bool,
+}
+
+/// Decision for the pre-build confirmation, computed before any answer is read.
+/// Kept separate from the IO so the fail-closed contract is unit-testable.
+#[derive(Debug, PartialEq, Eq)]
+enum ConsentGate {
+    /// `--noconfirm` given: the operator pre-consented; build without prompting.
+    Proceed,
+    /// Interactive terminal: prompt the user for an explicit yes.
+    Prompt,
+    /// Non-interactive stdin and no `--noconfirm`: fail closed and abort.
+    AbortNonInteractive,
+}
+
+/// Map `(--noconfirm, stdin-is-a-terminal)` to a consent decision.
+///
+/// SECURITY (defect #11): without this guard the prompt was read unconditionally,
+/// so a piped `y` on a non-terminal stdin (CI, cron, `yes |`) was accepted as
+/// consent to build attacker-authored AUR code. Only an explicit `--noconfirm`
+/// or a real interactive `yes` may proceed.
+fn consent_gate(noconfirm: bool, stdin_is_terminal: bool) -> ConsentGate {
+    if noconfirm {
+        ConsentGate::Proceed
+    } else if stdin_is_terminal {
+        ConsentGate::Prompt
+    } else {
+        ConsentGate::AbortNonInteractive
+    }
 }
 
 pub async fn run(args: InstallArgs) -> Result<()> {
@@ -200,14 +228,36 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     }
 
     // 5. Confirm, then build in dependency order from the SAME directories.
-    if !args.noconfirm {
-        print!("{} ", "Build and install these packages now? [y/N]:".yellow().bold());
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
-            println!("{}", "Aborted by user. Nothing was built.".yellow());
+    match consent_gate(args.noconfirm, io::stdin().is_terminal()) {
+        // Explicit --noconfirm: the operator has pre-consented; build.
+        ConsentGate::Proceed => {}
+        // Non-interactive stdin without --noconfirm cannot give genuine consent.
+        // A piped "y" is not a person agreeing to build attacker-authored code,
+        // so fail closed and abort (mirrors the wrapper's confirm contract).
+        ConsentGate::AbortNonInteractive => {
+            println!(
+                "{}",
+                "Aborted: stdin is not a terminal and --noconfirm was not given; \
+                 refusing to build without interactive consent."
+                    .yellow()
+            );
             return Ok(());
+        }
+        // Interactive TTY: prompt and require an explicit yes.
+        ConsentGate::Prompt => {
+            print!(
+                "{} ",
+                "Build and install these packages now? [y/N]:"
+                    .yellow()
+                    .bold()
+            );
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                println!("{}", "Aborted by user. Nothing was built.".yellow());
+                return Ok(());
+            }
         }
     }
 
@@ -283,4 +333,30 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     println!();
     println!("{}", "All packages built and installed.".green().bold());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- build-consent fail-closed contract (defect #11) ---------------------
+
+    #[test]
+    fn noconfirm_proceeds_regardless_of_tty() {
+        // Explicit operator pre-consent: build whether or not stdin is a TTY.
+        assert_eq!(consent_gate(true, true), ConsentGate::Proceed);
+        assert_eq!(consent_gate(true, false), ConsentGate::Proceed);
+    }
+
+    #[test]
+    fn interactive_without_noconfirm_prompts() {
+        assert_eq!(consent_gate(false, true), ConsentGate::Prompt);
+    }
+
+    #[test]
+    fn non_interactive_without_noconfirm_fails_closed() {
+        // The regression for defect #11: a pipe/CI/cron stdin with no
+        // --noconfirm must abort, never silently accept a piped "y".
+        assert_eq!(consent_gate(false, false), ConsentGate::AbortNonInteractive);
+    }
 }

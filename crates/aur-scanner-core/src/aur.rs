@@ -303,9 +303,29 @@ impl AurClient {
         })
     }
 
-    /// Check if a package exists in AUR
-    pub async fn package_exists(&self, package_name: &str) -> bool {
-        self.get_package_info(package_name).await.is_ok()
+    /// Check whether a package is present in the AUR.
+    ///
+    /// Returns `Ok(true)` when the RPC authoritatively reports the package
+    /// present, `Ok(false)` when it authoritatively reports it absent
+    /// (`NotFound`), and `Err(..)` when the lookup could not be completed at all
+    /// (network/timeout/parse/API error).
+    ///
+    /// SECURITY: never collapse an error into `false`. The previous version
+    /// returned a bare `bool` via `.is_ok()`, so a transient RPC blip silently
+    /// became "does not exist" -> `is_aur_package` reported "not AUR" -> the
+    /// wrapper installed the package UNSCANNED (fail-open). Callers that gate on
+    /// this MUST treat `Err` as "could not determine" and fail closed: assume the
+    /// package may be in the AUR and scan it.
+    pub async fn package_exists(&self, package_name: &str) -> Result<bool> {
+        match self.get_package_info(package_name).await {
+            Ok(_) => Ok(true),
+            // Authoritative "not in the AUR" -- the only result that may safely
+            // be reported as absent.
+            Err(ScanError::NotFound(_)) => Ok(false),
+            // Anything else (network/timeout/parse/API error) is indeterminate;
+            // surface it so the caller can fail closed instead of guessing.
+            Err(e) => Err(e),
+        }
     }
 
     /// Get info for multiple packages at once
@@ -397,7 +417,33 @@ fn find_install_script(dir: &Path, package_base: &str) -> Option<PathBuf> {
     None
 }
 
-/// Check if a package is from AUR (not in official repos)
+/// Decide whether the install gate should treat a package as AUR (and therefore
+/// scan it), given the two upstream signals. Kept pure so the fail-closed
+/// contract is unit-testable without touching the network or pacman.
+///
+/// * `in_official_repos` -- pacman authoritatively found it in the official repos.
+/// * `aur_lookup` -- the outcome of the AUR membership lookup: `Ok(true)` present,
+///   `Ok(false)` authoritatively absent, `Err(..)` could-not-determine.
+///
+/// Fail-closed rule: an indeterminate AUR lookup (`Err`) is treated as "may be
+/// AUR" so the package is scanned rather than waved through. Only an
+/// authoritative answer (in official repos, or a definitive AUR present/absent)
+/// is allowed to skip the AUR scan.
+fn classify_aur_membership(in_official_repos: bool, aur_lookup: Result<bool>) -> bool {
+    if in_official_repos {
+        return false; // authoritatively official -> not an AUR package
+    }
+    // `Ok(present)` -> use the authoritative answer; `Err(..)` could not be
+    // determined -> fail closed -> treat as AUR -> scan.
+    aur_lookup.unwrap_or(true)
+}
+
+/// Check if a package is from AUR (not in official repos).
+///
+/// Fails CLOSED: if AUR membership cannot be determined (e.g. a transient RPC
+/// error), the package is reported as AUR so the gate scans it. The only ways to
+/// return `Ok(false)` ("not AUR, skip the scan") are an authoritative
+/// official-repo hit or an authoritative AUR "not found".
 pub async fn is_aur_package(package_name: &str) -> Result<bool> {
     // Check if it's in official repos using pacman
     // `--` ensures a name that begins with `-` can never be parsed as a flag.
@@ -407,14 +453,26 @@ pub async fn is_aur_package(package_name: &str) -> Result<bool> {
         .await
         .map_err(ScanError::Io)?;
 
-    // If pacman -Si succeeds, it's in official repos
-    if output.status.success() {
-        return Ok(false);
-    }
+    let in_official_repos = output.status.success();
 
-    // Check if it exists in AUR
-    let client = AurClient::new()?;
-    Ok(client.package_exists(package_name).await)
+    // Only consult the AUR when pacman did not authoritatively place the package
+    // in the official repos. The lookup result (including any error) is fed to
+    // the fail-closed classifier.
+    let aur_lookup = if in_official_repos {
+        Ok(false)
+    } else {
+        let client = AurClient::new()?;
+        let lookup = client.package_exists(package_name).await;
+        if let Err(e) = &lookup {
+            warn!(
+                "AUR membership check for {package_name:?} could not be completed \
+                 ({e}); treating as AUR (fail closed) so it is scanned"
+            );
+        }
+        lookup
+    };
+
+    Ok(classify_aur_membership(in_official_repos, aur_lookup))
 }
 
 /// Get list of installed AUR packages
@@ -460,5 +518,49 @@ mod tests {
         let client = AurClient::new().unwrap();
         let info = client.get_package_info("this-package-definitely-does-not-exist-12345").await;
         assert!(info.is_err());
+    }
+
+    // --- fail-closed AUR classification (defect #1) ---------------------------
+    // The security contract: an indeterminate AUR lookup must NOT downgrade a
+    // package to "not AUR" and let it install unscanned. Only an authoritative
+    // answer may skip the scan.
+
+    #[test]
+    fn official_repo_package_is_not_scanned_as_aur() {
+        // pacman authoritatively owns it -> not AUR, regardless of the AUR side.
+        assert!(!classify_aur_membership(true, Ok(false)));
+        assert!(!classify_aur_membership(
+            true,
+            Err(ScanError::Network("ignored".into()))
+        ));
+    }
+
+    #[test]
+    fn present_in_aur_is_scanned() {
+        assert!(classify_aur_membership(false, Ok(true)));
+    }
+
+    #[test]
+    fn authoritatively_absent_is_not_scanned() {
+        // Not in official repos and the AUR definitively has no such package:
+        // nothing to scan (the helper will fail to find it too).
+        assert!(!classify_aur_membership(false, Ok(false)));
+    }
+
+    #[test]
+    fn indeterminate_aur_lookup_fails_closed_and_is_scanned() {
+        // The regression for defect #1: a transient RPC/network error must be
+        // treated as "could be AUR" so the package is SCANNED, not skipped.
+        // Before the fix `package_exists` collapsed this error into `false`,
+        // so the package slipped through unscanned.
+        for err in [
+            ScanError::Network("timeout".into()),
+            ScanError::Network("AUR API error: rate limited".into()),
+        ] {
+            assert!(
+                classify_aur_membership(false, Err(err)),
+                "an indeterminate AUR lookup must fail closed (scan)"
+            );
+        }
     }
 }

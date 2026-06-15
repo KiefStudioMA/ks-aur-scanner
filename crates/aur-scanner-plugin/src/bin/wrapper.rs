@@ -11,6 +11,7 @@
 
 use anyhow::{Context, Result};
 use aur_scanner_core::aur::{is_aur_package, AurClient};
+use aur_scanner_core::validate::is_valid_package_name;
 use aur_scanner_core::{Scanner, Severity};
 use colored::Colorize;
 use std::env;
@@ -101,6 +102,18 @@ fn classify(helper_args: &[&str]) -> Operation {
     Operation::PassThrough
 }
 
+/// Keep only operands that are syntactically legal Arch package identifiers.
+/// Anything else (a leading-hyphen arg-injection attempt, a `../traversal`, an
+/// embedded URL/shell metacharacter, an empty string) cannot name a real AUR
+/// package and must never become an AUR-lookup or PKGBUILD-fetch key.
+fn fetch_candidates(operands: &[String]) -> Vec<String> {
+    operands
+        .iter()
+        .filter(|p| is_valid_package_name(p))
+        .cloned()
+        .collect()
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match run().await {
@@ -135,14 +148,28 @@ async fn run() -> Result<ExitCode> {
         return run_helper(helper, &helper_args);
     }
 
-    // Filter to only AUR packages. If the official-repo check itself fails we
+    // Validate every operand BEFORE it becomes a network/fetch key. An operand
+    // that is not a bare package identifier cannot be a real AUR package (pacman
+    // and the helper would reject it too); never feed such a value to the AUR
+    // membership lookup or the PKGBUILD fetch. `is_aur_package`/`fetch_pkgbuild`
+    // re-validate internally, but rejecting here keeps garbage out of the gate
+    // entirely and surfaces it to the user.
+    let candidates = fetch_candidates(&packages);
+    for dropped in packages.iter().filter(|p| !candidates.contains(p)) {
+        eprintln!(
+            "{} ignoring invalid package operand (not scanned): {dropped:?}",
+            "warning:".yellow()
+        );
+    }
+
+    // Filter to only AUR packages. If the AUR membership check itself fails we
     // assume AUR and scan -- failing toward more scanning, never less.
     let mut aur_packages: Vec<String> = Vec::new();
-    for pkg in &packages {
+    for pkg in &candidates {
         match is_aur_package(pkg).await {
             Ok(true) => aur_packages.push(pkg.clone()),
             Ok(false) => {} // Official repo package, skip
-            Err(_) => aur_packages.push(pkg.clone()), // Assume AUR if check fails
+            Err(_) => aur_packages.push(pkg.clone()), // could not determine -> fail closed, scan
         }
     }
 
@@ -271,6 +298,22 @@ async fn run() -> Result<ExitCode> {
         }
     }
 
+    println!();
+    // TOCTOU disclosure (defect #2): this wrapper scanned PKGBUILDs it fetched
+    // itself, but `run_helper` now hands the operation to the AUR helper, which
+    // RE-FETCHES and builds its OWN copy. The bytes built are therefore not
+    // guaranteed to be the bytes scanned -- a maintainer can update the PKGBUILD
+    // between the two fetches, and VCS (`-git`) sources move regardless. This
+    // pre-scan is advisory for the wrapper path. The race-free `aur-scan install`
+    // command fetches once and builds the exact directories it scanned; use it
+    // when a scan==build guarantee is required.
+    println!(
+        "{} the helper re-fetches and builds its own copy, so this pre-scan is {}. \
+         For a scan==build guarantee use: {}",
+        "NOTE:".yellow().bold(),
+        "advisory".yellow(),
+        "aur-scan install <pkg>".white().bold()
+    );
     println!();
     println!("{}", "Proceeding with installation...".green());
     println!();
@@ -425,5 +468,32 @@ mod tests {
     #[test]
     fn confirm_default_no_refuses_when_non_interactive() {
         assert!(!confirm_default_no(false, "continue?").unwrap());
+    }
+
+    // --- operand validation before fetch (defect #2) -------------------------
+    // Illegal operands must never reach the AUR lookup / PKGBUILD fetch.
+    #[test]
+    fn fetch_candidates_keeps_only_valid_names() {
+        let operands: Vec<String> = [
+            "firefox",
+            "google-chrome",
+            "-rf",
+            "../../etc/passwd",
+            "a;b",
+            "",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            fetch_candidates(&operands),
+            vec!["firefox".to_string(), "google-chrome".to_string()]
+        );
+    }
+
+    #[test]
+    fn fetch_candidates_passes_clean_set_unchanged() {
+        let operands: Vec<String> = ["paru", "yay"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(fetch_candidates(&operands), operands);
     }
 }
