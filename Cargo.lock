@@ -152,6 +152,7 @@ dependencies = [
  "aur-scanner-core",
  "colored",
  "libc",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

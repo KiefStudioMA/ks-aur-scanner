@@ -8,7 +8,7 @@ use aur_scanner_core::validate::is_valid_package_name;
 use aur_scanner_core::{ScanConfig, Scanner, Severity};
 use colored::Colorize;
 use std::io::{self, BufRead};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -116,36 +116,129 @@ async fn main() -> Result<()> {
         }
     }
 
-    if scan_failed {
-        eprintln!();
-        eprintln!(
-            "{} a package could not be analyzed. Aborting transaction (fail-closed).",
-            "ERROR:".red().bold()
-        );
-        std::process::exit(1);
-    }
-
-    if has_critical {
-        eprintln!();
-        eprintln!(
-            "{} Critical security issues found. Aborting transaction.",
-            "ERROR:".red().bold()
-        );
-        eprintln!("Use 'aur-scan scan <package-dir>' for details.");
-        eprintln!();
-        std::process::exit(1);
-    }
-
-    if has_high {
-        eprintln!();
-        eprintln!(
-            "{} High severity issues found. Review recommended.",
-            "WARNING:".yellow().bold()
-        );
-        eprintln!();
+    // Fail-closed exit decision (precedence: a scan failure or a critical finding
+    // aborts the transaction; high-severity only warns). The precedence/branch
+    // selection is a pure function so the fail-closed contract is unit-testable;
+    // the messaging + process exit stay here.
+    match decide_hook_outcome(scan_failed, has_critical, has_high) {
+        HookDecision::Abort(AbortReason::ScanFailed) => {
+            eprintln!();
+            eprintln!(
+                "{} a package could not be analyzed. Aborting transaction (fail-closed).",
+                "ERROR:".red().bold()
+            );
+            std::process::exit(1);
+        }
+        HookDecision::Abort(AbortReason::Critical) => {
+            eprintln!();
+            eprintln!(
+                "{} Critical security issues found. Aborting transaction.",
+                "ERROR:".red().bold()
+            );
+            eprintln!("Use 'aur-scan scan <package-dir>' for details.");
+            eprintln!();
+            std::process::exit(1);
+        }
+        HookDecision::Proceed { warn_high } => {
+            if warn_high {
+                eprintln!();
+                eprintln!(
+                    "{} High severity issues found. Review recommended.",
+                    "WARNING:".yellow().bold()
+                );
+                eprintln!();
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Why the hook is aborting the pacman transaction (exit 1). Carried so the
+/// caller can print the reason-specific message while the precedence stays in
+/// one tested place.
+#[derive(Debug, PartialEq, Eq)]
+enum AbortReason {
+    /// A located PKGBUILD could not be analyzed -> fail closed.
+    ScanFailed,
+    /// At least one Critical finding was raised.
+    Critical,
+}
+
+/// What the hook should do once every package has been scanned.
+#[derive(Debug, PartialEq, Eq)]
+enum HookDecision {
+    /// Abort the transaction (exit 1).
+    Abort(AbortReason),
+    /// Allow the transaction; print the high-severity notice when `warn_high`.
+    Proceed { warn_high: bool },
+}
+
+/// Decide the hook's terminal action from the accumulated scan state.
+///
+/// Fail-closed precedence (unchanged from the original inline logic): an
+/// un-analyzable package aborts BEFORE a critical finding (both exit 1), and a
+/// critical finding aborts before a high-severity warning. High severity alone
+/// proceeds with a warning; a fully clean run proceeds silently.
+fn decide_hook_outcome(scan_failed: bool, has_critical: bool, has_high: bool) -> HookDecision {
+    if scan_failed {
+        HookDecision::Abort(AbortReason::ScanFailed)
+    } else if has_critical {
+        HookDecision::Abort(AbortReason::Critical)
+    } else {
+        HookDecision::Proceed {
+            warn_high: has_high,
+        }
+    }
+}
+
+/// Build the ordered list of candidate PKGBUILD paths to probe for `user`/`package`.
+///
+/// Both names become filesystem path components, so this is the name-validation
+/// gate: an illegal name (`..`, `/`, shell metacharacters, empty, leading `-`)
+/// yields an EMPTY list and the package is skipped -- a value cannot inject `..`
+/// or `/` into the probed paths. Pure (no filesystem access), so the gate and the
+/// path construction are unit-testable.
+fn candidate_pkgbuild_paths(package: &str, user: &str) -> Vec<PathBuf> {
+    // Defense in depth: this gate stands even if a future caller forgets to
+    // pre-validate. `find_pkgbuild_for_package` validates first for a precise
+    // diagnostic, so it never reaches here with an illegal name.
+    if !is_valid_package_name(package) || !is_valid_package_name(user) {
+        return Vec::new();
+    }
+    [
+        format!("/home/{user}/.cache/yay/{package}"),
+        format!("/home/{user}/.cache/paru/clone/{package}"),
+        format!("/home/{user}/.cache/pikaur/aur_repos/{package}"),
+        format!("/home/{user}/.cache/trizen/{package}"),
+        format!("/var/cache/aur/{package}"),
+    ]
+    .into_iter()
+    .map(|dir| PathBuf::from(dir).join("PKGBUILD"))
+    .collect()
+}
+
+/// Outcome of probing one candidate PKGBUILD path. `symlink_metadata` does NOT
+/// follow the final symlink, so a symlink/FIFO/dir cache entry is classified
+/// `RefusedNonRegular` (an O_NOFOLLOW-equivalent on the last component) and is
+/// never read through.
+#[derive(Debug, PartialEq, Eq)]
+enum PkgbuildProbe {
+    /// A regular file -- safe to read.
+    Usable,
+    /// Exists but is not a regular file (symlink / FIFO / dir / ...) -- refuse.
+    RefusedNonRegular,
+    /// Nothing at this path.
+    Absent,
+}
+
+/// Classify a candidate PKGBUILD path WITHOUT following a final symlink.
+fn classify_pkgbuild(path: &Path) -> PkgbuildProbe {
+    match std::fs::symlink_metadata(path) {
+        Ok(md) if md.file_type().is_file() => PkgbuildProbe::Usable,
+        Ok(_) => PkgbuildProbe::RefusedNonRegular,
+        Err(_) => PkgbuildProbe::Absent,
+    }
 }
 
 /// Find PKGBUILD for a package in common cache locations for `user`.
@@ -157,7 +250,7 @@ async fn main() -> Result<()> {
 /// check on the final component).
 fn find_pkgbuild_for_package(package: &str, user: &str) -> Option<PathBuf> {
     // Pacman provides the target name, but treat it as untrusted: it becomes a
-    // filesystem path below.
+    // filesystem path below. Validate up front so the warning names the offender.
     if !is_valid_package_name(package) {
         tracing::warn!("skipping target with illegal package name: {package:?}");
         return None;
@@ -169,29 +262,68 @@ fn find_pkgbuild_for_package(package: &str, user: &str) -> Option<PathBuf> {
         return None;
     }
 
-    let cache_dirs = vec![
-        format!("/home/{}/.cache/yay/{}", user, package),
-        format!("/home/{}/.cache/paru/clone/{}", user, package),
-        format!("/home/{}/.cache/pikaur/aur_repos/{}", user, package),
-        format!("/home/{}/.cache/trizen/{}", user, package),
-        format!("/var/cache/aur/{}", package),
-    ];
-
-    for dir in cache_dirs {
-        let pkgbuild = PathBuf::from(&dir).join("PKGBUILD");
-        // symlink_metadata does not follow the final symlink: if PKGBUILD is a
-        // symlink (or anything but a regular file), skip it rather than read
-        // through it.
-        match std::fs::symlink_metadata(&pkgbuild) {
-            Ok(md) if md.file_type().is_file() => return Some(pkgbuild),
-            Ok(_) => {
+    for pkgbuild in candidate_pkgbuild_paths(package, user) {
+        match classify_pkgbuild(&pkgbuild) {
+            PkgbuildProbe::Usable => return Some(pkgbuild),
+            PkgbuildProbe::RefusedNonRegular => {
                 tracing::warn!("refusing non-regular PKGBUILD at {}", pkgbuild.display());
             }
-            Err(_) => {}
+            PkgbuildProbe::Absent => {}
         }
     }
 
     None
+}
+
+/// What the hook should do about privileges before touching user files, decided
+/// purely from the process state and environment. Separated from the syscalls so
+/// the security-critical branch selection is unit-testable without actually
+/// being root or dropping privileges.
+#[derive(Debug, PartialEq, Eq)]
+enum PrivilegeDecision {
+    /// Not root: no drop needed. Scan caches as `Some(user)`, or skip if `None`
+    /// (no usable, non-root `$USER`).
+    NoDropNeeded(Option<String>),
+    /// Root with a valid, non-root invoking user: drop groups -> gid -> uid, then
+    /// scan caches as `user`.
+    DropTo { uid: u32, gid: u32, user: String },
+    /// Root but no safe invoking user can be determined: skip scanning entirely
+    /// (never read user caches as root).
+    SkipRootNoTarget,
+}
+
+/// Decide the privilege action from `(is_root, SUDO_UID, SUDO_GID, SUDO_USER,
+/// USER)`. Fail-closed: when running as root, the only outcome that scans is a
+/// fully-specified, non-root `SUDO_*` target; anything missing/unparseable, or a
+/// target uid of 0, yields `SkipRootNoTarget` rather than scanning as root.
+fn decide_privilege_drop(
+    is_root: bool,
+    sudo_uid: Option<&str>,
+    sudo_gid: Option<&str>,
+    sudo_user: Option<&str>,
+    user_env: Option<&str>,
+) -> PrivilegeDecision {
+    if !is_root {
+        // Not root: keep current privileges; scan as $USER unless it is empty or
+        // literally "root" (matching the original filter).
+        let scan_as = user_env
+            .filter(|u| !u.is_empty() && *u != "root")
+            .map(str::to_string);
+        return PrivilegeDecision::NoDropNeeded(scan_as);
+    }
+
+    // Root: require a complete, parseable, non-root SUDO_* target.
+    let target = (|| {
+        let uid: u32 = sudo_uid?.parse().ok()?;
+        let gid: u32 = sudo_gid?.parse().ok()?;
+        let user = sudo_user.filter(|u| !u.is_empty())?.to_string();
+        Some((uid, gid, user))
+    })();
+    match target {
+        Some((uid, gid, user)) if uid != 0 => PrivilegeDecision::DropTo { uid, gid, user },
+        // missing/unparseable field, or a uid-0 target ("never drop to root").
+        _ => PrivilegeDecision::SkipRootNoTarget,
+    }
 }
 
 /// Drop root privileges to the invoking user before touching their files, and
@@ -206,43 +338,50 @@ fn find_pkgbuild_for_package(package: &str, user: &str) -> Option<PathBuf> {
 ///   reading user caches as root).
 #[cfg(unix)]
 fn drop_privileges_to_invoking_user() -> Option<String> {
-    // SAFETY: these are simple libc getters/setters with no memory operands.
-    let euid = unsafe { libc::geteuid() };
-    if euid != 0 {
-        return std::env::var("USER")
-            .ok()
-            .filter(|u| !u.is_empty() && u != "root");
-    }
+    // SAFETY: simple libc getter with no memory operands.
+    let is_root = unsafe { libc::geteuid() } == 0;
+    let sudo_uid = std::env::var("SUDO_UID").ok();
+    let sudo_gid = std::env::var("SUDO_GID").ok();
+    let sudo_user = std::env::var("SUDO_USER").ok();
+    let user_env = std::env::var("USER").ok();
 
-    let uid: u32 = std::env::var("SUDO_UID").ok()?.parse().ok()?;
-    let gid: u32 = std::env::var("SUDO_GID").ok()?.parse().ok()?;
-    let user = std::env::var("SUDO_USER").ok().filter(|u| !u.is_empty())?;
-    if uid == 0 {
-        return None; // never "drop" to root
+    match decide_privilege_drop(
+        is_root,
+        sudo_uid.as_deref(),
+        sudo_gid.as_deref(),
+        sudo_user.as_deref(),
+        user_env.as_deref(),
+    ) {
+        PrivilegeDecision::NoDropNeeded(scan_as) => scan_as,
+        PrivilegeDecision::SkipRootNoTarget => None,
+        PrivilegeDecision::DropTo { uid, gid, user } => {
+            // SAFETY: setgroups/setgid/setuid are FFI calls with scalar arguments;
+            // the null pointer for setgroups(0, NULL) clears the supplementary
+            // group list. Order matters -- groups, then gid, then uid -- and each
+            // failure aborts immediately (fail closed); never continue a partial
+            // drop.
+            unsafe {
+                if libc::setgroups(0, std::ptr::null()) != 0 {
+                    eprintln!("aur-scanner: failed to drop supplementary groups; aborting");
+                    std::process::exit(3);
+                }
+                if libc::setgid(gid) != 0 {
+                    eprintln!("aur-scanner: failed to drop gid; aborting");
+                    std::process::exit(3);
+                }
+                if libc::setuid(uid) != 0 {
+                    eprintln!("aur-scanner: failed to drop uid; aborting");
+                    std::process::exit(3);
+                }
+                // Verify the drop is irreversible: regaining root must now fail.
+                if libc::setuid(0) == 0 {
+                    eprintln!("aur-scanner: privilege drop did not stick; aborting");
+                    std::process::exit(3);
+                }
+            }
+            Some(user)
+        }
     }
-
-    // SAFETY: setgroups/setgid/setuid are FFI calls with scalar arguments; the
-    // null pointer for setgroups(0, NULL) clears the supplementary group list.
-    unsafe {
-        if libc::setgroups(0, std::ptr::null()) != 0 {
-            eprintln!("aur-scanner: failed to drop supplementary groups; aborting");
-            std::process::exit(3);
-        }
-        if libc::setgid(gid) != 0 {
-            eprintln!("aur-scanner: failed to drop gid; aborting");
-            std::process::exit(3);
-        }
-        if libc::setuid(uid) != 0 {
-            eprintln!("aur-scanner: failed to drop uid; aborting");
-            std::process::exit(3);
-        }
-        // Verify the drop is irreversible: regaining root must now fail.
-        if libc::setuid(0) == 0 {
-            eprintln!("aur-scanner: privilege drop did not stick; aborting");
-            std::process::exit(3);
-        }
-    }
-    Some(user)
 }
 
 #[cfg(not(unix))]
@@ -252,6 +391,7 @@ fn drop_privileges_to_invoking_user() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use aur_scanner_core::validate::is_valid_package_name;
 
     // The hook turns the pacman-supplied target (and SUDO_USER) into filesystem
@@ -264,5 +404,189 @@ mod tests {
         for good in ["firefox", "aur-scanner-git", "lib32-foo", "python-requests"] {
             assert!(is_valid_package_name(good), "must accept {good}");
         }
+    }
+
+    // --- privilege-drop decision (pure; no syscalls, no real root) -----------
+    // The hook runs as root under pacman. The security contract: it may only scan
+    // user caches after an irreversible drop to a *non-root* invoking user, and
+    // must otherwise SKIP rather than read user files as root.
+
+    #[test]
+    fn non_root_scans_as_current_user() {
+        assert_eq!(
+            decide_privilege_drop(false, None, None, None, Some("alice")),
+            PrivilegeDecision::NoDropNeeded(Some("alice".to_string()))
+        );
+        // SUDO_* are ignored when we are not root.
+        assert_eq!(
+            decide_privilege_drop(false, Some("0"), Some("0"), Some("root"), Some("bob")),
+            PrivilegeDecision::NoDropNeeded(Some("bob".to_string()))
+        );
+    }
+
+    #[test]
+    fn non_root_without_usable_user_skips() {
+        // unset / empty / literally "root" $USER ⇒ no scan target.
+        for u in [None, Some(""), Some("root")] {
+            assert_eq!(
+                decide_privilege_drop(false, None, None, None, u),
+                PrivilegeDecision::NoDropNeeded(None),
+                "USER={u:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn root_with_valid_sudo_env_drops_to_invoking_user() {
+        assert_eq!(
+            decide_privilege_drop(
+                true,
+                Some("1000"),
+                Some("1000"),
+                Some("alice"),
+                Some("root")
+            ),
+            PrivilegeDecision::DropTo {
+                uid: 1000,
+                gid: 1000,
+                user: "alice".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn root_never_drops_to_uid_zero() {
+        // A uid-0 SUDO target must never be treated as a drop -- skip instead.
+        assert_eq!(
+            decide_privilege_drop(true, Some("0"), Some("0"), Some("root"), None),
+            PrivilegeDecision::SkipRootNoTarget
+        );
+    }
+
+    #[test]
+    fn root_without_complete_sudo_env_skips_rather_than_scanning_as_root() {
+        // Any missing field, an empty SUDO_USER, or an unparseable id ⇒ fail
+        // closed to skip (never read user caches with root privileges).
+        let cases = [
+            (None, Some("1000"), Some("alice")),               // no SUDO_UID
+            (Some("1000"), None, Some("alice")),               // no SUDO_GID
+            (Some("1000"), Some("1000"), None),                // no SUDO_USER
+            (Some("1000"), Some("1000"), Some("")),            // empty SUDO_USER
+            (Some("notanumber"), Some("1000"), Some("alice")), // unparseable uid
+            (Some("1000"), Some("x"), Some("alice")),          // unparseable gid
+        ];
+        for (uid, gid, user) in cases {
+            assert_eq!(
+                decide_privilege_drop(true, uid, gid, user, None),
+                PrivilegeDecision::SkipRootNoTarget,
+                "uid={uid:?} gid={gid:?} user={user:?}"
+            );
+        }
+    }
+
+    // --- candidate-path name gate (pure) -------------------------------------
+
+    #[test]
+    fn candidate_paths_empty_for_illegal_package_or_user() {
+        for bad_pkg in ["../etc", "a/b", "a;rm -rf /", "", "-rf", "a$(id)"] {
+            assert!(
+                candidate_pkgbuild_paths(bad_pkg, "alice").is_empty(),
+                "illegal package {bad_pkg:?} must yield no paths"
+            );
+        }
+        for bad_user in ["../root", "a/b", "", "a;b", "-x"] {
+            assert!(
+                candidate_pkgbuild_paths("firefox", bad_user).is_empty(),
+                "illegal user {bad_user:?} must yield no paths"
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_paths_built_for_valid_names_without_escape() {
+        let paths = candidate_pkgbuild_paths("firefox", "alice");
+        assert_eq!(paths.len(), 5);
+        assert!(paths.iter().all(|p| p.ends_with("PKGBUILD")));
+        assert!(paths[0]
+            .to_string_lossy()
+            .contains("/home/alice/.cache/yay/firefox/PKGBUILD"));
+        // No traversal/escape can appear once the names are validated.
+        assert!(paths.iter().all(|p| !p.to_string_lossy().contains("..")));
+    }
+
+    // --- PKGBUILD file-type refusal (real temp filesystem) -------------------
+    // A regular file is usable; a symlink (even to a regular file), FIFO, or dir
+    // must be refused without following it.
+
+    #[test]
+    fn classify_pkgbuild_accepts_regular_file_and_refuses_dir_and_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let regular = dir.path().join("PKGBUILD");
+        std::fs::write(&regular, b"pkgname=x\n").unwrap();
+        assert_eq!(classify_pkgbuild(&regular), PkgbuildProbe::Usable);
+
+        assert_eq!(
+            classify_pkgbuild(&dir.path().join("missing")),
+            PkgbuildProbe::Absent
+        );
+
+        let subdir = dir.path().join("adir");
+        std::fs::create_dir(&subdir).unwrap();
+        assert_eq!(classify_pkgbuild(&subdir), PkgbuildProbe::RefusedNonRegular);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_pkgbuild_refuses_symlink_without_following_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real_PKGBUILD");
+        std::fs::write(&target, b"pkgname=x\n").unwrap();
+        let link = dir.path().join("PKGBUILD");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        // The symlink resolves to a regular file, but we must NOT follow the final
+        // component -- a hostile cache entry could otherwise redirect the reader.
+        assert_eq!(classify_pkgbuild(&link), PkgbuildProbe::RefusedNonRegular);
+    }
+
+    // --- fail-closed exit decision -------------------------------------------
+
+    #[test]
+    fn scan_failure_aborts_even_with_no_findings() {
+        assert_eq!(
+            decide_hook_outcome(true, false, false),
+            HookDecision::Abort(AbortReason::ScanFailed)
+        );
+    }
+
+    #[test]
+    fn critical_finding_aborts() {
+        assert_eq!(
+            decide_hook_outcome(false, true, false),
+            HookDecision::Abort(AbortReason::Critical)
+        );
+    }
+
+    #[test]
+    fn scan_failure_takes_precedence_over_critical() {
+        assert_eq!(
+            decide_hook_outcome(true, true, true),
+            HookDecision::Abort(AbortReason::ScanFailed)
+        );
+    }
+
+    #[test]
+    fn high_only_proceeds_with_warning() {
+        assert_eq!(
+            decide_hook_outcome(false, false, true),
+            HookDecision::Proceed { warn_high: true }
+        );
+    }
+
+    #[test]
+    fn clean_run_proceeds_without_warning() {
+        assert_eq!(
+            decide_hook_outcome(false, false, false),
+            HookDecision::Proceed { warn_high: false }
+        );
     }
 }
