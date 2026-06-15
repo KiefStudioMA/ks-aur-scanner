@@ -8,7 +8,7 @@
 use super::SecurityAnalyzer;
 use crate::error::Result;
 use crate::rules::informational_lines;
-use crate::textutil::{deobfuscate_text, logical_lines, SHELLS, SHELL_LAUNCHER};
+use crate::textutil::{deobfuscate_text, logical_lines, SHELLS, SHELL_LAUNCHER, SHELL_PATH};
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use lazy_static::lazy_static;
@@ -25,7 +25,7 @@ lazy_static! {
     /// shared `SHELLS` constant so `dash`/`zsh`/`ksh -c`/here-strings are covered
     /// like `sh`/`bash` (defect #6).
     static ref EXEC_SINK: Regex = Regex::new(&format!(
-        r"\|\s*{SHELL_LAUNCHER}{SHELLS}\b|\beval\b|\b{SHELL_LAUNCHER}{SHELLS}\s+-c\b|\b{SHELL_LAUNCHER}{SHELLS}\s*<<<|source\s+/dev/stdin|/dev/stdin"
+        r"\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b|\beval\b|{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s+-c\b|{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s*<<<|source\s+/dev/stdin|/dev/stdin"
     )).unwrap();
     /// A long base64-looking blob in a single assignment/string.
     static ref LONG_B64: Regex = Regex::new(r"[A-Za-z0-9+/]{200,}={0,2}").unwrap();

