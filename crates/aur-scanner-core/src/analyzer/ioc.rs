@@ -7,9 +7,11 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
+use crate::textutil::deobfuscate_text;
 use crate::threat_intel::IocDatabase;
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Analyzer that matches content against the IOC database.
@@ -71,19 +73,46 @@ impl IocAnalyzer {
     }
 }
 
+impl IocAnalyzer {
+    /// Scan one file's text against the IOC database, matching both the raw text
+    /// and its de-obfuscated form so an indicator hidden by quote-splitting /
+    /// ANSI-C escaping (e.g. `"ato""mic-lockfile"`) is still caught (defect #6c).
+    /// De-obfuscation preserves line numbers, so a hit reports its real line; the
+    /// raw and decoded passes are deduplicated by (kind, value, line) so an
+    /// indicator that needed no decoding is reported once.
+    fn scan_file(
+        &self,
+        context: &AnalysisContext,
+        file: &std::path::Path,
+        text: &str,
+        findings: &mut Vec<Finding>,
+    ) {
+        let mut seen: HashSet<(String, String, usize)> = HashSet::new();
+        let mut collect = |content: &str, findings: &mut Vec<Finding>| {
+            for hit in self.db.scan_content(content) {
+                let key = (format!("{:?}", hit.kind), hit.value.clone(), hit.line);
+                if seen.insert(key) {
+                    findings.push(self.finding_for(context, file, &hit));
+                }
+            }
+        };
+        collect(text, findings);
+        let decoded = deobfuscate_text(text);
+        if decoded != text {
+            collect(&decoded, findings);
+        }
+    }
+}
+
 #[async_trait]
 impl SecurityAnalyzer for IocAnalyzer {
     async fn analyze(&self, context: &AnalysisContext) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        for hit in self.db.scan_content(&context.pkgbuild.raw_content) {
-            findings.push(self.finding_for(context, &context.file_path, &hit));
-        }
+        self.scan_file(context, &context.file_path, &context.pkgbuild.raw_content, &mut findings);
 
         if let Some(install) = &context.install_script {
-            for hit in self.db.scan_content(&install.content) {
-                findings.push(self.finding_for(context, &install.path, &hit));
-            }
+            self.scan_file(context, &install.path, &install.content, &mut findings);
         }
 
         Ok(findings)
@@ -116,5 +145,38 @@ mod tests {
         let analyzer = IocAnalyzer::new(Arc::new(IocDatabase::embedded()));
         let findings = analyzer.analyze(&context).await.unwrap();
         assert!(findings.iter().any(|f| f.id == "IOC-001"));
+    }
+
+    #[tokio::test]
+    async fn flags_obfuscated_ioc_and_does_not_double_report() {
+        // Defect #6c: an IOC hidden by quote-splitting must be caught via the
+        // de-obfuscated pass; a plain IOC on another line is reported exactly once
+        // (the raw and decoded passes are deduplicated).
+        let parser = StaticParser::new();
+        let pkgbuild = parser
+            .parse(
+                "pkgname=x\npkgver=1\npkgrel=1\npackage() {\n npm install \"ato\"\"mic-lockfile\"\n echo js-digest\n}\n",
+            )
+            .unwrap();
+        let context = AnalysisContext {
+            pkgbuild,
+            install_script: None,
+            config: ScanConfig::default(),
+            file_path: PathBuf::from("PKGBUILD"),
+        };
+        let analyzer = IocAnalyzer::new(Arc::new(IocDatabase::embedded()));
+        let findings = analyzer.analyze(&context).await.unwrap();
+        // The obfuscated atomic-lockfile is caught only after de-obfuscation.
+        assert!(
+            findings.iter().any(|f| f.metadata["ioc_value"] == "atomic-lockfile"),
+            "obfuscated IOC must be caught: {findings:?}"
+        );
+        // The plain js-digest indicator is reported exactly once, not duplicated
+        // by the second (decoded) pass.
+        let js_digest = findings
+            .iter()
+            .filter(|f| f.metadata["ioc_value"] == "js-digest")
+            .count();
+        assert_eq!(js_digest, 1, "plain IOC must not be double-reported: {findings:?}");
     }
 }
