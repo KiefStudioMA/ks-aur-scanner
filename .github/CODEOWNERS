@@ -1,0 +1,8 @@
+# Code owners for ks-aur-scanner.
+#
+# Kief Studio staff are the review gate for every change. Outside contributors
+# propose via pull requests from forks (they have no write access); a staff
+# review here is required before anything merges. This file takes effect once it
+# is on the default branch and branch protection requires Code Owner review.
+
+*       @HxHippy @m33lie

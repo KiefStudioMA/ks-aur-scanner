@@ -40,10 +40,13 @@ scan is unchanged — fully offline and static. **Release candidate.**
   pat-aur — at each helper's real PKGBUILD location (e.g. pikaur's
   `~/.local/share/pikaur/aur_repos`, rua's `~/.config/rua/pkg`, trizen's
   `~/.cache/trizen/sources`), with XDG `*_HOME` overrides honored.
-- **Shell integration wraps more helpers.** `pikaur`, `trizen`, and `pakku` join
-  `paru`/`yay` as pre-build gates (they share pacman's `-S`/`-Syu` grammar);
-  helpers with a different model (`aura -A`, and the subcommand tools aurutils/rua/
-  pat-aur) are covered by the pacman hook instead.
+- **Shell integration wraps more helpers** ([#6](https://github.com/KiefStudioMA/ks-aur-scanner/issues/6); diagnosis from [@nikoraasu](https://github.com/nikoraasu) in [#12](https://github.com/KiefStudioMA/ks-aur-scanner/issues/12)).
+  `pikaur`, `trizen`, and `pakku` join `paru`/`yay` as pre-build gates (they share
+  pacman's `-S`/`-Syu` grammar); helpers with a different model (`aura -A`, and the
+  subcommand tools aurutils/rua/pat-aur) are covered by the pacman hook instead.
+- **Nushell integration** (`install/integration.nu`, [#5](https://github.com/KiefStudioMA/ks-aur-scanner/issues/5)) — routes
+  helper installs through the `aur-scan-wrap` gate; honors `AUR_SCAN_ENABLED=0` and
+  provides `<helper>-unsafe` bypasses. Verified on nushell 0.113.
 - **pacman hook** now sets `NeedsTargets`, so the transaction's package names reach
   the hook (it reads targets from stdin to locate each PKGBUILD).
 

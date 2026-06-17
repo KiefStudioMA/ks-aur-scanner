@@ -176,6 +176,7 @@ sudo install -Dm755 target/release/aur-scan-hook /usr/bin/aur-scan-hook
 sudo install -Dm644 install/integration.bash /usr/share/aur-scan/integration.bash
 sudo install -Dm644 install/integration.zsh /usr/share/aur-scan/integration.zsh
 sudo install -Dm644 install/integration.fish /usr/share/aur-scan/integration.fish
+sudo install -Dm644 install/integration.nu /usr/share/aur-scan/integration.nu
 
 # Install the community rules example
 sudo install -Dm644 install/rules.d/example.toml /usr/share/aur-scanner/rules.d/example.toml
@@ -469,6 +470,16 @@ source /usr/share/aur-scan/integration.zsh
 ```fish
 source /usr/share/aur-scan/integration.fish
 ```
+
+**For Nushell** - Add to your `config.nu`:
+
+```nu
+source /usr/share/aur-scan/integration.nu
+```
+
+The bash/zsh/fish scripts classify the helper invocation in-shell; the Nushell
+script routes installs through the `aur-scan-wrap` binary (same scan-then-handoff
+gate), so it requires `aur-scan-wrap` on `PATH` (shipped with every package).
 
 This creates wrapper functions for `paru` and `yay` that:
 1. Detect AUR package installations
@@ -966,6 +977,7 @@ ks-aur-scanner/
 │   ├── integration.bash
 │   ├── integration.zsh
 │   ├── integration.fish
+│   ├── integration.nu
 │   └── aur-scan.hook
 ├── tests/                        # Test fixtures (clean & malicious PKGBUILDs)
 └── PKGBUILD                      # AUR package definition
@@ -1174,7 +1186,7 @@ This project was created to address a critical gap in the Arch Linux security ec
 Built by the community, not just us. Thank you:
 
 - [**@Disklo** (Rafael Lucio)](https://github.com/Disklo) — fixed a false-negative in `aur-scan check` and added the fish shell integration ([#4](https://github.com/KiefStudioMA/ks-aur-scanner/pull/4), 1.0.3)
-- [**@SuitablyMysterious**](https://github.com/SuitablyMysterious) — contributed the June 2026 "Atomic Arch" malware package list now in the IOC database ([#3](https://github.com/KiefStudioMA/ks-aur-scanner/pull/3)), and the VirusTotal hash-lookup reference (`vt_lookup`, [#9](https://github.com/KiefStudioMA/ks-aur-scanner/pull/9)) the opt-in threat-intelligence integration is built on
+- [**@SuitablyMysterious**](https://github.com/SuitablyMysterious) — contributed the June 2026 "Atomic Arch" malware package list now in the IOC database ([#3](https://github.com/KiefStudioMA/ks-aur-scanner/pull/3)), and originated the idea of VirusTotal + abuse.ch/URLhaus threat-intelligence checks ([#9](https://github.com/KiefStudioMA/ks-aur-scanner/pull/9)). That feature ships reimplemented from scratch with fully isolated network egress, but the direction was theirs.
 
 Some of the above were brought in by cherry-pick rather than the merge button — the work landed and the credit stands the same.
 
