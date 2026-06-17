@@ -147,12 +147,12 @@ gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51
 ```
 
 > **Release-candidate channel — [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc):**
-> tracks the next release (currently `1.1.0-rc1`) so you can test it before it's
-> promoted to stable. The RC **fails closed** — the `paru`/`yay` wrapper and the
-> pacman hook now *deny* on a scan/fetch error, a timeout, or a non-interactive
-> (no-TTY) prompt instead of proceeding. That's the right behavior for a security
-> gate, but read the [release notes](https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.1.0-rc1) before driving it from scripts or
-> CI. Production systems should stay on the stable `aur-scanner`.
+> tracks the next release (currently `1.2.0-rc1`) so you can test it before it's
+> promoted to stable. 1.2.0-rc1 adds **opt-in threat intelligence** (VirusTotal +
+> URLhaus) — off by default; a scan stays fully offline and static unless you set
+> `enable_threat_intel` and supply your own API key. Read the [release notes](https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.2.0-rc1)
+> before driving it from scripts or CI. Production systems should stay on the
+> stable `aur-scanner`.
 
 ### From Source
 
@@ -313,9 +313,10 @@ Scan a local PKGBUILD file or directory.
 aur-scan scan <PATH> [OPTIONS]
 
 OPTIONS:
-    --format <FORMAT>    Output format: text, json, sarif [default: text]
+    --format <FORMAT>    Output format: text, json, sarif [default: text] (-f)
+    --output <FILE>      Write output to a file instead of stdout (-o)
     --fail-on <LEVEL>    Exit with error if findings at this level or above
-    --no-color           Disable colored output
+    --include-info       Include informational (Info-level) findings
 
 ARGUMENTS:
     <PATH>               Path to PKGBUILD file or directory containing PKGBUILD
@@ -342,8 +343,8 @@ Audit all AUR packages currently installed on the system.
 aur-scan system [OPTIONS]
 
 OPTIONS:
-    --format <FORMAT>    Output format: text, json [default: text]
-    --no-color           Disable colored output
+    --rescan             Re-fetch PKGBUILDs from the AUR instead of using the local cache
+    --cache-dir <DIR>    Custom cache directory for PKGBUILDs
 ```
 
 This command:
@@ -354,8 +355,8 @@ This command:
 **Supported cache locations:**
 - `~/.cache/paru/clone/`
 - `~/.cache/yay/`
-- `~/.cache/pikaur/aur_repos/`
 - `~/.cache/trizen/`
+- `~/.cache/aurutils/sync/`
 
 `system` also cross-references your installed package names against the IOC
 database (see below) and runs the provenance check (flagging any package that
@@ -381,20 +382,17 @@ List all detection codes with their severity and description.
 aur-scan codes [OPTIONS]
 
 OPTIONS:
-    --severity <LEVEL>   Filter by severity level
     --category <CAT>     Filter by category
+    --format <FORMAT>    Output format: text, markdown, json (default: text)
 ```
 
-**Example output:**
+**Example output** (grouped by category):
 
 ```
-CRITICAL SEVERITY
------------------
-DLE-001    Curl pipe to shell
-DLE-002    Wget pipe to shell
-DLE-003    Curl output executed
-SHELL-001  Bash reverse shell
-SHELL-002  Netcat reverse shell
+[Command Injection]
+  DLE-001 [Critical] Curl pipe to shell
+  DLE-002 [Critical] Wget pipe to shell
+  DLE-003 [Critical] Curl output executed
 ...
 ```
 
@@ -510,9 +508,11 @@ The wrapper:
 > PKGBUILD's `prepare()`/`build()`/`package()` **before** the pacman
 > transaction. A libalpm `PreTransaction` hook fires during that transaction —
 > i.e. *after* the build has already executed. So this hook **cannot stop a
-> build-time payload** (the most common AUR attack, including Atomic Arch). It
-> only blocks payloads in the package's `.install` scriptlet. **Use the shell
-> integration (Level 2) as your real gate; treat this hook as a backstop.**
+> build-time payload** (the most common AUR attack, including Atomic Arch) — by
+> the time it fires, that code has already run. It still scans the full PKGBUILD,
+> but it can only *prevent* payloads that haven't executed yet, in practice the
+> package's `.install` scriptlet. **Use the shell integration (Level 2) as your
+> real gate; treat this hook as a backstop.**
 
 For a defense-in-depth backstop, install the pacman hook:
 
@@ -522,7 +522,7 @@ sudo cp /usr/share/aur-scan/aur-scan.hook.example /usr/share/libalpm/hooks/aur-s
 
 **Hook behavior:**
 - Triggers before the *install transaction* (after the build)
-- **Aborts transaction on CRITICAL findings** in the `.install` scriptlet
+- **Aborts the transaction on CRITICAL findings** (anywhere in the scanned PKGBUILD or its resolved `.install` scriptlet), and aborts fail-closed if a located PKGBUILD cannot be analyzed
 - Warns on HIGH severity findings
 
 **Hook configuration** (`/usr/share/libalpm/hooks/aur-scan.hook`):
@@ -546,7 +546,7 @@ NeedsTargets
 
 ## Detection Rules Reference
 
-> The **115 built-in detection codes**, generated from the catalog
+> The **117 built-in detection codes**, generated from the catalog
 > (`aur-scan codes --format markdown`) — every ID is unique and audit-enforced.
 > (`EXAMPLE-001` is the shipped community-rule sample, not a built-in.) Extend the
 > catalog with your own TOML rules (see [Custom & Community Rules](#custom--community-rules)).
@@ -719,7 +719,7 @@ pattern = "acme_backdoor_[0-9a-f]{8}"
 ```
 
 The loader skips malformed files with a warning (it never breaks the engine),
-and the catalog refuses to start if any ID collides. A shipped example lives at
+and `aur-scan codes` surfaces a loud warning if any ID collides. A shipped example lives at
 `/usr/share/aur-scanner/rules.d/example.toml`. Use an org-specific prefix to
 avoid collisions.
 
@@ -793,11 +793,12 @@ SARIF output is compatible with:
 | `AUR_SCAN_ENABLED` | `1` | Enable/disable scanning in shell integration |
 | `AUR_SCAN_SEVERITY` | `high` | Minimum severity to display |
 | `AUR_SCAN_INTERACTIVE` | `1` | Prompt before proceeding |
-| `AUR_SCAN_COLOR` | `1` | Enable colored output |
 | `AUR_SCAN_SCAN_UPGRADES` | `1` | On a system upgrade (`-Syu`/`-Syyu`/bare `yay`), scan **each** AUR package that has a pending update (resolved via the helper's `-Quaq`). A hijacked *update* is the primary AUR threat, so this is on by default; set `0` to skip it. |
 | `AUR_SCAN_SCAN_GETPKGBUILD` | `0` | Also scan the package(s) on `-G`/`--getpkgbuild` (which only downloads a PKGBUILD to review). Off by default; set `1` to opt in. |
 
 The shell integration scans what's **named** on the command line — `-S pkg`, a bare `helper pkg`, `yay -Y pkg`, and (above) the upgrade set. It cannot see the package chosen *after* an interactive search-and-select menu (`yay`'s default `-Y` mode resolves it at runtime); for that — and for any helper or path the shell functions don't wrap — enable the opt-in **pacman hook**, which fires on the exact package set of every transaction. Only `paru` and `yay` are wrapped as shell functions (they share pacman's flag grammar); use the hook to cover others.
+
+**Color output** is on when writing to a terminal and automatically off when piped or redirected. Force it off with the global `--no-color` flag or by setting `NO_COLOR=1`.
 
 ### Configuration File
 
@@ -961,7 +962,7 @@ ks-aur-scanner/
 │   ├── integration.zsh
 │   ├── integration.fish
 │   └── aur-scan.hook
-├── tests/                        # Integration tests
+├── tests/                        # Test fixtures (clean & malicious PKGBUILDs)
 └── PKGBUILD                      # AUR package definition
 ```
 
@@ -986,7 +987,7 @@ ks-aur-scanner/
 | `tracing` | 0.1 | Logging |
 | `tracing-subscriber` | 0.3 | Log formatting |
 | `clap` | 4.5 | CLI argument parsing |
-| `reqwest` | 0.12 | HTTP client (rustls) |
+| `reqwest` | 0.12 | HTTP client (native-tls) |
 | `chrono` | 0.4 | Date/time handling |
 | `colored` | 2.1 | Terminal colors |
 | `blake3` | 1.5 | Fast hashing |
@@ -995,7 +996,7 @@ ks-aur-scanner/
 
 ### Runtime Dependencies
 
-None. The release binary is statically linked.
+`gcc-libs` and `openssl` — the binary dynamically links OpenSSL via reqwest's native-tls backend.
 
 ### System Requirements
 
@@ -1198,7 +1199,8 @@ The AUR is an inherently trust-based system where users are expected to verify p
 
 ## Links
 
-- **AUR Package:** [aur-scanner-git](https://aur.archlinux.org/packages/aur-scanner-git)
+- **AUR Package:** [aur-scanner](https://aur.archlinux.org/packages/aur-scanner) (stable, recommended) — also [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc) (release candidate) and [`aur-scanner-git`](https://aur.archlinux.org/packages/aur-scanner-git) (rolling)
+- **Docs:** [https://aur-scanner.kief.studio](https://aur-scanner.kief.studio)
 - **Repository:** [https://github.com/KiefStudioMA/ks-aur-scanner](https://github.com/KiefStudioMA/ks-aur-scanner)
 - **Crates.io:** [aur-scanner-core](https://crates.io/crates/aur-scanner-core)
 - **Homepage:** [https://kief.studio](https://kief.studio)

@@ -36,6 +36,10 @@ struct Cli {
     /// Quiet mode (only show findings)
     #[arg(short, long, global = true)]
     quiet: bool,
+
+    /// Disable colored output (also honored: the NO_COLOR environment variable)
+    #[arg(long, global = true)]
+    no_color: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -211,6 +215,14 @@ enum OutputFormat {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Color: the `colored` crate already auto-disables on a non-terminal and
+    // honors NO_COLOR/CLICOLOR_FORCE. Force it off explicitly when `--no-color`
+    // is given or NO_COLOR is set, so the switch is deterministic regardless of
+    // where output goes.
+    if cli.no_color || std::env::var_os("NO_COLOR").is_some() {
+        colored::control::set_override(false);
+    }
 
     // Initialize logging - default to warn to keep output clean
     let filter = if cli.verbose {

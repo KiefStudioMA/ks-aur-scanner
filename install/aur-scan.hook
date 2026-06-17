@@ -9,3 +9,6 @@ Description = Scanning AUR packages for security issues...
 When = PreTransaction
 Exec = /usr/bin/aur-scan-hook
 AbortOnFail
+# Pass the transaction's target package names to the hook on stdin (the hook
+# reads them from stdin to locate each package's PKGBUILD).
+NeedsTargets
