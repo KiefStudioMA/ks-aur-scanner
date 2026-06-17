@@ -202,11 +202,21 @@ fn candidate_pkgbuild_paths(package: &str, user: &str) -> Vec<PathBuf> {
     if !is_valid_package_name(package) || !is_valid_package_name(user) {
         return Vec::new();
     }
+    // Default per-helper clone/build locations (XDG defaults). The hook runs as
+    // root then drops to the invoking user, so it cannot read that user's XDG_*
+    // overrides; these are the documented defaults each helper uses out of the
+    // box. Note pikaur stores PKGBUILDs under the *data* dir (~/.local/share)
+    // and rua under the *config* dir (~/.config), not ~/.cache.
     [
         format!("/home/{user}/.cache/yay/{package}"),
         format!("/home/{user}/.cache/paru/clone/{package}"),
-        format!("/home/{user}/.cache/pikaur/aur_repos/{package}"),
-        format!("/home/{user}/.cache/trizen/{package}"),
+        format!("/home/{user}/.local/share/pikaur/aur_repos/{package}"),
+        format!("/home/{user}/.cache/aura/packages/{package}"),
+        format!("/home/{user}/.cache/pakku/{package}"),
+        format!("/home/{user}/.cache/trizen/sources/{package}"),
+        format!("/home/{user}/.cache/aurutils/sync/{package}"),
+        format!("/home/{user}/.config/rua/pkg/{package}"),
+        format!("/home/{user}/.cache/pat-aur/pkgbuild/aur/{package}"),
         format!("/var/cache/aur/{package}"),
     ]
     .into_iter()
@@ -520,7 +530,7 @@ mod tests {
     #[test]
     fn candidate_paths_built_for_valid_names_without_escape() {
         let paths = candidate_pkgbuild_paths("firefox", "alice");
-        assert_eq!(paths.len(), 5);
+        assert_eq!(paths.len(), 10);
         assert!(paths.iter().all(|p| p.ends_with("PKGBUILD")));
         assert!(paths[0]
             .to_string_lossy()

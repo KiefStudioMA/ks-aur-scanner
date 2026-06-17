@@ -275,16 +275,23 @@ fn get_aur_cache_dirs(custom: Option<PathBuf>) -> Vec<PathBuf> {
         dirs.push(custom_dir);
     }
 
-    // Common cache locations
-    if let Some(home) = dirs::home_dir() {
-        // Paru
-        dirs.push(home.join(".cache/paru/clone"));
-        // Yay
-        dirs.push(home.join(".cache/yay"));
-        // Trizen
-        dirs.push(home.join(".cache/trizen"));
-        // Aurutils
-        dirs.push(home.join(".cache/aurutils/sync"));
+    // Default per-helper clone/build locations for maintained AUR helpers.
+    // Resolved through the XDG base dirs so a user's XDG_CACHE_HOME /
+    // XDG_DATA_HOME / XDG_CONFIG_HOME overrides are honored.
+    if let Some(cache) = dirs::cache_dir() {
+        dirs.push(cache.join("yay")); // yay
+        dirs.push(cache.join("paru/clone")); // paru
+        dirs.push(cache.join("aura/packages")); // aura
+        dirs.push(cache.join("pakku")); // pakku
+        dirs.push(cache.join("trizen/sources")); // trizen
+        dirs.push(cache.join("aurutils/sync")); // aurutils
+        dirs.push(cache.join("pat-aur/pkgbuild/aur")); // pat-aur
+    }
+    if let Some(data) = dirs::data_dir() {
+        dirs.push(data.join("pikaur/aur_repos")); // pikaur (data dir, not cache)
+    }
+    if let Some(config) = dirs::config_dir() {
+        dirs.push(config.join("rua/pkg")); // rua (config dir, not cache)
     }
 
     // Filter to existing directories

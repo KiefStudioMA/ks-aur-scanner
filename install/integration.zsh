@@ -149,12 +149,23 @@ _aur_scan_gate() {
     command "$helper" "$@"
 }
 
-paru() { _aur_scan_gate paru "$@"; }
-yay()  { _aur_scan_gate yay "$@"; }
+paru()   { _aur_scan_gate paru "$@"; }
+yay()    { _aur_scan_gate yay "$@"; }
+pikaur() { _aur_scan_gate pikaur "$@"; }
+trizen() { _aur_scan_gate trizen "$@"; }
+pakku()  { _aur_scan_gate pakku "$@"; }
 
-# Convenience alias to temporarily disable scanning
+# These helpers share pacman's -S/-Syu grammar, so the classifier above is correct
+# for them. aura (installs via -A) and the subcommand-grammar tools (aurutils
+# `aur sync`, rua, pat-aur) are intentionally not wrapped — use the pacman hook to
+# cover them and any path the wrapper can't see (e.g. yay's interactive -Y menu).
+
+# Convenience aliases to temporarily disable scanning
 alias paru-unsafe='AUR_SCAN_ENABLED=0 paru'
 alias yay-unsafe='AUR_SCAN_ENABLED=0 yay'
+alias pikaur-unsafe='AUR_SCAN_ENABLED=0 pikaur'
+alias trizen-unsafe='AUR_SCAN_ENABLED=0 trizen'
+alias pakku-unsafe='AUR_SCAN_ENABLED=0 pakku'
 
 # Function to scan all installed AUR packages
 aur-scan-system() {
@@ -163,7 +174,7 @@ aur-scan-system() {
 
 if [[ "$AUR_SCAN_VERBOSE" == "1" ]]; then
     print -P "%F{green}AUR Security Scanner:%f Shell integration loaded."
-    print -P "  - paru and yay auto-scan before installing AUR packages"
+    print -P "  - paru, yay, pikaur, trizen, pakku auto-scan before installing AUR packages"
     print -P "  - AUR_SCAN_MODE=install : race-free (scan the exact bytes, then build)"
     print -P "  - AUR_SCAN_MODE=gate (default) : scan, then hand off to the helper"
     print -P "  - Use 'paru-unsafe' or 'yay-unsafe' to bypass scanning"

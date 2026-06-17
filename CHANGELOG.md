@@ -33,6 +33,25 @@ scan is unchanged — fully offline and static. **Release candidate.**
   caches threat-intel verdicts, so repeat lookups respect VirusTotal's 4-req/min
   public quota. Gated by `CacheConfig`; lookups are also capped per scan.
 
+### Added — broader AUR helper coverage
+
+- **`system` audit and the pacman hook now cover every maintained AUR helper.**
+  Cache discovery spans yay, paru, pikaur, aura, pakku, trizen, aurutils, rua, and
+  pat-aur — at each helper's real PKGBUILD location (e.g. pikaur's
+  `~/.local/share/pikaur/aur_repos`, rua's `~/.config/rua/pkg`, trizen's
+  `~/.cache/trizen/sources`), with XDG `*_HOME` overrides honored.
+- **Shell integration wraps more helpers.** `pikaur`, `trizen`, and `pakku` join
+  `paru`/`yay` as pre-build gates (they share pacman's `-S`/`-Syu` grammar);
+  helpers with a different model (`aura -A`, and the subcommand tools aurutils/rua/
+  pat-aur) are covered by the pacman hook instead.
+- **pacman hook** now sets `NeedsTargets`, so the transaction's package names reach
+  the hook (it reads targets from stdin to locate each PKGBUILD).
+
+### Changed
+
+- Added a global `--no-color` flag; colored output also honors the `NO_COLOR`
+  environment variable and auto-disables when not writing to a terminal.
+
 ## [1.1.0] - 2026-06-15
 
 Stable promotion of the 1.1.0 release-candidate line, plus a second hardening

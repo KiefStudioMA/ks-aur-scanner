@@ -352,11 +352,16 @@ This command:
 2. Locates cached PKGBUILDs in AUR helper cache directories
 3. Scans each package and reports findings
 
-**Supported cache locations:**
-- `~/.cache/paru/clone/`
-- `~/.cache/yay/`
-- `~/.cache/trizen/`
-- `~/.cache/aurutils/sync/`
+**Supported cache locations** (per-helper defaults; XDG `*_HOME` overrides are honored):
+- `~/.cache/yay/` (yay)
+- `~/.cache/paru/clone/` (paru)
+- `~/.local/share/pikaur/aur_repos/` (pikaur)
+- `~/.cache/aura/packages/` (aura)
+- `~/.cache/pakku/` (pakku)
+- `~/.cache/trizen/sources/` (trizen)
+- `~/.cache/aurutils/sync/` (aurutils)
+- `~/.config/rua/pkg/` (rua)
+- `~/.cache/pat-aur/pkgbuild/aur/` (pat-aur)
 
 `system` also cross-references your installed package names against the IOC
 database (see below) and runs the provenance check (flagging any package that
@@ -796,7 +801,7 @@ SARIF output is compatible with:
 | `AUR_SCAN_SCAN_UPGRADES` | `1` | On a system upgrade (`-Syu`/`-Syyu`/bare `yay`), scan **each** AUR package that has a pending update (resolved via the helper's `-Quaq`). A hijacked *update* is the primary AUR threat, so this is on by default; set `0` to skip it. |
 | `AUR_SCAN_SCAN_GETPKGBUILD` | `0` | Also scan the package(s) on `-G`/`--getpkgbuild` (which only downloads a PKGBUILD to review). Off by default; set `1` to opt in. |
 
-The shell integration scans what's **named** on the command line — `-S pkg`, a bare `helper pkg`, `yay -Y pkg`, and (above) the upgrade set. It cannot see the package chosen *after* an interactive search-and-select menu (`yay`'s default `-Y` mode resolves it at runtime); for that — and for any helper or path the shell functions don't wrap — enable the opt-in **pacman hook**, which fires on the exact package set of every transaction. Only `paru` and `yay` are wrapped as shell functions (they share pacman's flag grammar); use the hook to cover others.
+The shell integration scans what's **named** on the command line — `-S pkg`, a bare `helper pkg`, `yay -Y pkg`, and (above) the upgrade set. It cannot see the package chosen *after* an interactive search-and-select menu (`yay`'s default `-Y` mode resolves it at runtime); for that — and for any helper or path the shell functions don't wrap — enable the opt-in **pacman hook**, which fires on the exact package set of every transaction. `paru`, `yay`, `pikaur`, `trizen`, and `pakku` are wrapped as shell functions (they share pacman's `-S`/`-Syu` grammar); `aura` (installs via `-A`) and the subcommand-grammar tools (`aurutils`, `rua`, `pat-aur`) are covered by the pacman hook instead, which fires on every transaction regardless of helper.
 
 **Color output** is on when writing to a terminal and automatically off when piped or redirected. Force it off with the global `--no-color` flag or by setting `NO_COLOR=1`.
 

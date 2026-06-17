@@ -156,22 +156,28 @@ _aur_scan_gate() {
     command "$helper" "$@"
 }
 
-paru() { _aur_scan_gate paru "$@"; }
-yay()  { _aur_scan_gate yay "$@"; }
+paru()   { _aur_scan_gate paru "$@"; }
+yay()    { _aur_scan_gate yay "$@"; }
+pikaur() { _aur_scan_gate pikaur "$@"; }
+trizen() { _aur_scan_gate trizen "$@"; }
+pakku()  { _aur_scan_gate pakku "$@"; }
 
-# Only paru and yay are wrapped here: they share pacman's flag grammar exactly,
-# so the operation classifier above is correct for them. Other helpers are NOT
-# wrapped blindly — some use a different argument model (`pamac install …`,
-# aurutils' `aur sync …`) or overload operation letters (`aura -Ad` lists deps
-# but `d` is pacman's --nodeps), and a wrong assumption would silently skip a
-# scan or falsely block a read-only command. To cover any other helper — or any
-# invocation path the wrapper can't see (e.g. yay's interactive `-Y` menu, where
-# the package is chosen after the wrapper has already run) — enable the opt-in
-# pacman hook, which fires on the actually-installed package regardless of helper.
+# These helpers are wrapped because they share pacman's flag grammar for AUR
+# installs (-S/-Syu), so the operation classifier above is correct for them.
+# Other helpers are NOT wrapped blindly — aura installs the AUR via a *different*
+# operation (`aura -A`, and `-Ad` lists deps where `d` is pacman's --nodeps), and
+# aurutils/rua/pat-aur use a subcommand model (`aur sync …`, `rua install …`,
+# `pat-aur b:…`); a wrong assumption would silently skip a scan or falsely block a
+# read-only command. To cover those, any helper the wrapper can't see, or yay's
+# interactive `-Y` menu (the package is chosen after the wrapper runs), enable the
+# opt-in pacman hook — it fires on the actually-installed package regardless of helper.
 
-# Convenience alias to temporarily disable scanning
+# Convenience aliases to temporarily disable scanning
 alias paru-unsafe='AUR_SCAN_ENABLED=0 paru'
 alias yay-unsafe='AUR_SCAN_ENABLED=0 yay'
+alias pikaur-unsafe='AUR_SCAN_ENABLED=0 pikaur'
+alias trizen-unsafe='AUR_SCAN_ENABLED=0 trizen'
+alias pakku-unsafe='AUR_SCAN_ENABLED=0 pakku'
 
 # Function to scan all installed AUR packages
 aur-scan-system() {
@@ -180,7 +186,7 @@ aur-scan-system() {
 
 if [[ "$AUR_SCAN_VERBOSE" == "1" ]]; then
     echo "AUR Security Scanner: Shell integration loaded."
-    echo "  - paru and yay auto-scan before installing AUR packages"
+    echo "  - paru, yay, pikaur, trizen, pakku auto-scan before installing AUR packages"
     echo "  - AUR_SCAN_MODE=install : race-free (scan the exact bytes, then build)"
     echo "  - AUR_SCAN_MODE=gate (default) : scan, then hand off to the helper"
     echo "  - Use 'paru-unsafe' or 'yay-unsafe' to bypass scanning"
