@@ -516,7 +516,10 @@ pub async fn get_installed_aur_packages() -> Result<Vec<String>> {
 mod tests {
     use super::*;
 
+    // Hits the live AUR RPC. Ignored by default so CI (sandboxed, no outbound
+    // network) stays deterministic; run locally with `cargo test -- --ignored`.
     #[tokio::test]
+    #[ignore = "requires live network access to aur.archlinux.org"]
     async fn test_get_package_info() {
         let client = AurClient::new().unwrap();
         // paru is a well-known AUR package
@@ -526,7 +529,10 @@ mod tests {
         assert_eq!(info.name, "paru");
     }
 
+    // Hits the live AUR RPC. Ignored by default for the same reason as
+    // test_get_package_info; run locally with `cargo test -- --ignored`.
     #[tokio::test]
+    #[ignore = "requires live network access to aur.archlinux.org"]
     async fn test_package_not_found() {
         let client = AurClient::new().unwrap();
         let info = client
