@@ -68,7 +68,23 @@ async fn main() -> Result<()> {
 
     for package in packages {
         // Try to find PKGBUILD in common cache locations
-        if let Some(pkgbuild_path) = find_pkgbuild_for_package(&package, &scan_user) {
+        let pkgbuild_path = match find_pkgbuild_for_package(&package, &scan_user) {
+            PkgbuildLookup::Found(p) => p,
+            PkgbuildLookup::RefusedOnly => {
+                // A non-regular file where a PKGBUILD belongs: cannot analyze it,
+                // so fail closed rather than treat it like an absent package.
+                eprintln!(
+                    "{} {} has a non-regular file where its PKGBUILD should be; \
+                     refusing the transaction.",
+                    "ERROR:".red().bold(),
+                    package.bold()
+                );
+                scan_failed = true;
+                continue;
+            }
+            PkgbuildLookup::NotFound => continue,
+        };
+        {
             match scanner.scan_pkgbuild(&pkgbuild_path).await {
                 Ok(result) => {
                     if !result.findings.is_empty() {
@@ -247,6 +263,19 @@ fn classify_pkgbuild(path: &Path) -> PkgbuildProbe {
     }
 }
 
+/// Result of probing every candidate location for a package's PKGBUILD.
+#[derive(Debug, PartialEq, Eq)]
+enum PkgbuildLookup {
+    /// A regular, readable PKGBUILD was found at this path.
+    Found(PathBuf),
+    /// No usable PKGBUILD, but at least one candidate existed as a non-regular
+    /// file (dir/symlink/FIFO) -- anomalous, so the transaction fails closed.
+    RefusedOnly,
+    /// No candidate existed at all -- a legitimately absent PKGBUILD (e.g. an
+    /// official-repo package); the transaction proceeds.
+    NotFound,
+}
+
 /// Find PKGBUILD for a package in common cache locations for `user`.
 ///
 /// Hardening notes: even after dropping privileges, this validates the package
@@ -254,31 +283,43 @@ fn classify_pkgbuild(path: &Path) -> PkgbuildProbe {
 /// inject `..`/`/`) and refuses a PKGBUILD that is not a regular file -- a
 /// symlink/FIFO cache entry cannot redirect the reader (an O_NOFOLLOW-equivalent
 /// check on the final component).
-fn find_pkgbuild_for_package(package: &str, user: &str) -> Option<PathBuf> {
+fn find_pkgbuild_for_package(package: &str, user: &str) -> PkgbuildLookup {
     // Pacman provides the target name, but treat it as untrusted: it becomes a
     // filesystem path below. Validate up front so the warning names the offender.
     if !is_valid_package_name(package) {
         tracing::warn!("skipping target with illegal package name: {package:?}");
-        return None;
+        return PkgbuildLookup::NotFound;
     }
     if !is_valid_package_name(user) {
         // User names are not package names, but they share the safe charset we
         // need for a path component (no `/`, no `..`).
         tracing::warn!("refusing to build cache path from unusual user name");
-        return None;
+        return PkgbuildLookup::NotFound;
     }
 
+    // Track whether a candidate existed but was refused (non-regular). A package
+    // that is simply absent is legitimate (the hook fires for every transaction,
+    // including official-repo packages); but a non-regular file sitting exactly
+    // where a PKGBUILD belongs is anomalous and must fail closed rather than be
+    // treated like "absent" -- otherwise the refusal silently lets the
+    // transaction proceed unscanned.
+    let mut saw_non_regular = false;
     for pkgbuild in candidate_pkgbuild_paths(package, user) {
         match classify_pkgbuild(&pkgbuild) {
-            PkgbuildProbe::Usable => return Some(pkgbuild),
+            PkgbuildProbe::Usable => return PkgbuildLookup::Found(pkgbuild),
             PkgbuildProbe::RefusedNonRegular => {
                 tracing::warn!("refusing non-regular PKGBUILD at {}", pkgbuild.display());
+                saw_non_regular = true;
             }
             PkgbuildProbe::Absent => {}
         }
     }
 
-    None
+    if saw_non_regular {
+        PkgbuildLookup::RefusedOnly
+    } else {
+        PkgbuildLookup::NotFound
+    }
 }
 
 /// What the hook should do about privileges before touching user files, decided

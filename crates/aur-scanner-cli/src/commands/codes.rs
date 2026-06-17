@@ -6,8 +6,12 @@ use colored::Colorize;
 use aur_scanner_core::catalog::Catalog;
 use aur_scanner_core::Severity;
 
-pub fn run(category: Option<&str>, format: &str) -> Result<()> {
-    let catalog = Catalog::load();
+pub fn run(
+    category: Option<&str>,
+    format: &str,
+    extra_rule_dirs: &[std::path::PathBuf],
+) -> Result<()> {
+    let catalog = Catalog::load_with(extra_rule_dirs);
     // The catalog enforces uniqueness; surface any problem loudly.
     if let Err(e) = catalog.validate() {
         eprintln!("{} {}", "catalog error:".red().bold(), e);

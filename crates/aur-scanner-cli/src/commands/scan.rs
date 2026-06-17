@@ -7,6 +7,7 @@ use colored::Colorize;
 use std::path::PathBuf;
 
 /// Run the scan command
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     path: PathBuf,
     format: crate::OutputFormat,
@@ -14,6 +15,8 @@ pub async fn run(
     fail_on: Option<Severity>,
     min_severity: Option<Severity>,
     include_info: bool,
+    quiet: bool,
+    mut config: ScanConfig,
 ) -> Result<()> {
     // Determine if path is file or directory
     let scan_path = if path.is_dir() {
@@ -26,12 +29,13 @@ pub async fn run(
         anyhow::bail!("PKGBUILD not found at: {}", scan_path.display());
     }
 
-    // Create scanner configuration
-    let mut config = ScanConfig::default();
+    // Severity floor. An explicit --severity wins; otherwise --include-info
+    // lowers the floor to Info so informational findings surface; otherwise we
+    // keep whatever the config carries (Low by default).
     if let Some(severity) = min_severity {
         config.min_severity = severity;
-    } else if !include_info {
-        config.min_severity = Severity::Low;
+    } else if include_info {
+        config.min_severity = Severity::Info;
     }
 
     // Create scanner
@@ -67,11 +71,14 @@ pub async fn run(
     // the summary would corrupt the JSON/SARIF stream (`aur-scan scan --format
     // json | jq` must work), so send it to stderr instead. When the machine
     // output went to a file, or for the text format, stdout is free for it.
-    let machine_format = !matches!(format, OutputFormat::Text);
-    if machine_format && !wrote_to_file {
-        print_summary(&result, &mut std::io::stderr());
-    } else {
-        print_summary(&result, &mut std::io::stdout());
+    // In quiet mode, show only the findings — suppress the summary block.
+    if !quiet {
+        let machine_format = !matches!(format, OutputFormat::Text);
+        if machine_format && !wrote_to_file {
+            print_summary(&result, &mut std::io::stderr());
+        } else {
+            print_summary(&result, &mut std::io::stdout());
+        }
     }
 
     // Exit with appropriate code

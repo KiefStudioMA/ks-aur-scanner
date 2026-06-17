@@ -47,8 +47,20 @@ pub struct Scanner {
 impl Scanner {
     /// Create a new scanner with the given configuration
     pub fn new(config: ScanConfig) -> Result<Self> {
-        // Use default() which loads built-in rules
-        let rule_engine = Arc::new(RuleEngine::default());
+        // Built-in rules + the standard rules.d dirs, plus any custom rules
+        // directory the config points at (so `rules_path` actually reaches the
+        // matching engine, not just the catalog listing).
+        let mut engine = RuleEngine::default();
+        if let Some(rules_path) = config.rules_path.as_ref() {
+            if let Err(e) = engine.load_rules_from_dir(rules_path) {
+                warn!(
+                    "failed to load custom rules from {}: {}",
+                    rules_path.display(),
+                    e
+                );
+            }
+        }
+        let rule_engine = Arc::new(engine);
         let ioc_db = Arc::new(IocDatabase::load());
 
         let mut analyzers: Vec<Arc<dyn SecurityAnalyzer>> = vec![
