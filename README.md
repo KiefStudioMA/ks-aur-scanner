@@ -1125,6 +1125,7 @@ This project was created to address a critical gap in the Arch Linux security ec
 Built by the community, not just us. Thank you:
 
 - [**@Disklo** (Rafael Lucio)](https://github.com/Disklo) — fixed a false-negative in `aur-scan check` and added the fish shell integration (1.0.3)
+- [**@SuitablyMysterious**](https://github.com/SuitablyMysterious) — contributed the VirusTotal hash-lookup reference implementation (`vt_lookup`, [PR #9](https://github.com/KiefStudioMA/ks-aur-scanner/pull/9)) that the opt-in threat-intelligence integration is built on (1.2.0-rc1)
 
 Sent a PR? Add yourself here. See the full list on the [contributors page](https://github.com/KiefStudioMA/ks-aur-scanner/graphs/contributors).
 

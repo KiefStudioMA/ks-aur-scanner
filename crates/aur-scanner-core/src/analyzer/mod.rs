@@ -8,6 +8,7 @@ mod pattern;
 mod privilege;
 mod remote_exec;
 mod source;
+mod threat_intel;
 
 pub use checksum::ChecksumAnalyzer;
 pub use deep::DeepAnalyzer;
@@ -17,6 +18,7 @@ pub use pattern::PatternAnalyzer;
 pub use privilege::PrivilegeAnalyzer;
 pub use remote_exec::RemoteExecAnalyzer;
 pub use source::SourceAnalyzer;
+pub use threat_intel::ThreatIntelAnalyzer;
 
 use crate::error::Result;
 use crate::types::{AnalysisContext, Finding};

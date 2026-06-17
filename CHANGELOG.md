@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0-rc1] - 2026-06-17
+
+First release candidate of the 1.2.0 line: optional, opt-in threat-intelligence
+lookups (VirusTotal + URLhaus) and activation of the verdict cache. The default
+scan is unchanged — fully offline and static. **Release candidate.**
+
+### Added — opt-in threat intelligence
+
+- **VirusTotal & URLhaus lookups, wired in for real.** The previously inert
+  provider stubs are now working: with `enable_threat_intel` set and a key
+  supplied (config or `VT_API_KEY`/`VIRUSTOTAL_API_KEY`/`URLHAUS_AUTH_KEY`), a new
+  networked analyzer checks each declared `sha256sums` against VirusTotal and each
+  `source=` URL against abuse.ch/URLhaus, emitting `TI-VT-001` / `TI-URLHAUS-001`
+  on a malicious verdict. **Off by default** — a default scan stays fully
+  offline/static. Only data already public in the PKGBUILD (hashes, source URLs)
+  is ever transmitted; every lookup fails open so a provider outage never blocks a
+  scan. All third-party network code is isolated in a single auditable file
+  (`threat_intel/remote.rs`). URLhaus requires the now-mandatory abuse.ch
+  `Auth-Key`.
+
+  The VirusTotal-by-hash approach is credited to **@SuitablyMysterious**, whose
+  `vt_lookup` in [PR #9](https://github.com/KiefStudioMA/ks-aur-scanner/pull/9)
+  was the reference implementation.
+
+- **Verdict caching is now active.** The hardened, MAC-authenticated `DiskCache`
+  (owner-only dir, per-user keyed integrity) — previously built but unwired — now
+  caches threat-intel verdicts, so repeat lookups respect VirusTotal's 4-req/min
+  public quota. Gated by `CacheConfig`; lookups are also capped per scan.
+
 ## [1.1.0] - 2026-06-15
 
 Stable promotion of the 1.1.0 release-candidate line, plus a second hardening
@@ -218,4 +247,5 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
+[1.2.0-rc1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.2.0-rc1
 [1.1.0-rc1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.1.0-rc1

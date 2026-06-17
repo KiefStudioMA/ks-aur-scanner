@@ -51,7 +51,7 @@ impl Scanner {
         let rule_engine = Arc::new(RuleEngine::default());
         let ioc_db = Arc::new(IocDatabase::load());
 
-        let analyzers: Vec<Arc<dyn SecurityAnalyzer>> = vec![
+        let mut analyzers: Vec<Arc<dyn SecurityAnalyzer>> = vec![
             Arc::new(analyzer::PatternAnalyzer::new(rule_engine.clone())),
             Arc::new(analyzer::IocAnalyzer::new(ioc_db.clone())),
             Arc::new(analyzer::DeepAnalyzer::new()),
@@ -61,6 +61,21 @@ impl Scanner {
             Arc::new(analyzer::PrivilegeAnalyzer::new()),
             Arc::new(analyzer::MetadataAnalyzer::new()),
         ];
+
+        // Opt-in, networked threat-intel analyzer. Added ONLY when the operator
+        // explicitly enabled it AND a provider key is available (config or env).
+        // Everything above this point is offline/static.
+        if config.enable_threat_intel {
+            if let Some(ti) = build_threat_intel_analyzer(&config) {
+                analyzers.push(Arc::new(ti));
+                info!("threat-intel lookups enabled (opt-in network access)");
+            } else {
+                warn!(
+                    "enable_threat_intel is set but no VirusTotal/URLhaus key was found \
+                     (config or env); threat-intel lookups are disabled"
+                );
+            }
+        }
 
         let parser: Box<dyn PkgbuildParser> = Box::new(parser::StaticParser::new());
 
@@ -201,6 +216,53 @@ impl Scanner {
         }
         self.scan_pkgbuild(&pkgbuild_path).await
     }
+}
+
+/// Resolve a key from an explicit config value first, then a list of
+/// environment variables, returning the first non-empty match. Lets keys stay
+/// out of config files (`VT_API_KEY` etc.) without hard-coding precedence at
+/// each call site.
+fn resolve_key(configured: Option<&String>, env_vars: &[&str]) -> Option<String> {
+    configured
+        .map(|s| s.to_string())
+        .or_else(|| env_vars.iter().find_map(|v| std::env::var(v).ok()))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Construct the opt-in threat-intel analyzer from config + environment.
+///
+/// VirusTotal is enabled by a key alone; URLhaus additionally requires
+/// `urlhaus_enabled` (its `Auth-Key` is now mandatory). The verdict cache is
+/// built from [`CacheConfig`] when caching is on; if the (hardened, owner-only)
+/// cache dir cannot be created, we log and proceed without a cache rather than
+/// fail the scan. Returns `None` if no provider ends up usable.
+fn build_threat_intel_analyzer(config: &ScanConfig) -> Option<analyzer::ThreatIntelAnalyzer> {
+    let ti = &config.threat_intel;
+    let vt_key = resolve_key(
+        ti.virustotal_api_key.as_ref(),
+        &["VT_API_KEY", "VIRUSTOTAL_API_KEY"],
+    );
+    let urlhaus_key = if ti.urlhaus_enabled {
+        resolve_key(ti.urlhaus_auth_key.as_ref(), &["URLHAUS_AUTH_KEY"])
+    } else {
+        None
+    };
+
+    let cache = if config.cache.enabled {
+        match cache::DiskCache::new(config.cache.directory.clone(), config.cache.max_size_mb) {
+            Ok(c) => Some(Arc::new(c)),
+            Err(e) => {
+                warn!("threat-intel cache disabled (cannot use cache dir): {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let ttl = std::time::Duration::from_secs(ti.cache_duration_hours.saturating_mul(3600));
+
+    analyzer::ThreatIntelAnalyzer::new(vt_key, urlhaus_key, cache, ttl)
 }
 
 /// Maximum size of a file the scanner will read into memory. Real PKGBUILDs

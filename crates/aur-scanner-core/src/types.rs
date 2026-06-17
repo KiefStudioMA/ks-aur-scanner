@@ -252,14 +252,22 @@ impl ScanConfig {
     }
 }
 
-/// Threat intelligence provider configuration
+/// Threat intelligence provider configuration.
+///
+/// All of this is inert unless [`ScanConfig::enable_threat_intel`] is set: the
+/// scanner is offline/static by default. Keys may also be supplied via the
+/// environment (`VT_API_KEY`/`VIRUSTOTAL_API_KEY`, `URLHAUS_AUTH_KEY`) so they
+/// need not be written to a config file.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ThreatIntelConfig {
-    /// VirusTotal API key
+    /// VirusTotal API key. Without it, the VirusTotal hash lookup is skipped.
     pub virustotal_api_key: Option<String>,
-    /// Enable URLhaus lookups
+    /// Enable URLhaus URL-reputation lookups. Requires `urlhaus_auth_key`.
     #[serde(default)]
     pub urlhaus_enabled: bool,
+    /// URLhaus Auth-Key. abuse.ch made this header mandatory (free key from
+    /// <https://auth.abuse.ch/>), so URLhaus is skipped when it is absent.
+    pub urlhaus_auth_key: Option<String>,
     /// Cache duration for threat intel results in hours
     #[serde(default = "default_cache_hours")]
     pub cache_duration_hours: u64,

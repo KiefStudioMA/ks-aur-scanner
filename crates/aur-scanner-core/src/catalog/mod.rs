@@ -216,6 +216,11 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
         // -- remote_exec analyzer --
         e("EXEC-REMOTE", "Fetches and runs external code", Critical, MaliciousCode, "remote_exec", Some("CWE-494"),
           "The package downloads and executes code from an external URL at build/install time; the scanner does not follow it (opaque boundary).", "Do not build; obtain software that ships its real code."),
+        // -- threat_intel analyzer (opt-in, networked) --
+        e("TI-VT-001", "VirusTotal flags a source artifact", Critical, MaliciousCode, "threat_intel", Some("CWE-506"),
+          "An opt-in VirusTotal lookup reports engines detecting the declared sha256 of a source artifact as malicious.", "Do not build or install; review the VirusTotal report for this hash."),
+        e("TI-URLHAUS-001", "URLhaus lists a source URL", Critical, MaliciousCode, "threat_intel", Some("CWE-494"),
+          "An opt-in abuse.ch/URLhaus lookup lists a source= URL as a known malware/payload distribution URL.", "Do not build or install; the source URL is a known-bad distribution point."),
         // -- provenance --
         e("PROV-001", "Package gained risky behavior", High, SuspiciousMetadata, "provenance", Some("CWE-506"),
           "The package introduced fetch/execute behavior it did not have at the previous scan.", "Review the PKGBUILD/install diff before building."),
@@ -296,6 +301,8 @@ mod tests {
             "DEEP-001",
             "DEEP-002",
             "EXEC-REMOTE",
+            "TI-VT-001",
+            "TI-URLHAUS-001",
             "PROV-001",
             "FUNC-001",
             "META-002",
