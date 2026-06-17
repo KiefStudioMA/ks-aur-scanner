@@ -4,11 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [1.2.0-rc1] - 2026-06-17
+## [2.0.0] - 2026-06-17
 
-First release candidate of the 1.2.0 line: optional, opt-in threat-intelligence
-lookups (VirusTotal + URLhaus) and activation of the verdict cache. The default
-scan is unchanged — fully offline and static. **Release candidate.**
+Major release: optional, opt-in threat-intelligence lookups (VirusTotal +
+URLhaus), an active verdict cache, broader AUR-helper coverage (cache discovery
++ shell wrappers + a Nushell integration), and a global `--no-color` flag. The
+default scan is unchanged — fully offline and static; threat intelligence stays
+off until you enable it and supply your own keys.
 
 ### Added — opt-in threat intelligence
 
@@ -269,5 +271,5 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
-[1.2.0-rc1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.2.0-rc1
+[2.0.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.0.0
 [1.1.0-rc1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.1.0-rc1
