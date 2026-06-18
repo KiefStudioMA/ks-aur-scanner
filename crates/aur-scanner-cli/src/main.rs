@@ -316,7 +316,13 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::System { rescan, cache_dir } => {
-            commands::system::run(cli.severity.map(Into::into), rescan, cache_dir).await
+            commands::system::run(
+                cli.severity.map(Into::into),
+                rescan,
+                cache_dir,
+                file_config.unwrap_or_default(),
+            )
+            .await
         }
         Commands::Rules { severity, details } => {
             commands::rules::run(severity.map(Into::into), details)

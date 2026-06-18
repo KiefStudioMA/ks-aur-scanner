@@ -5,7 +5,7 @@ use colored::Colorize;
 use std::path::PathBuf;
 
 use aur_scanner_core::aur::{get_installed_aur_packages, AurClient};
-use aur_scanner_core::{Scanner, Severity};
+use aur_scanner_core::{ScanConfig, Scanner, Severity};
 
 use super::banner;
 
@@ -14,6 +14,7 @@ pub async fn run(
     min_severity: Option<Severity>,
     rescan: bool,
     cache_dir: Option<PathBuf>,
+    config: ScanConfig,
 ) -> Result<()> {
     banner::print_header("System Audit");
     println!();
@@ -75,7 +76,11 @@ pub async fn run(
     // Determine where to find PKGBUILDs
     let cache_dirs = get_aur_cache_dirs(cache_dir);
 
-    let scanner = Scanner::with_defaults().context("Failed to create scanner")?;
+    // Build the scanner from the loaded config so a `-c/--config` passed to the
+    // system audit applies here too (enable_threat_intel, rules_path, cache) --
+    // not just to `scan`/`codes`. With no `-c`, this is an empty default config,
+    // identical to the previous `Scanner::with_defaults()` behavior.
+    let scanner = Scanner::new(config).context("Failed to create scanner")?;
     let mut prov_store = aur_scanner_core::provenance::ProvenanceStore::load(
         aur_scanner_core::provenance::ProvenanceStore::default_path(),
     );

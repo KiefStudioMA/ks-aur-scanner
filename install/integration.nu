@@ -11,7 +11,7 @@
 # PKGBUILD(s), and only then hands off to the real helper. Read-only operations
 # (-Q, -Ss, etc.) pass straight through. This keeps a single, audited gate.
 #
-# Targets Nushell 0.90+. Override before sourcing:
+# Verified on Nushell 0.113 (uses `def --wrapped`). Override before sourcing:
 #   $env.AUR_SCAN_ENABLED = "0"   # disable scanning entirely
 #   $env.AUR_SCAN_VERBOSE = "1"   # print a banner when this file loads
 

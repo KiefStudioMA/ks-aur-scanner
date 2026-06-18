@@ -53,9 +53,12 @@ pub trait ThreatIntelProvider: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// A score from a lookup the provider could not actually perform (network
-/// error, missing data). Distinct from a real all-clear: `total_engines == 0`
-/// and `is_malicious()` is false, so it never produces a finding.
+/// A score for a lookup that resolved to "no record" — e.g. VirusTotal has
+/// definitively never seen this hash (HTTP 404). Transient failures (network,
+/// quota, outage) now surface as `Err` from [`remote`] and are not mapped here,
+/// so an "unreachable" is never cached as a verdict. Distinct from a real
+/// all-clear: `total_engines == 0` and `is_malicious()` is false, so it never
+/// produces a finding.
 fn no_data(provider: &str) -> ThreatScore {
     ThreatScore {
         malicious_count: 0,
