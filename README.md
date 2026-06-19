@@ -843,7 +843,23 @@ enabled = true
 directory = "/var/cache/aur-scanner"
 max_size_mb = 100
 ttl_hours = 24
+
+# Human-readable output — which fields each finding prints (text format only).
+# Rich by default: every field is shown unless you turn it off here. Set any to
+# false to make the output terser. A mistyped key is a hard error, not a silent
+# no-op.
+[output]
+line = true            # append (file:line) to each finding
+snippet = true         # show the matched code line
+recommendation = true  # show the remediation hint
+cwe = true             # show the CWE reference
 ```
+
+> **Display-only.** The `[output]` table changes *what is printed*, never which
+> findings exist, the exit code, or whether a gate trips. The machine-readable
+> `--format json` / `--format sarif` output always emits the complete record, so
+> CI and tooling are never affected by a display preference. There is
+> deliberately no key to suppress a finding itself.
 
 ### Threat Intelligence (opt-in)
 
