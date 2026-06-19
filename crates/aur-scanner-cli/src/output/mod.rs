@@ -1,7 +1,7 @@
 //! Output formatting for scan results
 
 use anyhow::Result;
-use aur_scanner_core::{Finding, ScanResult, Severity};
+use aur_scanner_core::{Finding, OutputConfig, ScanResult, Severity};
 use colored::Colorize;
 
 /// Output format options
@@ -12,16 +12,25 @@ pub enum OutputFormat {
     Sarif,
 }
 
-/// Format a scan result according to the specified format
-pub fn format_result(result: &ScanResult, format: OutputFormat) -> Result<String> {
+/// Format a scan result according to the specified format.
+///
+/// `display` controls which fields the human-readable **text** output includes;
+/// it is intentionally ignored by the JSON and SARIF formatters, which always
+/// emit the complete record so CI and tooling are never blinded by a display
+/// preference.
+pub fn format_result(
+    result: &ScanResult,
+    format: OutputFormat,
+    display: &OutputConfig,
+) -> Result<String> {
     match format {
-        OutputFormat::Text => format_text(result),
+        OutputFormat::Text => format_text(result, display),
         OutputFormat::Json => format_json(result),
         OutputFormat::Sarif => format_sarif(result),
     }
 }
 
-fn format_text(result: &ScanResult) -> Result<String> {
+fn format_text(result: &ScanResult, display: &OutputConfig) -> Result<String> {
     let mut output = String::new();
 
     output.push_str(&format!(
@@ -37,14 +46,14 @@ fn format_text(result: &ScanResult) -> Result<String> {
     }
 
     for finding in &result.findings {
-        output.push_str(&format_finding(finding));
+        output.push_str(&format_finding(finding, display));
         output.push('\n');
     }
 
     Ok(output)
 }
 
-fn format_finding(finding: &Finding) -> String {
+fn format_finding(finding: &Finding, display: &OutputConfig) -> String {
     let mut output = String::new();
 
     let severity_badge = match finding.severity {
@@ -63,25 +72,33 @@ fn format_finding(finding: &Finding) -> String {
     ));
     output.push_str(&format!("    {}\n", finding.description));
 
-    if let Some(line) = finding.location.line {
+    if display.line {
+        if let Some(line) = finding.location.line {
+            output.push_str(&format!(
+                "    Location: {}:{}\n",
+                finding.location.file.display(),
+                line
+            ));
+        }
+    }
+
+    if display.snippet {
+        if let Some(ref snippet) = finding.location.snippet {
+            output.push_str(&format!("    Code: {}\n", snippet.dimmed()));
+        }
+    }
+
+    if display.recommendation {
         output.push_str(&format!(
-            "    Location: {}:{}\n",
-            finding.location.file.display(),
-            line
+            "    Recommendation: {}\n",
+            finding.recommendation.green()
         ));
     }
 
-    if let Some(ref snippet) = finding.location.snippet {
-        output.push_str(&format!("    Code: {}\n", snippet.dimmed()));
-    }
-
-    output.push_str(&format!(
-        "    Recommendation: {}\n",
-        finding.recommendation.green()
-    ));
-
-    if let Some(ref cwe) = finding.cwe_id {
-        output.push_str(&format!("    Reference: {}\n", cwe.dimmed()));
+    if display.cwe {
+        if let Some(ref cwe) = finding.cwe_id {
+            output.push_str(&format!("    Reference: {}\n", cwe.dimmed()));
+        }
     }
 
     output
@@ -155,4 +172,58 @@ fn format_sarif(result: &ScanResult) -> Result<String> {
     });
 
     Ok(serde_json::to_string_pretty(&sarif)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aur_scanner_core::{Category, Location};
+    use std::path::PathBuf;
+
+    fn sample_finding() -> Finding {
+        Finding {
+            id: "ENV-003".to_string(),
+            severity: Severity::Critical,
+            category: Category::Persistence,
+            title: "Bashrc/profile modification".to_string(),
+            description: "desc".to_string(),
+            location: Location {
+                file: PathBuf::from("cdu.install"),
+                line: Some(4),
+                column: None,
+                snippet: Some("source ~/.bashrc".to_string()),
+            },
+            recommendation: "review".to_string(),
+            cwe_id: Some("CWE-506".to_string()),
+            metadata: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn rich_default_shows_every_field() {
+        colored::control::set_override(false);
+        let out = format_finding(&sample_finding(), &OutputConfig::default());
+        assert!(out.contains("Location: cdu.install:4"));
+        assert!(out.contains("Code: source ~/.bashrc"));
+        assert!(out.contains("Recommendation: review"));
+        assert!(out.contains("Reference: CWE-506"));
+    }
+
+    #[test]
+    fn toggles_suppress_only_the_disabled_fields() {
+        colored::control::set_override(false);
+        let display = OutputConfig {
+            line: false,
+            snippet: false,
+            recommendation: true,
+            cwe: false,
+        };
+        let out = format_finding(&sample_finding(), &display);
+        assert!(!out.contains("Location:"), "line disabled: {out}");
+        assert!(!out.contains("Code:"), "snippet disabled: {out}");
+        assert!(!out.contains("Reference:"), "cwe disabled: {out}");
+        assert!(out.contains("Recommendation: review"), "rec stays: {out}");
+        // The finding header (severity + id + title) is never gated away.
+        assert!(out.contains("ENV-003") && out.contains("Bashrc/profile modification"));
+    }
 }
