@@ -39,4 +39,7 @@ tempfile = "3.14"
 # Already present in the lockfile transitively via reqwest; pinned as a direct dep.
 url = "2.5"
 
+# For ELF/binary analysis in the BinaryPayloadAnalyzer.
+goblin = "0.10.7"
+
 [dev-dependencies]

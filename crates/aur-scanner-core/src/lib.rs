@@ -66,6 +66,7 @@ impl Scanner {
         let mut analyzers: Vec<Arc<dyn SecurityAnalyzer>> = vec![
             Arc::new(analyzer::PatternAnalyzer::new(rule_engine.clone())),
             Arc::new(analyzer::IocAnalyzer::new(ioc_db.clone())),
+            Arc::new(analyzer::BinaryPayloadAnalyzer::new(ioc_db.clone())),
             Arc::new(analyzer::DeepAnalyzer::new()),
             Arc::new(analyzer::RemoteExecAnalyzer::new()),
             Arc::new(analyzer::SourceAnalyzer::new()),
