@@ -1,0 +1,20 @@
+Race-free install: scan the exact bytes, then build them in dep order
+
+Usage: aur-scan install [OPTIONS] <PACKAGES>...
+
+Arguments:
+  <PACKAGES>...  Package name(s) to install
+
+Options:
+      --gate <GATE>          Gate threshold: findings at or above this severity block the build [default: critical] [possible values: critical, high, medium, low, info]
+      --include-optional     Also follow optional dependencies
+      --noconfirm            Pass --noconfirm to makepkg and skip the build prompt
+      --force                Build even if the scan gate trips (deliberate override)
+      --workspace <DIR>      Workspace dir for clones/builds (default ~/.cache/aur-scan/build)
+      --sbom <FILE>          Write a CycloneDX SBOM to this path
+      --keep-build           Keep the build directories after a successful install (default: clean them up)
+  -c, --config <CONFIG>      Configuration file path
+  -s, --severity <SEVERITY>  Minimum severity to report [possible values: critical, high, medium, low, info]
+  -v, --verbose              Enable verbose output
+  -q, --quiet                Quiet mode (only show findings)
+  -h, --help                 Print help

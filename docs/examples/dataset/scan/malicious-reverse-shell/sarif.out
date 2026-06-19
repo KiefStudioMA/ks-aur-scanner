@@ -1,0 +1,159 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/reverse-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 14
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Pattern indicates a bash reverse shell connection"
+          },
+          "ruleId": "SHELL-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/reverse-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 19
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Netcat with execute flag indicates reverse shell"
+          },
+          "ruleId": "SHELL-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/reverse-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 9
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "URLs with raw IP addresses are suspicious"
+          },
+          "ruleId": "URL-001"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/reverse-shell/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Package has build() function but no source array"
+          },
+          "ruleId": "SRC-005"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Pattern indicates a bash reverse shell connection"
+              },
+              "help": {
+                "text": "Remove reverse shell code immediately"
+              },
+              "id": "SHELL-001",
+              "name": "Bash reverse shell",
+              "shortDescription": {
+                "text": "Bash reverse shell"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Netcat with execute flag indicates reverse shell"
+              },
+              "help": {
+                "text": "Remove reverse shell code immediately"
+              },
+              "id": "SHELL-002",
+              "name": "Netcat reverse shell",
+              "shortDescription": {
+                "text": "Netcat reverse shell"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "URLs with raw IP addresses are suspicious"
+              },
+              "help": {
+                "text": "Use domain names from trusted sources"
+              },
+              "id": "URL-001",
+              "name": "Raw IP in URL",
+              "shortDescription": {
+                "text": "Raw IP in URL"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Package has build() function but no source array"
+              },
+              "help": {
+                "text": "Verify this is intentional; build() usually needs sources"
+              },
+              "id": "SRC-005",
+              "name": "No sources with build function",
+              "shortDescription": {
+                "text": "No sources with build function"
+              }
+            }
+          ],
+          "version": "1.1.0"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

@@ -1,0 +1,21 @@
+
+======================================================================
+CRYPTO-001 Mining pool connection [CRITICAL]
+======================================================================
+
+Category:
+  Cryptomining  (detector: rules)
+
+Description:
+  Connection to cryptocurrency mining pools
+
+Recommendation:
+  Remove cryptomining components
+
+CWE: CWE-506
+
+Technical Details:
+  Mining pools use the stratum protocol (stratum+tcp://) for work
+  distribution. Presence of pool URLs indicates unauthorized mining.
+
+======================================================================

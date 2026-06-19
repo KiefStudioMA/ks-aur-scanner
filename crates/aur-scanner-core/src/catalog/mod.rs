@@ -63,6 +63,12 @@ impl Catalog {
     /// Build the catalog from built-in pattern rules, analyzer codes, and any
     /// community rule files found in the standard directories.
     pub fn load() -> Self {
+        Self::load_with(&[])
+    }
+
+    /// Like [`load`](Self::load) but also scans `extra_dirs` (e.g. a config's
+    /// `rules_path`) so the listing matches what the scan engine actually loads.
+    pub fn load_with(extra_dirs: &[std::path::PathBuf]) -> Self {
         let mut entries: Vec<CatalogEntry> = Vec::new();
 
         // 1. Built-in pattern rules.
@@ -71,9 +77,12 @@ impl Catalog {
         }
         // 2. Analyzer-owned codes (logic in Rust, metadata here).
         entries.extend(analyzer_codes());
-        // 3. Community rule files.
+        // 3. Community rule files (standard dirs + any caller-supplied extras).
         let loader = RuleLoader::new();
-        for dir in user_rule_dirs() {
+        for dir in user_rule_dirs()
+            .into_iter()
+            .chain(extra_dirs.iter().cloned())
+        {
             if dir.is_dir() {
                 if let Ok(rules) = loader.load_from_directory(&dir) {
                     for rule in rules {
@@ -94,7 +103,11 @@ impl Catalog {
         for e in &self.entries {
             *seen.entry(e.id.clone()).or_insert(0usize) += 1;
         }
-        let mut dups: Vec<String> = seen.into_iter().filter(|(_, n)| *n > 1).map(|(k, _)| k).collect();
+        let mut dups: Vec<String> = seen
+            .into_iter()
+            .filter(|(_, n)| *n > 1)
+            .map(|(k, _)| k)
+            .collect();
         dups.sort();
         dups
     }
@@ -105,7 +118,10 @@ impl Catalog {
         if dups.is_empty() {
             Ok(())
         } else {
-            Err(format!("duplicate finding IDs in catalog: {}", dups.join(", ")))
+            Err(format!(
+                "duplicate finding IDs in catalog: {}",
+                dups.join(", ")
+            ))
         }
     }
 
@@ -116,7 +132,11 @@ impl Catalog {
 
     /// All distinct category display names present, sorted.
     pub fn categories(&self) -> Vec<String> {
-        let mut cats: Vec<String> = self.entries.iter().map(|e| e.category.to_string()).collect();
+        let mut cats: Vec<String> = self
+            .entries
+            .iter()
+            .map(|e| e.category.to_string())
+            .collect();
         cats.sort();
         cats.dedup();
         cats
@@ -192,6 +212,8 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
           "Package defines build() but has no source array.", "Verify this is intentional."),
         e("SRC-006", "VCS source from non-standard host", Low, NetworkSecurity, "source", None,
           "A git/VCS checkout is from a host outside the common providers.", "Verify the upstream host is official."),
+        e("SRC-007", "VCS source not pinned to a commit", Low, NetworkSecurity, "source", Some("CWE-494"),
+          "A git/VCS source uses a movable ref (branch/tag or none), so the fetched content is not integrity-pinned and can change between scan and build.", "Pin the VCS source to an immutable revision with #commit=<sha>."),
         // -- ioc analyzer --
         e("IOC-001", "Known indicator-of-compromise match", Critical, MaliciousCode, "ioc", Some("CWE-506"),
           "Content matches a known IOC (malicious npm/bun package, file artifact, or C2 domain).", "Do not build; treat the host as compromised if already built."),
@@ -203,6 +225,11 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
         // -- remote_exec analyzer --
         e("EXEC-REMOTE", "Fetches and runs external code", Critical, MaliciousCode, "remote_exec", Some("CWE-494"),
           "The package downloads and executes code from an external URL at build/install time; the scanner does not follow it (opaque boundary).", "Do not build; obtain software that ships its real code."),
+        // -- threat_intel analyzer (opt-in, networked) --
+        e("TI-VT-001", "VirusTotal flags a source artifact", Critical, MaliciousCode, "threat_intel", Some("CWE-506"),
+          "An opt-in VirusTotal lookup reports engines detecting the declared sha256 of a source artifact as malicious.", "Do not build or install; review the VirusTotal report for this hash."),
+        e("TI-URLHAUS-001", "URLhaus lists a source URL", Critical, MaliciousCode, "threat_intel", Some("CWE-494"),
+          "An opt-in abuse.ch/URLhaus lookup lists a source= URL as a known malware/payload distribution URL.", "Do not build or install; the source URL is a known-bad distribution point."),
         // -- provenance --
         e("PROV-001", "Package gained risky behavior", High, SuspiciousMetadata, "provenance", Some("CWE-506"),
           "The package introduced fetch/execute behavior it did not have at the previous scan.", "Review the PKGBUILD/install diff before building."),
@@ -222,6 +249,25 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
           "A shipped binary shows packer indicators (UPX sections or very high entropy), which hide the real code from inspection.", "Unpack and review, or obtain a build from reviewable source."),
         e("BIN-STRING", "Prebuilt binary embeds known C2 domain", Critical, DataExfiltration, "binary", Some("CWE-506"),
           "A shipped binary contains a known C2/exfil domain from the IOC database.", "Do not build/install; the binary references known-malicious infrastructure."),
+        // -- metadata analyzer (parsed packaging fields) --
+        e("META-002", "validpgpkeys declared but no signature verified", Low, SuspiciousMetadata, "metadata", Some("CWE-347"),
+          "validpgpkeys= lists signing keys but no source carries a detached signature or ?signed fragment, so the key verifies nothing.", "Verify a signed source against the key, or remove the unused validpgpkeys."),
+        e("META-003", "Replaces/conflicts a core or security package", High, SuspiciousMetadata, "metadata", Some("CWE-1357"),
+          "replaces=/conflicts= forces pacman to displace an official (often security-critical) package with this AUR build.", "Remove unless this is the legitimate provider; report to the AUR maintainers."),
+        e("META-004", "epoch set (forces upgrade over the repo version)", Low, SuspiciousMetadata, "metadata", None,
+          "epoch>=1 makes the package outrank the official version regardless of pkgver; escalates when combined with provides/replaces of a trusted name.", "Confirm the epoch is a real upstream versioning reset, not a stealth supersede."),
+        e("META-005", "install= points outside the package", Medium, SuspiciousMetadata, "metadata", Some("CWE-426"),
+          "install= is not a plain <name>.install file (contains a path, .., or non-.install name).", "Use a plain <pkgname>.install shipped with the PKGBUILD."),
+        e("META-006", "backup= of a security-sensitive file", Medium, SuspiciousMetadata, "metadata", Some("CWE-426"),
+          "backup= lists a security-sensitive path (sudoers/ssh/pam.d/ld.so/etc.), a persistent root-level tamper surface.", "Packages should not own/back up authentication, linker, or privilege files."),
+        e("DEP-001", "Provides a core package name (dependency confusion)", High, SuspiciousMetadata, "metadata", Some("CWE-427"),
+          "provides= a curated core package name from a package that is not that package's own alternate, satisfying a dependency in its place.", "Remove the provides unless this is the legitimate provider."),
+        // -- source analyzer (host-aware metadata) --
+        e("SRC-008", "Source host differs from upstream url host", Low, NetworkSecurity, "source", None,
+          "url= and a source= are both on known forges but different ones (a personal-fork-vs-upstream signal).", "Verify the source forge is the project's official one."),
+        // -- checksum analyzer (hash shape) --
+        e("CHK-008", "Malformed or wrong-length checksum", Medium, Cryptography, "checksum", Some("CWE-354"),
+          "A checksum is not valid hex of the algorithm's expected length (md5=32, sha1=40, sha256=64, sha512/b2=128).", "Regenerate checksums with updpkgsums; a malformed hash silently disables integrity verification."),
     ]
 }
 
@@ -252,19 +298,62 @@ mod tests {
     #[test]
     fn catalog_covers_every_analyzer_emitted_id() {
         const EMITTED: &[&str] = &[
-            "CHK-001", "CHK-002", "CHK-003", "CHK-004", "CHK-005", "CHK-006",
-            "PRIV-001", "PRIV-002", "PRIV-003", "PRIV-004", "PRIV-005", "PRIV-006",
-            "SRC-001", "SRC-002", "SRC-003", "SRC-004", "SRC-005", "SRC-006",
-            "IOC-001", "DEEP-001", "DEEP-002", "EXEC-REMOTE", "PROV-001", "FUNC-001",
-            "BIN-HASH", "BIN-VT", "BIN-EBPF", "BIN-IMPORT", "BIN-PACKED", "BIN-STRING",
+            "CHK-001",
+            "CHK-002",
+            "CHK-003",
+            "CHK-004",
+            "CHK-005",
+            "CHK-006",
+            "CHK-008",
+            "PRIV-001",
+            "PRIV-002",
+            "PRIV-003",
+            "PRIV-004",
+            "PRIV-005",
+            "PRIV-006",
+            "SRC-001",
+            "SRC-002",
+            "SRC-003",
+            "SRC-004",
+            "SRC-005",
+            "SRC-006",
+            "SRC-007",
+            "SRC-008",
+            "IOC-001",
+            "DEEP-001",
+            "DEEP-002",
+            "EXEC-REMOTE",
+            "TI-VT-001",
+            "TI-URLHAUS-001",
+            "PROV-001",
+            "FUNC-001",
+            "BIN-HASH",
+            "BIN-VT",
+            "BIN-EBPF",
+            "BIN-IMPORT",
+            "BIN-PACKED",
+            "BIN-STRING",
+            "META-002",
+            "META-003",
+            "META-004",
+            "META-005",
+            "META-006",
+            "DEP-001",
         ];
         let catalog = Catalog::load();
         for id in EMITTED {
-            assert!(catalog.get(id).is_some(), "emitted code {id} missing from catalog");
+            assert!(
+                catalog.get(id).is_some(),
+                "emitted code {id} missing from catalog"
+            );
         }
         // And no phantom analyzer codes (every analyzer_codes id is in EMITTED).
         for c in analyzer_codes() {
-            assert!(EMITTED.contains(&c.id.as_str()), "catalog has phantom analyzer code {}", c.id);
+            assert!(
+                EMITTED.contains(&c.id.as_str()),
+                "catalog has phantom analyzer code {}",
+                c.id
+            );
         }
     }
 }

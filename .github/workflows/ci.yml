@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Lint + the full test suite (unit AND the CLI integration tests that run the
+  # real binary against the PKGBUILD fixtures). This is the gate that catches the
+  # "passes unit tests but breaks when you run it" class of bug.
+  test:
+    name: clippy / test / build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Tests (unit + CLI integration)
+        run: cargo test --all --all-features
+
+      - name: Release build
+        run: cargo build --all --release
+
+  # Formatting is reported but NON-BLOCKING: the codebase predates rustfmt
+  # enforcement and has pre-existing drift. Do a one-time `cargo fmt --all` in a
+  # dedicated commit, then move this into the `test` job to make it a hard gate.
+  fmt:
+    name: rustfmt (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  # Catch toolchain regressions early without blocking PRs.
+  beta:
+    name: beta (allowed to fail)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@beta
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features
+      - run: cargo test --all --all-features
+
+  # Supply-chain gate: advisories, license policy, banned/duplicate crates, and
+  # source allow-list. Runs in CI and on a weekly schedule (advisories land
+  # after a PR merges, like RUSTSEC-2026-0007 in bytes did).
+  supply-chain:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources

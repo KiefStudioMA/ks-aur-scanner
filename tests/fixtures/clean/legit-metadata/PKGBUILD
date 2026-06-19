@@ -1,0 +1,25 @@
+# Maintainer: Good Dev <dev@example.com>
+# Legit-metadata clean fixture (task 3986 FP guard): a -git build of a core
+# package legitimately provides/replaces/conflicts its base, declares a signing
+# key it actually uses (a .sig source), pins its VCS revision, and ships valid
+# checksums. None of META-002/003/004/005/006, DEP-001, SRC-008 or CHK-008 must
+# fire.
+pkgname=bash-git
+pkgver=5.2.r100.gabc1234
+pkgrel=1
+pkgdesc="GNU Bash, built from git"
+arch=('x86_64')
+url="https://git.savannah.gnu.org/cgit/bash.git"
+license=('GPL3')
+# legitimate alternate: a -git package provides/replaces its base package
+provides=('bash')
+conflicts=('bash')
+replaces=('bash')
+# a signing key that IS used: the .sig source below is verified against it
+validpgpkeys=('7C0135FB088AAF6C66C650B9BB5869F064EA74AB')
+source=("git+https://git.savannah.gnu.org/git/bash.git#commit=abc1234def5678abc1234def5678abc1234def56"
+        "bash-doc.tar.gz::https://git.savannah.gnu.org/cgit/bash.git/snapshot/doc.tar.gz"
+        "bash-doc.tar.gz.sig::https://git.savannah.gnu.org/cgit/bash.git/snapshot/doc.tar.gz.sig")
+sha256sums=('SKIP'
+            'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+            'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')

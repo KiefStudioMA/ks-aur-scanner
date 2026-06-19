@@ -1,0 +1,12 @@
+Scan all installed AUR packages on the system
+
+Usage: aur-scan system [OPTIONS]
+
+Options:
+      --rescan                 Re-fetch PKGBUILDs from AUR (instead of using cache)
+      --cache-dir <CACHE_DIR>  Custom cache directory for PKGBUILDs
+  -c, --config <CONFIG>        Configuration file path
+  -s, --severity <SEVERITY>    Minimum severity to report [possible values: critical, high, medium, low, info]
+  -v, --verbose                Enable verbose output
+  -q, --quiet                  Quiet mode (only show findings)
+  -h, --help                   Print help

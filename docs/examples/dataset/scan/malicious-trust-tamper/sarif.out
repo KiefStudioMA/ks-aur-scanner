@@ -1,0 +1,194 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/trust-tamper/sysprep.install"
+                },
+                "region": {
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Creates or elevates an account to uid 0 / the wheel or sudo group — a backdoor-admin pattern."
+          },
+          "ruleId": "PRIV-007"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/trust-tamper/sysprep.install"
+                },
+                "region": {
+                  "startLine": 6
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sets, resets, or clears an account password (chpasswd / passwd -d / piped passwd)."
+          },
+          "ruleId": "PRIV-008"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/trust-tamper/sysprep.install"
+                },
+                "region": {
+                  "startLine": 3
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Grants passwordless privilege via /etc/doas.conf or a NOPASSWD sudoers rule."
+          },
+          "ruleId": "TAMPER-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/trust-tamper/sysprep.install"
+                },
+                "region": {
+                  "startLine": 5
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sets SigLevel = Never in /etc/pacman.conf, disabling package signature verification so future malicious updates are accepted silently."
+          },
+          "ruleId": "TAMPER-011"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/trust-tamper/sysprep.install"
+                },
+                "region": {
+                  "startLine": 4
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Imports and locally-signs an arbitrary key into pacman's trust store (pacman-key --recv-keys/--lsign) so attacker-signed packages are accepted."
+          },
+          "ruleId": "TRUST-001"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Creates or elevates an account to uid 0 / the wheel or sudo group — a backdoor-admin pattern."
+              },
+              "help": {
+                "text": "Do not build. This grants an account administrative access."
+              },
+              "id": "PRIV-007",
+              "name": "Privileged account manipulation (install script)",
+              "shortDescription": {
+                "text": "Privileged account manipulation (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Sets, resets, or clears an account password (chpasswd / passwd -d / piped passwd)."
+              },
+              "help": {
+                "text": "Do not build. This changes account credentials."
+              },
+              "id": "PRIV-008",
+              "name": "Password manipulation (install script)",
+              "shortDescription": {
+                "text": "Password manipulation (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Grants passwordless privilege via /etc/doas.conf or a NOPASSWD sudoers rule."
+              },
+              "help": {
+                "text": "Do not build. This grants passwordless root."
+              },
+              "id": "TAMPER-002",
+              "name": "doas/sudoers nopasswd grant (install script)",
+              "shortDescription": {
+                "text": "doas/sudoers nopasswd grant (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Sets SigLevel = Never in /etc/pacman.conf, disabling package signature verification so future malicious updates are accepted silently."
+              },
+              "help": {
+                "text": "Do not build. This disables pacman signature checking."
+              },
+              "id": "TAMPER-011",
+              "name": "pacman signature downgrade (install script)",
+              "shortDescription": {
+                "text": "pacman signature downgrade (install script)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Imports and locally-signs an arbitrary key into pacman's trust store (pacman-key --recv-keys/--lsign) so attacker-signed packages are accepted."
+              },
+              "help": {
+                "text": "Do not build. Packages ship keys via keyring packages, not by importing at build time."
+              },
+              "id": "TRUST-001",
+              "name": "pacman keyring poisoning (install script)",
+              "shortDescription": {
+                "text": "pacman keyring poisoning (install script)"
+              }
+            }
+          ],
+          "version": "1.1.0"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

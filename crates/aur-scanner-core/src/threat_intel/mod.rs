@@ -4,6 +4,7 @@
 //! external threat-intelligence services.
 
 pub mod ioc;
+pub mod remote;
 
 pub use ioc::{Campaign, IocDatabase, IocHit, IocKind};
 
@@ -52,17 +53,30 @@ pub trait ThreatIntelProvider: Send + Sync {
     fn name(&self) -> &str;
 }
 
-// Note: VirusTotal and URLhaus implementations would go here
-// They are optional features that require API keys
+/// A score for a lookup that resolved to "no record" — e.g. VirusTotal has
+/// definitively never seen this hash (HTTP 404). Transient failures (network,
+/// quota, outage) now surface as `Err` from [`remote`] and are not mapped here,
+/// so an "unreachable" is never cached as a verdict. Distinct from a real
+/// all-clear: `total_engines == 0` and `is_malicious()` is false, so it never
+/// produces a finding.
+fn no_data(provider: &str) -> ThreatScore {
+    ThreatScore {
+        malicious_count: 0,
+        suspicious_count: 0,
+        total_engines: 0,
+        provider: provider.to_string(),
+    }
+}
 
-/// Placeholder for VirusTotal integration
+/// VirusTotal provider. All network I/O lives in [`remote`]; this is just the
+/// typed entry point. The key is supplied by the operator (config or env) and a
+/// provider is only ever constructed when one is present.
 pub struct VirusTotalProvider {
-    #[allow(dead_code)]
     api_key: String,
 }
 
 impl VirusTotalProvider {
-    /// Create a new VirusTotal provider
+    /// Create a VirusTotal provider with an API key.
     pub fn new(api_key: String) -> Self {
         Self { api_key }
     }
@@ -70,24 +84,16 @@ impl VirusTotalProvider {
 
 #[async_trait]
 impl ThreatIntelProvider for VirusTotalProvider {
-    async fn check_url(&self, _url: &str) -> Result<ThreatScore> {
-        // TODO: Implement VirusTotal API integration
-        Ok(ThreatScore {
-            malicious_count: 0,
-            suspicious_count: 0,
-            total_engines: 0,
-            provider: "VirusTotal".to_string(),
-        })
+    async fn check_url(&self, url: &str) -> Result<ThreatScore> {
+        Ok(remote::virustotal_url(&self.api_key, url)
+            .await?
+            .unwrap_or_else(|| no_data(self.name())))
     }
 
-    async fn check_hash(&self, _hash: &str) -> Result<ThreatScore> {
-        // TODO: Implement VirusTotal API integration
-        Ok(ThreatScore {
-            malicious_count: 0,
-            suspicious_count: 0,
-            total_engines: 0,
-            provider: "VirusTotal".to_string(),
-        })
+    async fn check_hash(&self, hash: &str) -> Result<ThreatScore> {
+        Ok(remote::virustotal_file(&self.api_key, hash)
+            .await?
+            .unwrap_or_else(|| no_data(self.name())))
     }
 
     fn name(&self) -> &str {
@@ -95,42 +101,32 @@ impl ThreatIntelProvider for VirusTotalProvider {
     }
 }
 
-/// URLhaus threat intelligence provider
-pub struct UrlHausProvider;
-
-impl UrlHausProvider {
-    /// Create a new URLhaus provider
-    pub fn new() -> Self {
-        Self
-    }
+/// URLhaus (abuse.ch) provider. abuse.ch now requires an `Auth-Key` for every
+/// query, so the provider always carries one; it is constructed only when the
+/// operator has supplied a key.
+pub struct UrlHausProvider {
+    auth_key: String,
 }
 
-impl Default for UrlHausProvider {
-    fn default() -> Self {
-        Self::new()
+impl UrlHausProvider {
+    /// Create a URLhaus provider with an abuse.ch Auth-Key.
+    pub fn new(auth_key: String) -> Self {
+        Self { auth_key }
     }
 }
 
 #[async_trait]
 impl ThreatIntelProvider for UrlHausProvider {
-    async fn check_url(&self, _url: &str) -> Result<ThreatScore> {
-        // TODO: Implement URLhaus API integration
-        Ok(ThreatScore {
-            malicious_count: 0,
-            suspicious_count: 0,
-            total_engines: 1,
-            provider: "URLhaus".to_string(),
-        })
+    async fn check_url(&self, url: &str) -> Result<ThreatScore> {
+        Ok(remote::urlhaus_url(&self.auth_key, url)
+            .await?
+            .unwrap_or_else(|| no_data(self.name())))
     }
 
-    async fn check_hash(&self, _hash: &str) -> Result<ThreatScore> {
-        // URLhaus doesn't support hash lookup
-        Ok(ThreatScore {
-            malicious_count: 0,
-            suspicious_count: 0,
-            total_engines: 0,
-            provider: "URLhaus".to_string(),
-        })
+    async fn check_hash(&self, hash: &str) -> Result<ThreatScore> {
+        Ok(remote::urlhaus_payload(&self.auth_key, hash)
+            .await?
+            .unwrap_or_else(|| no_data(self.name())))
     }
 
     fn name(&self) -> &str {

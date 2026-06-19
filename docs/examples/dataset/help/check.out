@@ -1,0 +1,19 @@
+Check an AUR package BEFORE installation (fetches from AUR)
+
+Usage: aur-scan check [OPTIONS] [PACKAGES]...
+
+Arguments:
+  [PACKAGES]...  Package name(s) to check (optional if --local dirs are given)
+
+Options:
+      --no-confirm           Skip interactive prompt (don't ask to proceed)
+      --fail-on <FAIL_ON>    Exit with non-zero code if findings at or above this severity [possible values: critical, high, medium, low, info]
+      --no-deps              Do not resolve and scan the AUR dependency tree (named packages only)
+      --include-optional     Also follow optional dependencies when resolving the tree
+      --sbom <FILE>          Write a CycloneDX SBOM of the full dependency tree to this path
+      --local <DIR>          Scan these already-fetched package dir(s) from disk (race-free, the exact bytes that will be built). Repeatable. Remaining AUR deps are fetched from the AUR unless they are also provided here
+  -c, --config <CONFIG>      Configuration file path
+  -s, --severity <SEVERITY>  Minimum severity to report [possible values: critical, high, medium, low, info]
+  -v, --verbose              Enable verbose output
+  -q, --quiet                Quiet mode (only show findings)
+  -h, --help                 Print help

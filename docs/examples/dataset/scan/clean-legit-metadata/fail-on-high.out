@@ -1,0 +1,19 @@
+
+Scan Results: bash-git
+============================================================
+
+[LOW] META-001 Provides impersonation
+    Package provides another package name, may be impersonating. CHAOS RAT used this technique.
+    Location: tests/fixtures/clean/legit-metadata/PKGBUILD:15
+    Code: provides=('bash')
+    Recommendation: Verify this package is a legitimate alternative
+
+
+
+============================================================
+Package: bash-git v5.2.r100.gabc1234-1
+Scan duration: 6ms
+
+Found 1 issue(s):
+  1 LOW
+============================================================

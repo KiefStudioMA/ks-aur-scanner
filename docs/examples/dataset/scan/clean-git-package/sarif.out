@@ -1,0 +1,89 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/clean/git-package/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 13
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Package provides another package name, may be impersonating. CHAOS RAT used this technique."
+          },
+          "ruleId": "META-001"
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/clean/git-package/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Source #1 is a VCS checkout on a movable ref (branch/tag or none): git+https://github.com/example/git-package.git. Its content is not integrity-pinned and can change between scan and build."
+          },
+          "ruleId": "SRC-007"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Package provides another package name, may be impersonating. CHAOS RAT used this technique."
+              },
+              "help": {
+                "text": "Verify this package is a legitimate alternative"
+              },
+              "id": "META-001",
+              "name": "Provides impersonation",
+              "shortDescription": {
+                "text": "Provides impersonation"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Source #1 is a VCS checkout on a movable ref (branch/tag or none): git+https://github.com/example/git-package.git. Its content is not integrity-pinned and can change between scan and build."
+              },
+              "help": {
+                "text": "Pin the VCS source to an immutable revision with #commit=<sha>."
+              },
+              "id": "SRC-007",
+              "name": "VCS source not pinned to a commit",
+              "shortDescription": {
+                "text": "VCS source not pinned to a commit"
+              }
+            }
+          ],
+          "version": "1.1.0"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

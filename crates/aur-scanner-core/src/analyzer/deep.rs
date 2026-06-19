@@ -7,6 +7,8 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
+use crate::rules::informational_lines;
+use crate::textutil::{deobfuscate_text, logical_lines, SHELLS, SHELL_LAUNCHER, SHELL_PATH};
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use lazy_static::lazy_static;
@@ -14,16 +16,25 @@ use regex::Regex;
 
 lazy_static! {
     /// A decoding/decompression operation that produces executable text.
+    /// `(?i)` so `BASE64`/`XXD`/`OpenSSL` case variants cannot evade the decode
+    /// step (audit HI-6) -- these are all command names, none case-canonical.
     static ref DECODE: Regex = Regex::new(
-        r"base64\s+(-d|--decode|-[a-zA-Z]*d)|xxd\s+-r|\bbase32\s+-d|openssl\s+enc\s+.*-d|(gunzip|zcat|xz\s+-d|\bunzip)\b|\btr\s+.*\|"
+        r"(?i)base64\s+(-d|--decode|-[a-zA-Z]*d)|xxd\s+-r|\bbase32\s+-d|openssl\s+enc\s+.*-d|(gunzip|zcat|xz\s+-d|\bunzip)\b|\btr\s+.*\|"
     ).unwrap();
-    /// Hex-escaped payloads (several escapes, not an isolated byte).
+    /// Hex-escaped payloads (several escapes, not an isolated byte). Intentionally
+    /// case-sensitive: a bash ANSI-C escape is lowercase `\x`; the hex digits
+    /// already accept both cases via the `[0-9a-fA-F]` class.
     static ref HEX_BLOB: Regex = Regex::new(r"(\\x[0-9a-fA-F]{2}){4,}").unwrap();
-    /// A sink that executes dynamically-produced text.
-    static ref EXEC_SINK: Regex = Regex::new(
-        r"\|\s*(ba)?sh\b|\beval\b|\bsh\s+-c\b|(ba)?sh\s*<<<|source\s+/dev/stdin|/dev/stdin"
-    ).unwrap();
-    /// A long base64-looking blob in a single assignment/string.
+    /// A sink that executes dynamically-produced text. Shell sinks come from the
+    /// shared `SHELLS` constant so `dash`/`zsh`/`ksh -c`/here-strings are covered
+    /// like `sh`/`bash` (defect #6). `(?i)` so `BASH`/`EVAL`/`SH -c` case variants
+    /// cannot evade the exec sink (audit HI-6).
+    static ref EXEC_SINK: Regex = Regex::new(&format!(
+        r"(?i)\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b|\beval\b|{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s+-c\b|{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s*<<<|source\s+/dev/stdin|/dev/stdin"
+    )).unwrap();
+    /// A long base64-looking blob in a single assignment/string. Intentionally
+    /// case-sensitive: this matches the canonical Base64 ALPHABET, not a keyword,
+    /// so it must not be folded to case-insensitive.
     static ref LONG_B64: Regex = Regex::new(r"[A-Za-z0-9+/]{200,}={0,2}").unwrap();
 }
 
@@ -39,15 +50,31 @@ impl DeepAnalyzer {
     fn analyze_text(&self, text: &str, file: &std::path::Path) -> Vec<Finding> {
         let mut findings = Vec::new();
 
-        // Strip full-line comments so a documented example doesn't trip it.
-        let code: String = text
-            .lines()
-            .filter(|l| !l.trim_start().starts_with('#'))
+        // Strip comment lines AND printed/informational lines (a non-redirected
+        // heredoc body or a pure `echo`/`msg "..."` print) using the shared
+        // rule-engine pre-filter, so a package that merely DOCUMENTS a
+        // `base64 -d | sh` example does not raise DEEP-001. Work on logical lines
+        // so a backslash-continued decode/exec is still seen as one command.
+        let lines = logical_lines(text);
+        let line_strs: Vec<&str> = lines.iter().map(|(_, s)| s.as_str()).collect();
+        let informational = informational_lines(&line_strs);
+        let code: String = lines
+            .iter()
+            .enumerate()
+            .filter(|(i, (_, l))| !l.trim_start().starts_with('#') && !informational[*i])
+            .map(|(_, (_, l))| l.as_str())
             .collect::<Vec<_>>()
             .join("\n");
 
-        let has_decode = DECODE.is_match(&code) || HEX_BLOB.is_match(&code);
-        let has_sink = EXEC_SINK.is_match(&code);
+        // Also scan a de-obfuscated variant so a quote-split / ANSI-C-escaped
+        // `base64 -d` or `| sh` cannot hide the decode->execute flow (defect
+        // #6c). Line count is preserved; the extra scan is skipped when nothing
+        // decoded.
+        let decoded = deobfuscate_text(&code);
+        let differs = decoded != code;
+        let hit = |re: &Regex| re.is_match(&code) || (differs && re.is_match(&decoded));
+        let has_decode = hit(&DECODE) || hit(&HEX_BLOB);
+        let has_sink = hit(&EXEC_SINK);
 
         if has_decode && has_sink {
             findings.push(Finding {
@@ -142,6 +169,45 @@ mod tests {
         let text = "payload=$(echo aGVsbG8= | base64 -d)\n# ... later ...\neval \"$payload\"";
         let findings = a.analyze_text(text, Path::new("PKGBUILD"));
         assert!(findings.iter().any(|f| f.id == "DEEP-001"));
+    }
+
+    #[test]
+    fn flags_obfuscated_decode_then_exec() {
+        // Defect #6c: a quote-split `base64 -d` and a `| dash` sink, neither of
+        // which the raw regexes match, must still form DEEP-001 after de-obf.
+        let a = DeepAnalyzer::new();
+        let text = "p=$(echo aGVsbG8= | \"ba\"\"se64\" -d)\neval \"$p\" | da\\sh";
+        let findings = a.analyze_text(text, Path::new("PKGBUILD"));
+        assert!(
+            findings.iter().any(|f| f.id == "DEEP-001"),
+            "obfuscated decode->exec must trip DEEP-001: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn documented_decode_exec_in_heredoc_not_flagged() {
+        // Task 4050a: a `base64 -d | sh` example that only appears in a printed
+        // (non-redirected) heredoc is documentation, not a payload — no DEEP-001.
+        let a = DeepAnalyzer::new();
+        let text = "post_install() {\n  cat <<EOF\n  example: echo data | base64 -d | sh\nEOF\n}";
+        let findings = a.analyze_text(text, Path::new("test.install"));
+        assert!(
+            !findings.iter().any(|f| f.id == "DEEP-001"),
+            "documented decode|exec in a printed heredoc must not fire DEEP-001: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn case_variation_decode_then_exec_still_flags() {
+        // Audit HI-6: `BASE64 -d` into `EVAL`/`SH` (upper/mixed case) must still
+        // form DEEP-001 — DECODE and EXEC_SINK are `(?i)`.
+        let a = DeepAnalyzer::new();
+        let text = "p=$(echo aGVsbG8= | BASE64 -d)\nEVAL \"$p\"";
+        let findings = a.analyze_text(text, Path::new("PKGBUILD"));
+        assert!(
+            findings.iter().any(|f| f.id == "DEEP-001"),
+            "case-variant decode->exec must trip DEEP-001: {findings:?}"
+        );
     }
 
     #[test]

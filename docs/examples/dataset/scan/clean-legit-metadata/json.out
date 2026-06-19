@@ -1,0 +1,29 @@
+{
+  "package_name": "bash-git",
+  "package_version": "5.2.r100.gabc1234-1",
+  "findings": [
+    {
+      "id": "META-001",
+      "severity": "low",
+      "category": "suspicious_metadata",
+      "title": "Provides impersonation",
+      "description": "Package provides another package name, may be impersonating. CHAOS RAT used this technique.",
+      "location": {
+        "file": "tests/fixtures/clean/legit-metadata/PKGBUILD",
+        "line": 15,
+        "column": 1,
+        "snippet": "provides=('bash')"
+      },
+      "recommendation": "Verify this package is a legitimate alternative",
+      "cwe_id": null,
+      "metadata": {
+        "matched_text": "provides="
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/clean/legit-metadata/PKGBUILD"
+  ],
+  "timestamp": "2026-06-15T13:48:48.690322540Z",
+  "scan_duration_ms": 6
+}

@@ -55,7 +55,12 @@ fn format_finding(finding: &Finding) -> String {
         Severity::Info => "[INFO]".dimmed().to_string(),
     };
 
-    output.push_str(&format!("{} {} {}\n", severity_badge, finding.id.bold(), finding.title));
+    output.push_str(&format!(
+        "{} {} {}\n",
+        severity_badge,
+        finding.id.bold(),
+        finding.title
+    ));
     output.push_str(&format!("    {}\n", finding.description));
 
     if let Some(line) = finding.location.line {
@@ -70,7 +75,10 @@ fn format_finding(finding: &Finding) -> String {
         output.push_str(&format!("    Code: {}\n", snippet.dimmed()));
     }
 
-    output.push_str(&format!("    Recommendation: {}\n", finding.recommendation.green()));
+    output.push_str(&format!(
+        "    Recommendation: {}\n",
+        finding.recommendation.green()
+    ));
 
     if let Some(ref cwe) = finding.cwe_id {
         output.push_str(&format!("    Reference: {}\n", cwe.dimmed()));

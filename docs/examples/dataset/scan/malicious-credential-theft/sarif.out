@@ -1,0 +1,369 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 14
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Accessing SSH private keys during build/install"
+          },
+          "ruleId": "CRED-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 17
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Accessing GPG keyring during build/install"
+          },
+          "ruleId": "CRED-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 20
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Accessing browser profiles may indicate credential theft"
+          },
+          "ruleId": "BROWSER-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 23
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sending data to external servers via curl POST"
+          },
+          "ruleId": "EXFIL-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 23
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sending data to external servers via curl POST"
+          },
+          "ruleId": "EXFIL-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 14
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Creating hidden files in user home directory"
+          },
+          "ruleId": "HIDDEN-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 17
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Creating hidden files in user home directory"
+          },
+          "ruleId": "HIDDEN-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 20
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Creating hidden files in user home directory"
+          },
+          "ruleId": "HIDDEN-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 12
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Function 'build' contains network access command 'curl'"
+          },
+          "ruleId": "FUNC-001"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/credential-theft/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Package has build() function but no source array"
+          },
+          "ruleId": "SRC-005"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Accessing SSH private keys during build/install"
+              },
+              "help": {
+                "text": "Package should never access user SSH keys"
+              },
+              "id": "CRED-001",
+              "name": "SSH key access",
+              "shortDescription": {
+                "text": "SSH key access"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Accessing GPG keyring during build/install"
+              },
+              "help": {
+                "text": "Package should never access user GPG keys"
+              },
+              "id": "CRED-002",
+              "name": "GPG key access",
+              "shortDescription": {
+                "text": "GPG key access"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Accessing browser profiles may indicate credential theft"
+              },
+              "help": {
+                "text": "Package should never access browser profiles"
+              },
+              "id": "BROWSER-001",
+              "name": "Browser profile access",
+              "shortDescription": {
+                "text": "Browser profile access"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Sending data to external servers via curl POST"
+              },
+              "help": {
+                "text": "Build/install should not send data externally"
+              },
+              "id": "EXFIL-001",
+              "name": "Curl POST data exfiltration",
+              "shortDescription": {
+                "text": "Curl POST data exfiltration"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Sending data to external servers via curl POST"
+              },
+              "help": {
+                "text": "Build/install should not send data externally"
+              },
+              "id": "EXFIL-001",
+              "name": "Curl POST data exfiltration",
+              "shortDescription": {
+                "text": "Curl POST data exfiltration"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Creating hidden files in user home directory"
+              },
+              "help": {
+                "text": "Packages should not create hidden files in user home"
+              },
+              "id": "HIDDEN-001",
+              "name": "Hidden file creation in home",
+              "shortDescription": {
+                "text": "Hidden file creation in home"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Creating hidden files in user home directory"
+              },
+              "help": {
+                "text": "Packages should not create hidden files in user home"
+              },
+              "id": "HIDDEN-001",
+              "name": "Hidden file creation in home",
+              "shortDescription": {
+                "text": "Hidden file creation in home"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Creating hidden files in user home directory"
+              },
+              "help": {
+                "text": "Packages should not create hidden files in user home"
+              },
+              "id": "HIDDEN-001",
+              "name": "Hidden file creation in home",
+              "shortDescription": {
+                "text": "Hidden file creation in home"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Function 'build' contains network access command 'curl'"
+              },
+              "help": {
+                "text": "Network access should happen in source= array, not build functions"
+              },
+              "id": "FUNC-001",
+              "name": "Network access in build function",
+              "shortDescription": {
+                "text": "Network access in build function"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Package has build() function but no source array"
+              },
+              "help": {
+                "text": "Verify this is intentional; build() usually needs sources"
+              },
+              "id": "SRC-005",
+              "name": "No sources with build function",
+              "shortDescription": {
+                "text": "No sources with build function"
+              }
+            }
+          ],
+          "version": "1.1.0"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

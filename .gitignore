@@ -1,5 +1,7 @@
-# Build artifacts
+# Build artifacts (Rust / cargo). Non-anchored **/ patterns catch nested build
+# trees under aur/, not just the workspace root.
 /target/
+**/target/
 **/*.rs.bk
 
 # IDE
@@ -13,15 +15,35 @@
 .DS_Store
 Thumbs.db
 
-# Package build artifacts (makepkg)
-*.tar.gz
-*.pkg.tar.zst
+# Package build artifacts (makepkg scratch + output). These must never be
+# committed into a security tool's source tree. Anchor to the directories that
+# actually hold a PKGBUILD (repo root for the dev build, aur/*/ for the AUR
+# packages) -- a non-anchored **/src/ or **/pkg/ would also swallow the crates'
+# own src/ trees (it silently dropped validate.rs + textutil.rs once already).
 /pkg/
 /src/
+aur/*/pkg/
+aur/*/src/
+*.pkg.tar.zst
+*.pkg.tar.xz
+*.tar.gz
+# Nested source clone makepkg creates when building the -git package.
+aur/*/ks-aur-scanner/
 
 # Test artifacts
 *.log
 blog/
-blog/
+
+# Mycelium swarm scratch: isolated workspace clones + HYPHA.md + tool-output.
+# Anchored to the repo root (a bare `.mycelium` would also ignore any nested
+# path component of that name). The tool also drops a nested .mycelium/.gitignore
+# of '*'; this tracked entry is the belt-and-suspenders so it can never be staged.
+/.mycelium/
+
+# The tagged-release packaging dirs are independent AUR git repositories (each
+# has its own .git and history) checked out here for convenience. They are NOT
+# part of this repo's tree -- committing them would create a broken embedded
+# repo -- so they stay ignored. The in-tree packaging that THIS repo owns is
+# aur/aur-scanner-git/ (PKGBUILD + .SRCINFO), which is tracked.
 aur/aur-scanner/
 aur/ks-aur-scanner/

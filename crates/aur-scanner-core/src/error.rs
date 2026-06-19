@@ -33,6 +33,10 @@ pub enum ScanError {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    /// Untrusted input failed validation (e.g. an illegal package name).
+    #[error("Validation error: {0}")]
+    Validation(String),
+
     /// Rule error
     #[error("Rule error: {0}")]
     Rule(String),

@@ -1,0 +1,194 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/var-indirection/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 17
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
+          },
+          "ruleId": "DLE-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/var-indirection/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 23
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
+          },
+          "ruleId": "DLE-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/var-indirection/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 22
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Hex encoding can hide malicious payloads"
+          },
+          "ruleId": "OBF-003"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/var-indirection/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 14
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Function 'build' contains network access command 'curl'"
+          },
+          "ruleId": "FUNC-001"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/var-indirection/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Package has build() function but no source array"
+          },
+          "ruleId": "SRC-005"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
+              },
+              "help": {
+                "text": "Download scripts first, review them, then execute"
+              },
+              "id": "DLE-001",
+              "name": "Curl pipe to shell",
+              "shortDescription": {
+                "text": "Curl pipe to shell"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
+              },
+              "help": {
+                "text": "Download scripts first, review them, then execute"
+              },
+              "id": "DLE-001",
+              "name": "Curl pipe to shell",
+              "shortDescription": {
+                "text": "Curl pipe to shell"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Hex encoding can hide malicious payloads"
+              },
+              "help": {
+                "text": "Decode and review hex-encoded content"
+              },
+              "id": "OBF-003",
+              "name": "Hex-encoded payload",
+              "shortDescription": {
+                "text": "Hex-encoded payload"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Function 'build' contains network access command 'curl'"
+              },
+              "help": {
+                "text": "Network access should happen in source= array, not build functions"
+              },
+              "id": "FUNC-001",
+              "name": "Network access in build function",
+              "shortDescription": {
+                "text": "Network access in build function"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Package has build() function but no source array"
+              },
+              "help": {
+                "text": "Verify this is intentional; build() usually needs sources"
+              },
+              "id": "SRC-005",
+              "name": "No sources with build function",
+              "shortDescription": {
+                "text": "No sources with build function"
+              }
+            }
+          ],
+          "version": "1.1.0"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

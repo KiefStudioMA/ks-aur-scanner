@@ -1,0 +1,369 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/cryptominer/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 16
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Connection to cryptocurrency mining pools"
+          },
+          "ruleId": "CRYPTO-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/cryptominer/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 16
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Connection to cryptocurrency mining pools"
+          },
+          "ruleId": "CRYPTO-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/cryptominer/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 11
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Known cryptocurrency miner executable names"
+          },
+          "ruleId": "CRYPTO-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/cryptominer/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 16
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Known cryptocurrency miner executable names"
+          },
+          "ruleId": "CRYPTO-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/cryptominer/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 20
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Known cryptocurrency miner executable names"
+          },
+          "ruleId": "CRYPTO-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/cryptominer/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 11
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "URLs with raw IP addresses are suspicious"
+          },
+          "ruleId": "URL-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/cryptominer/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Source uses raw IP address: http://192.168.1.1/xmrig-6.0.0.tar.gz"
+          },
+          "ruleId": "SRC-003"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/cryptominer/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Source #1 uses an insecure transport: http://192.168.1.1/xmrig-6.0.0.tar.gz"
+          },
+          "ruleId": "SRC-001"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/cryptominer/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "MD5 is cryptographically broken and should not be used"
+          },
+          "ruleId": "CHK-002"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/cryptominer/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "One or more checksums are not valid hex of the expected length, so they cannot match the source and integrity verification is effectively disabled: md5sums has a bad entry 'abc123…' (len 6)."
+          },
+          "ruleId": "CHK-008"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Connection to cryptocurrency mining pools"
+              },
+              "help": {
+                "text": "Remove cryptomining components"
+              },
+              "id": "CRYPTO-001",
+              "name": "Mining pool connection",
+              "shortDescription": {
+                "text": "Mining pool connection"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Connection to cryptocurrency mining pools"
+              },
+              "help": {
+                "text": "Remove cryptomining components"
+              },
+              "id": "CRYPTO-001",
+              "name": "Mining pool connection",
+              "shortDescription": {
+                "text": "Mining pool connection"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Known cryptocurrency miner executable names"
+              },
+              "help": {
+                "text": "Remove cryptomining components"
+              },
+              "id": "CRYPTO-002",
+              "name": "Cryptominer binary",
+              "shortDescription": {
+                "text": "Cryptominer binary"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Known cryptocurrency miner executable names"
+              },
+              "help": {
+                "text": "Remove cryptomining components"
+              },
+              "id": "CRYPTO-002",
+              "name": "Cryptominer binary",
+              "shortDescription": {
+                "text": "Cryptominer binary"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Known cryptocurrency miner executable names"
+              },
+              "help": {
+                "text": "Remove cryptomining components"
+              },
+              "id": "CRYPTO-002",
+              "name": "Cryptominer binary",
+              "shortDescription": {
+                "text": "Cryptominer binary"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "URLs with raw IP addresses are suspicious"
+              },
+              "help": {
+                "text": "Use domain names from trusted sources"
+              },
+              "id": "URL-001",
+              "name": "Raw IP in URL",
+              "shortDescription": {
+                "text": "Raw IP in URL"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Source uses raw IP address: http://192.168.1.1/xmrig-6.0.0.tar.gz"
+              },
+              "help": {
+                "text": "Use domain names from trusted sources"
+              },
+              "id": "SRC-003",
+              "name": "Raw IP address in source URL",
+              "shortDescription": {
+                "text": "Raw IP address in source URL"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Source #1 uses an insecure transport: http://192.168.1.1/xmrig-6.0.0.tar.gz"
+              },
+              "help": {
+                "text": "Use HTTPS instead of HTTP for source downloads"
+              },
+              "id": "SRC-001",
+              "name": "Insecure source/transport protocol",
+              "shortDescription": {
+                "text": "Insecure source/transport protocol"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "MD5 is cryptographically broken and should not be used"
+              },
+              "help": {
+                "text": "Replace md5sums with sha256sums or sha512sums"
+              },
+              "id": "CHK-002",
+              "name": "MD5 checksums used",
+              "shortDescription": {
+                "text": "MD5 checksums used"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "One or more checksums are not valid hex of the expected length, so they cannot match the source and integrity verification is effectively disabled: md5sums has a bad entry 'abc123…' (len 6)."
+              },
+              "help": {
+                "text": "Regenerate the checksums with updpkgsums; a malformed hash silently disables integrity verification."
+              },
+              "id": "CHK-008",
+              "name": "Malformed or wrong-length checksum",
+              "shortDescription": {
+                "text": "Malformed or wrong-length checksum"
+              }
+            }
+          ],
+          "version": "1.1.0"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

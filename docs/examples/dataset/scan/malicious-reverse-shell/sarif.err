@@ -1,0 +1,10 @@
+
+============================================================
+Package: malicious-reverse-shell v1.0.0-1
+Scan duration: 5ms
+
+Found 4 issue(s):
+  2 CRITICAL
+  1 HIGH
+  1 MEDIUM
+============================================================

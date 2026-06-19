@@ -1,0 +1,20 @@
+
+======================================================================
+CRED-001 SSH key access [CRITICAL]
+======================================================================
+
+Category:
+  Credential Theft  (detector: rules)
+
+Description:
+  Accessing SSH private keys during build/install
+
+Recommendation:
+  Package should never access user SSH keys
+
+CWE: CWE-522
+
+Related Codes:
+  CRED-002, CRED-003, BROWSER-001, BROWSER-002
+
+======================================================================

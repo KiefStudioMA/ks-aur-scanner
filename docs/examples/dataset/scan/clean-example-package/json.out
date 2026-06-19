@@ -1,0 +1,10 @@
+{
+  "package_name": "example-package",
+  "package_version": "1.0.0-1",
+  "findings": [],
+  "scanned_files": [
+    "tests/fixtures/clean/example-package/PKGBUILD"
+  ],
+  "timestamp": "2026-06-15T13:48:48.403143905Z",
+  "scan_duration_ms": 6
+}

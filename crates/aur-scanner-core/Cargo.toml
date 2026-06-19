@@ -34,6 +34,12 @@ dirs = "6.0"
 
 # For temporary directories when fetching PKGBUILDs
 tempfile = "3.14"
+
+# For host-aware URL/IOC matching (parse the real host, not a naive substring).
+# Already present in the lockfile transitively via reqwest; pinned as a direct dep.
+url = "2.5"
+
+# For ELF/binary analysis in the BinaryPayloadAnalyzer.
 goblin = "0.10.7"
 
 [dev-dependencies]

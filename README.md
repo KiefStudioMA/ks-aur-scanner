@@ -23,10 +23,10 @@ A comprehensive security scanner for Arch Linux AUR packages that analyzes PKGBU
 ## TL;DR
 
 ```bash
-# Install
-paru -S aur-scanner-git
+# Install (stable, GPG-signed release — see "From AUR" for all channels)
+paru -S aur-scanner
 # or
-yay -S aur-scanner-git
+yay -S aur-scanner
 
 # Scan a package before installing
 aur-scan check <package-name>
@@ -104,11 +104,12 @@ This scanner implements detection rules based on real-world attacks and security
 
 | Feature | Description |
 |---------|-------------|
-| **Static Analysis** | 70+ detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
+| **Static Analysis** | 110+ detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
 | **Install Script Scanning** | Analyzes `.install` scripts for persistence mechanisms |
 | **Source Verification** | Validates URLs, checksums, and download sources |
 | **AUR Integration** | Fetch and scan packages directly from AUR before installation |
 | **System Audit** | Scan all installed AUR packages in a single command |
+| **Threat Intelligence** _(opt-in)_ | Optional VirusTotal hash & URLhaus URL reputation checks — **off by default**, bring-your-own-key, public hashes/URLs only |
 | **Multiple Output Formats** | Human-readable, JSON, and SARIF for CI/CD integration |
 | **Shell Integration** | Seamless wrapper for yay, paru, and other AUR helpers |
 | **Pacman Hook** | System-wide enforcement during package transactions |
@@ -121,20 +122,22 @@ This scanner implements detection rules based on real-world attacks and security
 
 ### From AUR
 
-Three packages install the same `aur-scan` binary — pick one:
+All four packages install the same `aur-scan` binary and **conflict with each
+other — install exactly one**. Pick the channel that fits you:
 
-| Package | Tracks |
-|---------|--------|
-| `aur-scanner-git` | Latest commit (rolling) |
-| `aur-scanner` | Tagged releases |
-| `ks-aur-scanner` | Tagged releases (same, different name) |
+| Package | Channel | Builds from | Best for |
+|---------|---------|-------------|----------|
+| [`aur-scanner`](https://aur.archlinux.org/packages/aur-scanner) | **Stable** (recommended) | GPG-signed release tag | Most users and production systems |
+| [`ks-aur-scanner`](https://aur.archlinux.org/packages/ks-aur-scanner) | Stable (alias) | GPG-signed release tag | Same as `aur-scanner`, under an alternate name |
+| [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc) | Release candidate | GPG-signed pre-release tag | Testing the next release before it ships |
+| [`aur-scanner-git`](https://aur.archlinux.org/packages/aur-scanner-git) | Rolling | Latest commit on `main` | Bleeding edge and contributors |
 
 ```bash
-paru -S aur-scanner        # or: yay -S aur-scanner
+paru -S aur-scanner        # stable, recommended — or: yay -S aur-scanner
 ```
 
-The tagged packages (`aur-scanner`, `ks-aur-scanner`) build from our
-**GPG-signed release tag** and verify it against our signing key
+The tagged packages (`aur-scanner`, `ks-aur-scanner`, `aur-scanner-rc`) build
+from a **GPG-signed git tag** and verify it against our signing key
 (`validpgpkeys`), so `makepkg` refuses to build a tag that isn't signed by us —
 integrity comes from the signature, not a tarball hash. If your AUR helper does
 not fetch the key automatically, import it once:
@@ -142,6 +145,13 @@ not fetch the key automatically, import it once:
 ```bash
 gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51
 ```
+
+> **Release-candidate channel — [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc):**
+> tracks the next release before it is promoted to stable, so you can test changes
+> early; when there is no pending candidate it follows the current stable. The RC
+> **fails closed** (the wrapper/hook deny on a scan error, timeout, or no-TTY
+> prompt rather than proceeding). Most users — and all production systems — should
+> install the stable `aur-scanner`.
 
 ### From Source
 
@@ -165,6 +175,7 @@ sudo install -Dm755 target/release/aur-scan-hook /usr/bin/aur-scan-hook
 sudo install -Dm644 install/integration.bash /usr/share/aur-scan/integration.bash
 sudo install -Dm644 install/integration.zsh /usr/share/aur-scan/integration.zsh
 sudo install -Dm644 install/integration.fish /usr/share/aur-scan/integration.fish
+sudo install -Dm644 install/integration.nu /usr/share/aur-scan/integration.nu
 
 # Install the community rules example
 sudo install -Dm644 install/rules.d/example.toml /usr/share/aur-scanner/rules.d/example.toml
@@ -302,9 +313,10 @@ Scan a local PKGBUILD file or directory.
 aur-scan scan <PATH> [OPTIONS]
 
 OPTIONS:
-    --format <FORMAT>    Output format: text, json, sarif [default: text]
+    --format <FORMAT>    Output format: text, json, sarif [default: text] (-f)
+    --output <FILE>      Write output to a file instead of stdout (-o)
     --fail-on <LEVEL>    Exit with error if findings at this level or above
-    --no-color           Disable colored output
+    --include-info       Include informational (Info-level) findings
 
 ARGUMENTS:
     <PATH>               Path to PKGBUILD file or directory containing PKGBUILD
@@ -331,8 +343,8 @@ Audit all AUR packages currently installed on the system.
 aur-scan system [OPTIONS]
 
 OPTIONS:
-    --format <FORMAT>    Output format: text, json [default: text]
-    --no-color           Disable colored output
+    --rescan             Re-fetch PKGBUILDs from the AUR instead of using the local cache
+    --cache-dir <DIR>    Custom cache directory for PKGBUILDs
 ```
 
 This command:
@@ -340,11 +352,16 @@ This command:
 2. Locates cached PKGBUILDs in AUR helper cache directories
 3. Scans each package and reports findings
 
-**Supported cache locations:**
-- `~/.cache/paru/clone/`
-- `~/.cache/yay/`
-- `~/.cache/pikaur/aur_repos/`
-- `~/.cache/trizen/`
+**Supported cache locations** (per-helper defaults; XDG `*_HOME` overrides are honored):
+- `~/.cache/yay/` (yay)
+- `~/.cache/paru/clone/` (paru)
+- `~/.local/share/pikaur/aur_repos/` (pikaur)
+- `~/.cache/aura/packages/` (aura)
+- `~/.cache/pakku/` (pakku)
+- `~/.cache/trizen/sources/` (trizen)
+- `~/.cache/aurutils/sync/` (aurutils)
+- `~/.config/rua/pkg/` (rua)
+- `~/.cache/pat-aur/pkgbuild/aur/` (pat-aur)
 
 `system` also cross-references your installed package names against the IOC
 database (see below) and runs the provenance check (flagging any package that
@@ -370,20 +387,17 @@ List all detection codes with their severity and description.
 aur-scan codes [OPTIONS]
 
 OPTIONS:
-    --severity <LEVEL>   Filter by severity level
     --category <CAT>     Filter by category
+    --format <FORMAT>    Output format: text, markdown, json (default: text)
 ```
 
-**Example output:**
+**Example output** (grouped by category):
 
 ```
-CRITICAL SEVERITY
------------------
-DLE-001    Curl pipe to shell
-DLE-002    Wget pipe to shell
-DLE-003    Curl output executed
-SHELL-001  Bash reverse shell
-SHELL-002  Netcat reverse shell
+[Command Injection]
+  DLE-001 [Critical] Curl pipe to shell
+  DLE-002 [Critical] Wget pipe to shell
+  DLE-003 [Critical] Curl output executed
 ...
 ```
 
@@ -456,6 +470,16 @@ source /usr/share/aur-scan/integration.zsh
 source /usr/share/aur-scan/integration.fish
 ```
 
+**For Nushell** - Add to your `config.nu`:
+
+```nu
+source /usr/share/aur-scan/integration.nu
+```
+
+The bash/zsh/fish scripts classify the helper invocation in-shell; the Nushell
+script routes installs through the `aur-scan-wrap` binary (same scan-then-handoff
+gate), so it requires `aur-scan-wrap` on `PATH` (shipped with every package).
+
 This creates wrapper functions for `paru` and `yay` that:
 1. Detect AUR package installations
 2. Pre-scan packages before proceeding
@@ -499,9 +523,11 @@ The wrapper:
 > PKGBUILD's `prepare()`/`build()`/`package()` **before** the pacman
 > transaction. A libalpm `PreTransaction` hook fires during that transaction —
 > i.e. *after* the build has already executed. So this hook **cannot stop a
-> build-time payload** (the most common AUR attack, including Atomic Arch). It
-> only blocks payloads in the package's `.install` scriptlet. **Use the shell
-> integration (Level 2) as your real gate; treat this hook as a backstop.**
+> build-time payload** (the most common AUR attack, including Atomic Arch) — by
+> the time it fires, that code has already run. It still scans the full PKGBUILD,
+> but it can only *prevent* payloads that haven't executed yet, in practice the
+> package's `.install` scriptlet. **Use the shell integration (Level 2) as your
+> real gate; treat this hook as a backstop.**
 
 For a defense-in-depth backstop, install the pacman hook:
 
@@ -511,7 +537,7 @@ sudo cp /usr/share/aur-scan/aur-scan.hook.example /usr/share/libalpm/hooks/aur-s
 
 **Hook behavior:**
 - Triggers before the *install transaction* (after the build)
-- **Aborts transaction on CRITICAL findings** in the `.install` scriptlet
+- **Aborts the transaction on CRITICAL findings** (anywhere in the scanned PKGBUILD or its resolved `.install` scriptlet), and aborts fail-closed if a located PKGBUILD cannot be analyzed
 - Warns on HIGH severity findings
 
 **Hook configuration** (`/usr/share/libalpm/hooks/aur-scan.hook`):
@@ -535,9 +561,10 @@ NeedsTargets
 
 ## Detection Rules Reference
 
-> Generated from the catalog (`aur-scan codes --format markdown`). Every ID is
-> unique and audit-enforced. Extend it with your own TOML rules
-> (see [Custom & Community Rules](#custom--community-rules)).
+> The **117 built-in detection codes**, generated from the catalog
+> (`aur-scan codes --format markdown`) — every ID is unique and audit-enforced.
+> (`EXAMPLE-001` is the shipped community-rule sample, not a built-in.) Extend the
+> catalog with your own TOML rules (see [Custom & Community Rules](#custom--community-rules)).
 
 ## CRITICAL severity
 
@@ -546,14 +573,12 @@ NeedsTargets
 | `ATOMIC-001` | Atomic Arch malicious npm/bun package | Malicious Code | rules | CWE-506 |
 | `ATOMIC-002` | Node/Bun package manager in install hook | Malicious Code | rules | CWE-494 |
 | `ATOMIC-003` | eBPF rootkit / payload artifact | Persistence | rules | CWE-506 |
-| `BIN-HASH` | Source artifact is a known payload | Malicious Code | binary | CWE-506 |
-| `BIN-STRING` | Prebuilt binary embeds known C2 domain | Data Exfiltration | binary | CWE-506 |
-| `BIN-VT` | VirusTotal flags source artifact | Malicious Code | binary | CWE-506 |
 | `BROWSER-001` | Browser profile access | Credential Theft | rules | CWE-522 |
 | `BROWSER-002` | Browser database access | Credential Theft | rules | CWE-522 |
 | `CRED-001` | SSH key access | Credential Theft | rules | CWE-522 |
 | `CRED-002` | GPG key access | Credential Theft | rules | CWE-522 |
 | `CRED-003` | Password file access | Credential Theft | rules | CWE-522 |
+| `CRED-005` | Keyring / wallet access | Credential Theft | rules | CWE-522 |
 | `CRYPTO-001` | Mining pool connection | Cryptomining | rules | CWE-506 |
 | `CRYPTO-002` | Cryptominer binary | Cryptomining | rules | CWE-506 |
 | `CRYPTO-003` | Monero/Bitcoin wallet address | Cryptomining | rules | CWE-506 |
@@ -563,10 +588,13 @@ NeedsTargets
 | `DLE-003` | Curl output executed | Command Injection | rules | CWE-94 |
 | `ENV-001` | LD_PRELOAD manipulation | Malicious Code | rules | CWE-426 |
 | `ENV-003` | Bashrc/profile modification | Persistence | rules | CWE-506 |
+| `EXEC-002` | Shell -c command substitution fetch | Malicious Code | rules | CWE-494 |
 | `EXEC-REMOTE` | Fetches and runs external code | Malicious Code | remote_exec | CWE-494 |
 | `EXFIL-001` | Curl POST data exfiltration | Data Exfiltration | rules | CWE-200 |
 | `EXFIL-002` | Netcat data transfer | Data Exfiltration | rules | CWE-200 |
 | `EXFIL-003` | Discord/Telegram webhook | Data Exfiltration | rules | CWE-506 |
+| `EXFIL-004` | DNS exfiltration | Data Exfiltration | rules | CWE-200 |
+| `EXFIL-008` | Slack/Teams webhook exfiltration | Data Exfiltration | rules | CWE-200 |
 | `INSTALL-001` | Python execution in install script | Malicious Code | rules | CWE-94 |
 | `INSTALL-003` | Network access in install script | Network Security | rules | CWE-494 |
 | `INSTALL-004` | Language package manager invoked in install hook | Malicious Code | rules | CWE-494 |
@@ -579,31 +607,58 @@ NeedsTargets
 | `PRIV-001` | Sudo usage in a build function | Privilege Escalation | privilege | CWE-250 |
 | `PRIV-002` | SUID/SGID bit set in a function | Privilege Escalation | privilege | CWE-732 |
 | `PRIV-003` | Sudoers modification | Privilege Escalation | privilege | CWE-250 |
+| `PRIV-007` | Privileged account manipulation | Privilege Escalation | rules | CWE-269 |
+| `PRIV-008` | Password manipulation | Privilege Escalation | rules | CWE-269 |
 | `SHELL-001` | Bash reverse shell | Malicious Code | rules | CWE-506 |
 | `SHELL-002` | Netcat reverse shell | Malicious Code | rules | CWE-506 |
 | `SHELL-003` | Python reverse shell | Malicious Code | rules | CWE-506 |
 | `SHELL-004` | Socat shell | Malicious Code | rules | CWE-506 |
+| `SHELL-005` | Perl reverse shell | Malicious Code | rules | CWE-94 |
+| `SHELL-006` | PHP reverse shell | Malicious Code | rules | CWE-94 |
+| `SHELL-007` | Ruby/Lua/AWK reverse shell | Malicious Code | rules | CWE-94 |
+| `SHELL-008` | Node.js reverse shell | Malicious Code | rules | CWE-94 |
+| `SHELL-009` | OpenSSL-encrypted reverse shell | Malicious Code | rules | CWE-94 |
+| `SHELL-010` | Named-pipe (mkfifo) reverse shell | Malicious Code | rules | CWE-94 |
+| `SHELL-011` | Busybox/telnet/ncat-ssl shell | Malicious Code | rules | CWE-94 |
+| `TAMPER-001` | Auth database write | Privilege Escalation | rules | CWE-269 |
+| `TAMPER-002` | doas/sudoers nopasswd grant | Privilege Escalation | rules | CWE-269 |
+| `TAMPER-005` | PAM tampering | Privilege Escalation | rules | CWE-287 |
+| `TAMPER-011` | pacman signature downgrade | Malicious Code | rules | CWE-347 |
+| `TI-VT-001` | VirusTotal flags a source artifact | Malicious Code | threat_intel _(opt-in)_ | CWE-506 |
+| `TI-URLHAUS-001` | URLhaus lists a source URL | Malicious Code | threat_intel _(opt-in)_ | CWE-494 |
 
 ## HIGH severity
 
 | Code | Name | Category | Detector | CWE |
 |------|------|----------|----------|-----|
-| `BIN-EBPF` | Prebuilt binary contains eBPF objects | Persistence | binary | CWE-506 |
-| `BIN-PACKED` | Prebuilt binary appears packed | Obfuscation | binary | CWE-506 |
 | `CHK-001` | No checksums for sources | Cryptography | checksum | CWE-354 |
 | `CHK-005` | All non-VCS sources use SKIP | Cryptography | checksum | CWE-354 |
 | `CHK-006` | Checksum count mismatch | Configuration | checksum | - |
+| `CRED-004` | Cloud / CI credential file access | Credential Theft | rules | CWE-522 |
+| `CRED-008` | Environment/secret dump | Credential Theft | rules | CWE-522 |
 | `DEEP-002` | Large embedded encoded blob | Obfuscation | deep | CWE-506 |
+| `DEP-001` | Provides a core package name (dependency confusion) | Suspicious Metadata | metadata | CWE-427 |
+| `DEP-003` | Package index/registry override | Dependencies | rules | CWE-494 |
 | `ENV-002` | PATH manipulation | Malicious Code | rules | CWE-426 |
+| `EXEC-006` | sqlite3 shell-command execution | Malicious Code | rules | CWE-94 |
+| `EXEC-007` | make reads a Makefile from stdin | Command Injection | rules | CWE-94 |
+| `EXFIL-006` | HTTP upload exfiltration | Data Exfiltration | rules | CWE-200 |
+| `EXFIL-007` | wget POST exfiltration | Data Exfiltration | rules | CWE-200 |
+| `EXFIL-009` | Anonymous file-drop / tunnel host | Data Exfiltration | rules | CWE-200 |
 | `FUNC-001` | Network access in a build function | Network Security | pattern | - |
 | `HIDDEN-001` | Hidden file creation in home | Malicious Code | rules | - |
 | `HIDDEN-002` | Tmp directory execution | Malicious Code | rules | - |
 | `HIDDEN-003` | Binary in non-standard location | Malicious Code | rules | - |
 | `INSTALL-002` | Binary execution in install script | Malicious Code | rules | CWE-94 |
+| `META-003` | Replaces/conflicts a core or security package | Suspicious Metadata | metadata | CWE-1357 |
 | `OBF-001` | Base64 decoding | Obfuscation | rules | CWE-506 |
 | `OBF-002` | Eval usage | Command Injection | rules | CWE-95 |
 | `OBF-003` | Hex-encoded payload | Obfuscation | rules | CWE-506 |
 | `OBF-005` | Gzip decode execution | Obfuscation | rules | CWE-94 |
+| `OBF-006` | Quote-splitting / character obfuscation | Obfuscation | rules | CWE-506 |
+| `OBF-007` | printf character assembly | Obfuscation | rules | CWE-506 |
+| `OBF-008` | Alternate-encoding decode | Obfuscation | rules | CWE-506 |
+| `OBF-011` | Interpreter here-string execution | Obfuscation | rules | CWE-94 |
 | `PERSIST-003` | Cron job creation | Persistence | rules | - |
 | `PERSIST-005` | XDG autostart creation | Persistence | rules | - |
 | `PRIV-005` | Kernel module operations | Privilege Escalation | privilege | - |
@@ -612,6 +667,10 @@ NeedsTargets
 | `SRC-002` | Suspicious source domain | Network Security | source | - |
 | `SRC-003` | Raw IP address in source URL | Network Security | source | - |
 | `SRC-004` | URL shortener in source | Network Security | source | - |
+| `SRC-009` | Obfuscated IP in URL | Network Security | rules | CWE-94 |
+| `TAMPER-013` | Security control disabled | Malicious Code | rules | CWE-693 |
+| `TAMPER-017` | CA trust anchor injection | Malicious Code | rules | CWE-295 |
+| `TRUST-001` | pacman keyring poisoning | Malicious Code | rules | CWE-494 |
 | `URL-001` | Raw IP in URL | Network Security | rules | - |
 | `URL-002` | URL shortener | Network Security | rules | - |
 | `URL-003` | Dynamic DNS domain | Network Security | rules | - |
@@ -620,27 +679,29 @@ NeedsTargets
 
 | Code | Name | Category | Detector | CWE |
 |------|------|----------|----------|-----|
-| `BIN-IMPORT` | Prebuilt binary imports high-risk syscalls | Malicious Code | binary | CWE-506 |
 | `CHK-002` | MD5 checksums used | Cryptography | checksum | CWE-328 |
 | `CHK-003` | SHA1 checksums used | Cryptography | checksum | CWE-328 |
 | `CHK-004` | Some sources use SKIP checksum | Cryptography | checksum | CWE-354 |
+| `CHK-008` | Malformed or wrong-length checksum | Cryptography | checksum | CWE-354 |
+| `EXEC-005` | Detached background execution | Malicious Code | rules | CWE-506 |
+| `META-005` | install= points outside the package | Suspicious Metadata | metadata | CWE-426 |
+| `META-006` | backup= of a security-sensitive file | Suspicious Metadata | metadata | CWE-426 |
 | `OBF-004` | String concatenation obfuscation | Obfuscation | rules | - |
 | `PRIV-004` | Capabilities being set | Privilege Escalation | privilege | CWE-250 |
 | `SRC-001` | Insecure source/transport protocol | Network Security | source | CWE-319 |
 | `SRC-005` | No sources with a build function | Configuration | source | - |
+| `TRUST-002` | GPG key import at build time | Malicious Code | rules | CWE-494 |
 
 ## LOW severity
 
 | Code | Name | Category | Detector | CWE |
 |------|------|----------|----------|-----|
 | `META-001` | Provides impersonation | Suspicious Metadata | rules | - |
+| `META-002` | validpgpkeys declared but no signature verified | Suspicious Metadata | metadata | CWE-347 |
+| `META-004` | epoch set (forces upgrade over the repo version) | Suspicious Metadata | metadata | - |
 | `SRC-006` | VCS source from non-standard host | Network Security | source | - |
-
-## INFO severity
-
-| Code | Name | Category | Detector | CWE |
-|------|------|----------|----------|-----|
-| `EXAMPLE-001` | Example: references example.com | Configuration | user | - |
+| `SRC-007` | VCS source not pinned to a commit | Network Security | source | CWE-494 |
+| `SRC-008` | Source host differs from upstream url host | Network Security | source | - |
 
 ## Custom & Community Rules
 
@@ -673,7 +734,7 @@ pattern = "acme_backdoor_[0-9a-f]{8}"
 ```
 
 The loader skips malformed files with a warning (it never breaks the engine),
-and the catalog refuses to start if any ID collides. A shipped example lives at
+and `aur-scan codes` surfaces a loud warning if any ID collides. A shipped example lives at
 `/usr/share/aur-scanner/rules.d/example.toml`. Use an org-specific prefix to
 avoid collisions.
 
@@ -747,7 +808,12 @@ SARIF output is compatible with:
 | `AUR_SCAN_ENABLED` | `1` | Enable/disable scanning in shell integration |
 | `AUR_SCAN_SEVERITY` | `high` | Minimum severity to display |
 | `AUR_SCAN_INTERACTIVE` | `1` | Prompt before proceeding |
-| `AUR_SCAN_COLOR` | `1` | Enable colored output |
+| `AUR_SCAN_SCAN_UPGRADES` | `1` | On a system upgrade (`-Syu`/`-Syyu`/bare `yay`), scan **each** AUR package that has a pending update (resolved via the helper's `-Quaq`). A hijacked *update* is the primary AUR threat, so this is on by default; set `0` to skip it. |
+| `AUR_SCAN_SCAN_GETPKGBUILD` | `0` | Also scan the package(s) on `-G`/`--getpkgbuild` (which only downloads a PKGBUILD to review). Off by default; set `1` to opt in. |
+
+The shell integration scans what's **named** on the command line — `-S pkg`, a bare `helper pkg`, `yay -Y pkg`, and (above) the upgrade set. It cannot see the package chosen *after* an interactive search-and-select menu (`yay`'s default `-Y` mode resolves it at runtime); for that — and for any helper or path the shell functions don't wrap — enable the opt-in **pacman hook**, which fires on the exact package set of every transaction. `paru`, `yay`, `pikaur`, `trizen`, and `pakku` are wrapped as shell functions (they share pacman's `-S`/`-Syu` grammar); `aura` (installs via `-A`) and the subcommand-grammar tools (`aurutils`, `rua`, `pat-aur`) are covered by the pacman hook instead, which fires on every transaction regardless of helper.
+
+**Color output** is on when writing to a terminal and automatically off when piped or redirected. Force it off with the global `--no-color` flag or by setting `NO_COLOR=1`.
 
 ### Configuration File
 
@@ -760,6 +826,17 @@ min_severity = "low"
 # Scan timeout in seconds
 timeout_seconds = 30
 
+# Opt-in threat intelligence — OFF by default (see "Threat Intelligence" below)
+enable_threat_intel = false
+
+[threat_intel]
+# VirusTotal API key (or env VT_API_KEY / VIRUSTOTAL_API_KEY)
+# virustotal_api_key = "..."
+urlhaus_enabled = false
+# URLhaus Auth-Key — now mandatory at abuse.ch (or env URLHAUS_AUTH_KEY)
+# urlhaus_auth_key = "..."
+cache_duration_hours = 24
+
 # Cache settings
 [cache]
 enabled = true
@@ -767,6 +844,35 @@ directory = "/var/cache/aur-scanner"
 max_size_mb = 100
 ttl_hours = 24
 ```
+
+### Threat Intelligence (opt-in)
+
+By default aur-scan is fully offline and static. You can optionally cross-check a
+package against external reputation services — it is **off unless you turn it on**,
+and only data already public in the PKGBUILD is ever sent.
+
+Enable it with `enable_threat_intel = true` and supply at least one provider key:
+
+- **VirusTotal** — `virustotal_api_key` in config, or `VT_API_KEY` /
+  `VIRUSTOTAL_API_KEY` in the environment. Checks each declared `sha256sums`
+  entry and emits `TI-VT-001` when engines flag the hash.
+- **URLhaus** — set `urlhaus_enabled = true` and supply `urlhaus_auth_key` (or
+  `URLHAUS_AUTH_KEY`); abuse.ch now requires a free Auth-Key from
+  <https://auth.abuse.ch/>. Checks each `source=` URL and emits `TI-URLHAUS-001`.
+
+Guarantees:
+
+- **Off by default, bring-your-own-key** — no key, no lookups, no egress.
+- **Least disclosure** — only public source hashes and URLs leave your machine;
+  never file contents or anything about you.
+- **Fail-open** — a provider error, quota limit, or outage never fails or blocks
+  a scan.
+- **Auditable egress** — every external call lives in one file
+  (`crates/aur-scanner-core/src/threat_intel/remote.rs`): HTTPS-only,
+  no-redirect, time-bounded.
+- **Cached & capped** — verdicts are cached (authenticated `DiskCache`) and
+  lookups are bounded per scan to respect VirusTotal's 4-request/minute public
+  API quota.
 
 ---
 
@@ -870,8 +976,9 @@ ks-aur-scanner/
 │   ├── integration.bash
 │   ├── integration.zsh
 │   ├── integration.fish
+│   ├── integration.nu
 │   └── aur-scan.hook
-├── tests/                        # Integration tests
+├── tests/                        # Test fixtures (clean & malicious PKGBUILDs)
 └── PKGBUILD                      # AUR package definition
 ```
 
@@ -896,7 +1003,7 @@ ks-aur-scanner/
 | `tracing` | 0.1 | Logging |
 | `tracing-subscriber` | 0.3 | Log formatting |
 | `clap` | 4.5 | CLI argument parsing |
-| `reqwest` | 0.12 | HTTP client (rustls) |
+| `reqwest` | 0.12 | HTTP client (native-tls) |
 | `chrono` | 0.4 | Date/time handling |
 | `colored` | 2.1 | Terminal colors |
 | `blake3` | 1.5 | Fast hashing |
@@ -905,7 +1012,7 @@ ks-aur-scanner/
 
 ### Runtime Dependencies
 
-None. The release binary is statically linked.
+`gcc-libs` and `openssl` — the binary dynamically links OpenSSL via reqwest's native-tls backend.
 
 ### System Requirements
 
@@ -1077,7 +1184,16 @@ This project was created to address a critical gap in the Arch Linux security ec
 
 Built by the community, not just us. Thank you:
 
-- [**@Disklo** (Rafael Lucio)](https://github.com/Disklo) — fixed a false-negative in `aur-scan check` and added the fish shell integration (1.0.3)
+- [**@Disklo** (Rafael Lucio)](https://github.com/Disklo) — fixed a false-negative in `aur-scan check` and added the fish shell integration ([#4](https://github.com/KiefStudioMA/ks-aur-scanner/pull/4), 1.0.3)
+- [**@SuitablyMysterious**](https://github.com/SuitablyMysterious) — contributed the June 2026 "Atomic Arch" malware package list now in the IOC database ([#3](https://github.com/KiefStudioMA/ks-aur-scanner/pull/3)), and originated the idea of VirusTotal + abuse.ch/URLhaus threat-intelligence checks ([#9](https://github.com/KiefStudioMA/ks-aur-scanner/pull/9)). That feature ships reimplemented from scratch with fully isolated network egress, but the direction was theirs.
+
+Some of the above were brought in by cherry-pick rather than the merge button — the work landed and the credit stands the same.
+
+**Issue reports that shaped releases:**
+
+- [**@LunarEclipse363**](https://github.com/LunarEclipse363) — [#2](https://github.com/KiefStudioMA/ks-aur-scanner/issues/2): detecting third-party package-manager calls in install hooks, which shaped the install-hook detection (`ATOMIC-002`)
+- [**@zebulon2**](https://github.com/zebulon2) — [#10](https://github.com/KiefStudioMA/ks-aur-scanner/issues/10): reported the obfuscated `bun install` payload class the anti-evasion hardening targets
+- [**@nikoraasu**](https://github.com/nikoraasu) — [#12](https://github.com/KiefStudioMA/ks-aur-scanner/issues/12): diagnosed that the shell wrapper only gated `-S`-style operations, shaping the operation classifier and broader AUR-helper coverage
 
 Sent a PR? Add yourself here. See the full list on the [contributors page](https://github.com/KiefStudioMA/ks-aur-scanner/graphs/contributors).
 
@@ -1107,7 +1223,8 @@ The AUR is an inherently trust-based system where users are expected to verify p
 
 ## Links
 
-- **AUR Package:** [aur-scanner-git](https://aur.archlinux.org/packages/aur-scanner-git)
+- **AUR Package:** [aur-scanner](https://aur.archlinux.org/packages/aur-scanner) (stable, recommended) — also [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc) (release candidate) and [`aur-scanner-git`](https://aur.archlinux.org/packages/aur-scanner-git) (rolling)
+- **Docs:** [https://aur-scanner.kief.studio](https://aur-scanner.kief.studio)
 - **Repository:** [https://github.com/KiefStudioMA/ks-aur-scanner](https://github.com/KiefStudioMA/ks-aur-scanner)
 - **Crates.io:** [aur-scanner-core](https://crates.io/crates/aur-scanner-core)
 - **Homepage:** [https://kief.studio](https://kief.studio)

@@ -8,8 +8,9 @@
 #   aur/aur-scanner      - tagged releases (primary)
 #   aur/ks-aur-scanner   - tagged releases (alias)
 #   aur/aur-scanner-git  - rolling, tracks the latest commit
+#   aur/aur-scanner-rc   - opt-in release candidate, builds the signed pre-release tag
 pkgname=aur-scanner
-pkgver=1.0.1
+pkgver=1.0.3
 pkgrel=1
 pkgdesc="Security scanner for Arch Linux AUR packages - detect malicious PKGBUILDs before installation"
 arch=('x86_64' 'aarch64')
@@ -19,11 +20,18 @@ depends=('gcc-libs' 'openssl')
 makedepends=('cargo' 'clang')
 provides=('aur-scan')
 conflicts=('aur-scanner-git' 'ks-aur-scanner')
+options=('!debug' '!strip')
 # No source array: this builds the checked-out tree in place.
 
 pkgver() {
-    # Derive the version from the workspace manifest so it never drifts.
-    awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' "$startdir/Cargo.toml"
+    # Derive the version from the workspace manifest so it never drifts. Anchor
+    # strictly to the [workspace.package] section so a dependency's `version =`
+    # can never be picked up by accident.
+    awk -F'"' '
+        /^\[workspace\.package\]/ { in_section = 1; next }
+        /^\[/                     { in_section = 0 }
+        in_section && /^version[[:space:]]*=/ { print $2; exit }
+    ' "$startdir/Cargo.toml"
 }
 
 build() {
@@ -52,6 +60,7 @@ package() {
     install -Dm644 "install/integration.bash" "$pkgdir/usr/share/aur-scan/integration.bash"
     install -Dm644 "install/integration.zsh" "$pkgdir/usr/share/aur-scan/integration.zsh"
     install -Dm644 "install/integration.fish" "$pkgdir/usr/share/aur-scan/integration.fish"
+    install -Dm644 "install/integration.nu" "$pkgdir/usr/share/aur-scan/integration.nu"
 
     # Community rules example
     install -Dm644 "install/rules.d/example.toml" "$pkgdir/usr/share/aur-scanner/rules.d/example.toml"

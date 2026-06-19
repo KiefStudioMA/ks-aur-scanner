@@ -1,0 +1,19 @@
+# Maintainer: hijacked <attacker@evil.example>
+# June 2026 wave: like Atomic Arch, but the install-hook payload is hidden with
+# ANSI-C quoting ($'\xNN'/$'\NNN') and adjacent-quote word splitting so a literal
+# `bun add` pattern never appears in the source. Reported on the AUR ML.
+pkgname=htbrowser-bin
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="ht browser (binary)"
+arch=('x86_64')
+url="https://example.com/htbrowser"
+license=('custom')
+depends=('glibc')
+install="${pkgname}-deps.install"
+source=("https://example.com/htbrowser-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    install -Dm755 htbrowser "$pkgdir/usr/bin/htbrowser"
+}

@@ -88,12 +88,19 @@ pub struct DependencyGraph {
 impl DependencyGraph {
     /// All AUR nodes (the set that must be scanned), in stable order.
     pub fn aur_packages(&self) -> Vec<&PackageNode> {
-        self.nodes.values().filter(|n| n.source == PackageSource::Aur).collect()
+        self.nodes
+            .values()
+            .filter(|n| n.source == PackageSource::Aur)
+            .collect()
     }
 
     /// Count of AUR vs repo nodes.
     pub fn counts(&self) -> (usize, usize) {
-        let aur = self.nodes.values().filter(|n| n.source == PackageSource::Aur).count();
+        let aur = self
+            .nodes
+            .values()
+            .filter(|n| n.source == PackageSource::Aur)
+            .count();
         (aur, self.nodes.len() - aur)
     }
 }
@@ -205,6 +212,17 @@ pub async fn resolve(
                 if opts.include_optional {
                     children.extend(info.opt_depends.iter().map(|s| dep_name(s).to_string()));
                 }
+                // Drop dependency names that are not legal package identifiers.
+                // These come from an attacker-controlled PKGBUILD and would
+                // otherwise flow into network URLs and filesystem paths; a name
+                // that is not installable can never be a real build dependency.
+                children.retain(|c| {
+                    let ok = crate::validate::is_valid_package_name(c);
+                    if !ok {
+                        tracing::warn!("ignoring illegal dependency name {c:?} of {name}");
+                    }
+                    ok
+                });
                 children.sort();
                 children.dedup();
 
@@ -266,7 +284,11 @@ pub async fn resolve(
 
     truncated.sort();
     truncated.dedup();
-    Ok(DependencyGraph { roots, nodes, truncated })
+    Ok(DependencyGraph {
+        roots,
+        nodes,
+        truncated,
+    })
 }
 
 /// Order the AUR packages so every package's AUR dependencies come before it
@@ -285,17 +307,28 @@ pub fn topo_order(graph: &DependencyGraph) -> Vec<String> {
     let mut indeg: BTreeMap<&str, usize> = aur.iter().map(|n| (*n, 0usize)).collect();
     // dependents[d] = AUR packages that depend on d.
     let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for node in graph.nodes.values().filter(|n| aur.contains(n.name.as_str())) {
+    for node in graph
+        .nodes
+        .values()
+        .filter(|n| aur.contains(n.name.as_str()))
+    {
         for dep in &node.depends {
             if aur.contains(dep.as_str()) {
-                dependents.entry(dep.as_str()).or_default().push(node.name.as_str());
+                dependents
+                    .entry(dep.as_str())
+                    .or_default()
+                    .push(node.name.as_str());
                 *indeg.get_mut(node.name.as_str()).unwrap() += 1;
             }
         }
     }
 
     // Kahn's algorithm, processing ready nodes in name order for determinism.
-    let mut ready: Vec<&str> = indeg.iter().filter(|(_, d)| **d == 0).map(|(n, _)| *n).collect();
+    let mut ready: Vec<&str> = indeg
+        .iter()
+        .filter(|(_, d)| **d == 0)
+        .map(|(n, _)| *n)
+        .collect();
     ready.sort();
     let mut order: Vec<String> = Vec::new();
     let mut i = 0;
@@ -319,8 +352,11 @@ pub fn topo_order(graph: &DependencyGraph) -> Vec<String> {
 
     // Any nodes left were in a cycle; append in name order so we still try.
     if order.len() < aur.len() {
-        let mut rest: Vec<&str> =
-            aur.iter().copied().filter(|n| !order.iter().any(|o| o == n)).collect();
+        let mut rest: Vec<&str> = aur
+            .iter()
+            .copied()
+            .filter(|n| !order.iter().any(|o| o == n))
+            .collect();
         rest.sort();
         order.extend(rest.into_iter().map(String::from));
     }
@@ -350,7 +386,10 @@ mod tests {
     #[async_trait::async_trait]
     impl PackageInfoSource for FakeSource {
         async fn info_batch(&self, names: &[&str]) -> Result<Vec<AurPackageInfo>> {
-            Ok(names.iter().filter_map(|n| self.db.get(*n).cloned()).collect())
+            Ok(names
+                .iter()
+                .filter_map(|n| self.db.get(*n).cloned())
+                .collect())
         }
     }
 

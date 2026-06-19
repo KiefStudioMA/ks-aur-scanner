@@ -1,0 +1,13 @@
+Explain a detection code in detail
+
+Usage: aur-scan explain [OPTIONS] <CODE>
+
+Arguments:
+  <CODE>  Detection code to explain (e.g., DLE-001, PERSIST-001)
+
+Options:
+  -c, --config <CONFIG>      Configuration file path
+  -s, --severity <SEVERITY>  Minimum severity to report [possible values: critical, high, medium, low, info]
+  -v, --verbose              Enable verbose output
+  -q, --quiet                Quiet mode (only show findings)
+  -h, --help                 Print help

@@ -1,0 +1,11 @@
+List available detection rules
+
+Usage: aur-scan rules [OPTIONS]
+
+Options:
+  -s, --severity <SEVERITY>  Show only rules of this severity [possible values: critical, high, medium, low, info]
+  -d, --details              Show rule details
+  -c, --config <CONFIG>      Configuration file path
+  -v, --verbose              Enable verbose output
+  -q, --quiet                Quiet mode (only show findings)
+  -h, --help                 Print help

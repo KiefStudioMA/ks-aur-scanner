@@ -13,6 +13,29 @@ lazy_static! {
     static ref IP_REGEX: Regex = Regex::new(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}").unwrap();
 }
 
+/// Map a host to its forge "identity" (so `github.com` and
+/// `raw.githubusercontent.com` are the same forge, but `gitlab.com` is a
+/// different one). Returns `None` for hosts that are not a recognized code
+/// forge, so a normal project download host never triggers SRC-008.
+fn forge_key(host: &str) -> Option<&'static str> {
+    const FORGES: &[(&str, &str)] = &[
+        ("github.com", "github"),
+        ("githubusercontent.com", "github"),
+        ("github.io", "github"),
+        ("gitlab.com", "gitlab"),
+        ("gitlab.io", "gitlab"),
+        ("codeberg.org", "codeberg"),
+        ("bitbucket.org", "bitbucket"),
+        ("sr.ht", "sourcehut"),
+        ("gitea.com", "gitea"),
+        ("sourceforge.net", "sourceforge"),
+    ];
+    FORGES
+        .iter()
+        .find(|(suffix, _)| host == *suffix || host.ends_with(&format!(".{suffix}")))
+        .map(|(_, key)| *key)
+}
+
 /// Analyzer for source URLs
 pub struct SourceAnalyzer;
 
@@ -169,17 +192,49 @@ impl SecurityAnalyzer for SourceAnalyzer {
                 }
             }
 
+            // A VCS source on a movable ref (branch/tag, or no fragment) is not
+            // integrity-pinned: the fetched bytes can change after review, and a
+            // SKIP checksum on it (which makepkg accepts for VCS) provides no
+            // guarantee. Require a pinned `#commit=`/`#revision=`.
+            if source.is_vcs() && !source.is_vcs_pinned_commit() {
+                findings.push(Finding {
+                    // Low, not Medium: tracking a branch HEAD is the normal,
+                    // accepted pattern for rolling -git packages, so this is a
+                    // reproducibility/hardening nudge ("pin with #commit="), not
+                    // a security concern on its own. Rating it higher would fire
+                    // on nearly every -git package and cause alert fatigue.
+                    id: "SRC-007".to_string(),
+                    severity: Severity::Low,
+                    category: Category::NetworkSecurity,
+                    title: "VCS source not pinned to a commit".to_string(),
+                    description: format!(
+                        "Source #{} is a VCS checkout on a movable ref (branch/tag or none): {}. \
+                         Its content is not integrity-pinned and can change between scan and build.",
+                        idx + 1,
+                        source.url
+                    ),
+                    location: Location {
+                        file: context.file_path.clone(),
+                        line: None,
+                        column: None,
+                        snippet: Some(format!("source=(\"{}\")", source.url)),
+                    },
+                    recommendation:
+                        "Pin the VCS source to an immutable revision with #commit=<sha>."
+                            .to_string(),
+                    cwe_id: Some("CWE-494".to_string()),
+                    metadata: serde_json::json!({
+                        "url": source.url,
+                        "fragment": source.fragment,
+                    }),
+                });
+            }
+
             // Check for git/VCS sources hosted on non-standard providers.
             // (Code-based allow-list: the regex rule engine cannot express a
             // negative host match, so this lives here.)
             let lurl = source.url.to_lowercase();
-            let is_vcs = matches!(
-                source.protocol,
-                Protocol::Git | Protocol::Svn | Protocol::Hg | Protocol::Bzr
-            ) || lurl.starts_with("git+")
-                || lurl.contains("git+http")
-                || lurl.ends_with(".git");
-            if is_vcs && !lurl.is_empty() {
+            if source.is_vcs() && !lurl.is_empty() {
                 let trusted_vcs_hosts = [
                     "github.com",
                     "gitlab.com",
@@ -194,7 +249,20 @@ impl SecurityAnalyzer for SourceAnalyzer {
                     "salsa.debian.org",
                     "git.savannah.gnu.org",
                 ];
-                if !trusted_vcs_hosts.iter().any(|h| lurl.contains(h)) {
+                // Match on the PARSED host at label boundaries, not a raw
+                // substring: `git+https://github.com.evil.tld/x` merely *contains*
+                // `github.com` but its host is `github.com.evil.tld` (untrusted),
+                // and `https://github.com@evil.tld/x` resolves to `evil.tld`. An
+                // unparseable host fails closed (treated as untrusted -> flagged).
+                let trusted = crate::neturl::extract_host(&source.url)
+                    .as_deref()
+                    .map(|host| {
+                        trusted_vcs_hosts
+                            .iter()
+                            .any(|t| crate::neturl::host_matches(host, t))
+                    })
+                    .unwrap_or(false);
+                if !trusted {
                     findings.push(Finding {
                         id: "SRC-006".to_string(),
                         severity: Severity::Low,
@@ -220,6 +288,59 @@ impl SecurityAnalyzer for SourceAnalyzer {
                             "protocol": format!("{:?}", source.protocol),
                         }),
                     });
+                }
+            }
+        }
+
+        // SRC-008 — the declared upstream url= and a (non-VCS) source= are on two
+        // DIFFERENT known forges (a personal-fork-vs-upstream signal). Host-aware
+        // via neturl (registrable/forge identity, not substring). Conservative:
+        // only when BOTH hosts resolve to a recognized forge and they disagree, so
+        // a normal `url=project.org` + `source=github.com/releases` does not fire.
+        if let Some(url) = &context.pkgbuild.url {
+            if let Some(url_forge) = crate::neturl::extract_host(url)
+                .as_deref()
+                .and_then(forge_key)
+            {
+                for source in &context.pkgbuild.source {
+                    if source.is_vcs() {
+                        continue;
+                    }
+                    let src_forge = crate::neturl::extract_host(&source.url)
+                        .as_deref()
+                        .and_then(forge_key);
+                    if let Some(sf) = src_forge {
+                        if sf != url_forge {
+                            findings.push(Finding {
+                                id: "SRC-008".to_string(),
+                                severity: Severity::Low,
+                                category: Category::NetworkSecurity,
+                                title: "Source host differs from upstream url host".to_string(),
+                                description: format!(
+                                    "url= is on the {url_forge} forge but a source is on {sf}. \
+                                     A source hosted on a different forge than the stated \
+                                     upstream can be a personal fork swapped in for the real \
+                                     project."
+                                ),
+                                location: Location {
+                                    file: context.file_path.clone(),
+                                    line: None,
+                                    column: None,
+                                    snippet: Some(format!("url={url}  source={}", source.url)),
+                                },
+                                recommendation:
+                                    "Verify the source forge is the project's official one."
+                                        .to_string(),
+                                cwe_id: None,
+                                metadata: serde_json::json!({
+                                    "url_forge": url_forge,
+                                    "source_forge": sf,
+                                    "source": source.url,
+                                }),
+                            });
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -260,7 +381,7 @@ impl SecurityAnalyzer for SourceAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{StaticParser, PkgbuildParser};
+    use crate::parser::{PkgbuildParser, StaticParser};
     use crate::types::ScanConfig;
     use std::path::PathBuf;
 
@@ -294,6 +415,30 @@ source=("http://example.com/file.tar.gz")
     }
 
     #[tokio::test]
+    async fn test_movable_git_ref_flagged_but_pinned_ok() {
+        let analyzer = SourceAnalyzer::new();
+        // Movable branch ref -> SRC-007.
+        let movable = create_test_context(
+            "pkgname=t\npkgver=1\npkgrel=1\nsource=(\"git+https://github.com/u/r.git#branch=main\")\n",
+        );
+        let f = analyzer.analyze(&movable).await.unwrap();
+        assert!(
+            f.iter().any(|x| x.id == "SRC-007"),
+            "movable ref should trip SRC-007"
+        );
+
+        // Pinned commit -> no SRC-007.
+        let pinned = create_test_context(
+            "pkgname=t\npkgver=1\npkgrel=1\nsource=(\"git+https://github.com/u/r.git#commit=deadbeefcafebabe\")\n",
+        );
+        let f = analyzer.analyze(&pinned).await.unwrap();
+        assert!(
+            !f.iter().any(|x| x.id == "SRC-007"),
+            "pinned commit must not trip SRC-007"
+        );
+    }
+
+    #[tokio::test]
     async fn test_detect_suspicious_domain() {
         let analyzer = SourceAnalyzer::new();
 
@@ -308,5 +453,36 @@ source=("https://pastebin.com/raw/abc123")
 
         let findings = analyzer.analyze(&context).await.unwrap();
         assert!(findings.iter().any(|f| f.id == "SRC-002"));
+    }
+
+    #[tokio::test]
+    async fn test_src006_trusts_host_not_substring() {
+        // Task 4120: SRC-006 must match the trusted host on label boundaries,
+        // not as a raw substring. A trusted host (or its subdomain) is OK; a
+        // host that merely CONTAINS a trusted host as a substring is NOT.
+        async fn fires(src: &str) -> bool {
+            let analyzer = SourceAnalyzer::new();
+            let ctx = create_test_context(&format!(
+                "pkgname=t\npkgver=1\npkgrel=1\nsource=(\"{src}\")\n"
+            ));
+            analyzer
+                .analyze(&ctx)
+                .await
+                .unwrap()
+                .iter()
+                .any(|f| f.id == "SRC-006")
+        }
+
+        // TRUSTED: exact host and a subdomain of a trusted host -> no SRC-006.
+        assert!(!fires("git+https://github.com/u/r.git#commit=deadbeefcafebabe").await);
+        assert!(!fires("git+https://git.sr.ht/~u/r").await);
+
+        // UNTRUSTED via the substring-bypass class -> SRC-006 MUST fire:
+        // left-extended host, userinfo confusion, the backslash parser-differential
+        // (F1), and a genuinely untrusted host.
+        assert!(fires("git+https://github.com.evil.tld/u/r.git").await);
+        assert!(fires("git+https://github.com@evil.tld/u/r.git").await);
+        assert!(fires(r"git+https://github.com\@evil.tld/u/r.git").await);
+        assert!(fires("git+https://evil.example/u/r.git").await);
     }
 }

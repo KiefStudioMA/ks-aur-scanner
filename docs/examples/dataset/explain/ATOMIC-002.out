@@ -1,0 +1,50 @@
+
+======================================================================
+ATOMIC-002 Node/Bun package manager in install hook [CRITICAL]
+======================================================================
+
+Category:
+  Malicious Code  (detector: rules)
+
+Description:
+  Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or
+  run packages from an install hook. The June 2026 'Atomic Arch'
+  campaign added post-install hooks running `npm install
+  atomic-lockfile` / `bun install js-digest`. Legitimate packages
+  never fetch or execute npm/bun packages during the install phase.
+  `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and
+  the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run
+  lifecycle/remote code just like `install`.
+
+Recommendation:
+  Install scripts must never fetch or install npm/bun packages.
+  Inspect the PKGBUILD diff and report the package to the AUR
+  maintainers.
+
+CWE: CWE-494
+
+Real-World Context:
+  The June 2026 'Atomic Arch' campaign adopted hundreds of orphaned
+  AUR packages (alvr, premake-git, and 1,500+ others) and modified
+  their PKGBUILD/install hooks to run `npm install atomic-lockfile`
+  (wave 1) or `bun install js-digest` (wave 2). The payload is a
+  credential stealer with an optional root-only eBPF rootkit
+  (scales.bpf.c). The hijacked packages themselves looked clean, so
+  signature scanners missed them.
+
+Technical Details:
+  The hijacked PKGBUILDs added an install hook
+  (post_install/post_upgrade) that shells out to a JS package
+  manager: `npm install atomic-lockfile` or `bun install js-digest`.
+  The malicious npm package runs a `preinstall` lifecycle script
+  that drops a bundled ELF, which loads scales.bpf.c via eBPF for
+  rootkit-like hiding.
+
+Detection Patterns:
+  - \b(npm|pnpm|yarn)\s+(install|add|i)\b
+  - \bbunx?\s+(install|add|i|x)\b
+
+Related Codes:
+  ATOMIC-001, ATOMIC-003, INSTALL-003
+
+======================================================================

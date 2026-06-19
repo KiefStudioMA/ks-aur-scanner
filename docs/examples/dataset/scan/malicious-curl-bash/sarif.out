@@ -1,0 +1,194 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/curl-bash/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 15
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
+          },
+          "ruleId": "DLE-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/curl-bash/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 15
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "This package downloads and executes code from https://evil.com/payload.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+          },
+          "ruleId": "EXEC-REMOTE"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/curl-bash/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 18
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Function 'package' uses sudo, which should never be needed in PKGBUILDs"
+          },
+          "ruleId": "PRIV-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/curl-bash/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 13
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Function 'build' contains network access command 'curl'"
+          },
+          "ruleId": "FUNC-001"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/curl-bash/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Package has build() function but no source array"
+          },
+          "ruleId": "SRC-005"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
+              },
+              "help": {
+                "text": "Download scripts first, review them, then execute"
+              },
+              "id": "DLE-001",
+              "name": "Curl pipe to shell",
+              "shortDescription": {
+                "text": "Curl pipe to shell"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "This package downloads and executes code from https://evil.com/payload.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
+              },
+              "help": {
+                "text": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code."
+              },
+              "id": "EXEC-REMOTE",
+              "name": "Fetches and runs code from https://evil.com/payload.sh",
+              "shortDescription": {
+                "text": "Fetches and runs code from https://evil.com/payload.sh"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Function 'package' uses sudo, which should never be needed in PKGBUILDs"
+              },
+              "help": {
+                "text": "Remove sudo; makepkg handles permissions correctly"
+              },
+              "id": "PRIV-001",
+              "name": "Sudo usage in package()",
+              "shortDescription": {
+                "text": "Sudo usage in package()"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Function 'build' contains network access command 'curl'"
+              },
+              "help": {
+                "text": "Network access should happen in source= array, not build functions"
+              },
+              "id": "FUNC-001",
+              "name": "Network access in build function",
+              "shortDescription": {
+                "text": "Network access in build function"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Package has build() function but no source array"
+              },
+              "help": {
+                "text": "Verify this is intentional; build() usually needs sources"
+              },
+              "id": "SRC-005",
+              "name": "No sources with build function",
+              "shortDescription": {
+                "text": "No sources with build function"
+              }
+            }
+          ],
+          "version": "1.1.0"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

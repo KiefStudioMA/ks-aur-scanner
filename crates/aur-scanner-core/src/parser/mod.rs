@@ -68,6 +68,10 @@ pub struct ParsedPkgbuild {
     pub backup: Vec<String>,
     /// Package options
     pub options: Vec<String>,
+    /// PGP key fingerprints the package declares as valid signing keys
+    /// (`validpgpkeys=`). Modeled explicitly so the metadata analyzer can flag a
+    /// declared-but-unused key (signature theatre).
+    pub validpgpkeys: Vec<String>,
     /// Custom variables found in the PKGBUILD
     pub variables: HashMap<String, String>,
     /// Functions defined in the PKGBUILD
@@ -112,6 +116,46 @@ impl SourceEntry {
             filename,
             protocol,
             fragment,
+        }
+    }
+
+    /// Whether this source is a VCS checkout (git/svn/hg/bzr), by protocol or by
+    /// URL shape. This is the single shared definition used by both the checksum
+    /// and source analyzers, which previously diverged and disagreed about what
+    /// counted as VCS.
+    pub fn is_vcs(&self) -> bool {
+        if matches!(
+            self.protocol,
+            Protocol::Git | Protocol::Svn | Protocol::Hg | Protocol::Bzr
+        ) {
+            return true;
+        }
+        let l = self.url.to_lowercase();
+        l.starts_with("git+")
+            || l.starts_with("svn+")
+            || l.starts_with("hg+")
+            || l.starts_with("bzr+")
+            || l.contains("git+http")
+            || l.ends_with(".git")
+    }
+
+    /// Whether this VCS source is pinned to an immutable revision
+    /// (`#commit=<sha>` or `#revision=<n>`). A `#branch=`/`#tag=` fragment, or no
+    /// fragment at all, is a *movable* ref: the fetched bytes can change after
+    /// review, so a `SKIP` checksum on it gives no real integrity guarantee.
+    pub fn is_vcs_pinned_commit(&self) -> bool {
+        if !self.is_vcs() {
+            return false;
+        }
+        match &self.fragment {
+            Some(frag) => {
+                let f = frag.to_lowercase();
+                // Fragments look like `commit=abcd`, possibly with a trailing
+                // `?signed`; split on the few separators that can appear.
+                f.split(['&', '?', ' '])
+                    .any(|kv| kv.starts_with("commit=") || kv.starts_with("revision="))
+            }
+            None => false,
         }
     }
 }
@@ -283,17 +327,23 @@ pub fn parse_install_hooks(content: &str) -> Vec<InstallHook> {
         "post_remove",
     ];
 
+    // `offset` is the real byte offset of the current line's start in `content`.
+    // It is NEVER reconstructed from `lines()` lengths: `str::lines()` strips the
+    // line terminator (`\n` *and* a preceding `\r`), so summing `len() + 1` under-
+    // counts by one byte per CRLF line. With multibyte content that drift lands
+    // mid-codepoint and `&content[offset..]` panics (scan DoS on a crafted
+    // `.install`), and the body starts at the wrong place on every CRLF file
+    // (defect #4). Instead we advance past the actual terminator present in the
+    // bytes, so `offset` is always a valid char boundary.
+    let mut offset = 0usize;
     for (line_num, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
         for hook_name in &hook_names {
-            if line.trim().starts_with(&format!("{}()", hook_name))
-                || line.trim().starts_with(&format!("{} ()", hook_name))
+            if trimmed.starts_with(&format!("{}()", hook_name))
+                || trimmed.starts_with(&format!("{} ()", hook_name))
             {
-                // Find the function body
-                let remaining = &content[content
-                    .lines()
-                    .take(line_num)
-                    .map(|l| l.len() + 1)
-                    .sum::<usize>()..];
+                // Find the function body from this line's real byte offset.
+                let remaining = &content[offset..];
                 if let Some(body) = extract_function_body(remaining) {
                     hooks.push(InstallHook {
                         name: hook_name.to_string(),
@@ -303,28 +353,40 @@ pub fn parse_install_hooks(content: &str) -> Vec<InstallHook> {
                 }
             }
         }
+
+        // Advance past this line and whatever terminator actually follows it
+        // (`\r\n`, `\n`, or nothing at EOF).
+        offset += line.len();
+        let rest = &content[offset..];
+        if rest.starts_with("\r\n") {
+            offset += 2;
+        } else if rest.starts_with('\n') {
+            offset += 1;
+        }
     }
 
     hooks
 }
 
-/// Extract function body from content starting at function definition
+/// Extract function body from content starting at a function definition.
+///
+/// Uses a quote-aware brace scanner so a `}` inside a string in the hook body
+/// (`echo "done }"`) cannot terminate the hook early and hide a payload (e.g. a
+/// `sudo` line) past the fake closing brace from the privilege analyzer.
 fn extract_function_body(content: &str) -> Option<String> {
-    let mut brace_count = 0;
+    let mut scanner = crate::textutil::BraceScanner::default();
     let mut in_function = false;
     let mut body = String::new();
 
     for ch in content.chars() {
-        if ch == '{' {
-            brace_count += 1;
+        scanner.feed_char(ch);
+        if scanner.depth > 0 {
             in_function = true;
-        } else if ch == '}' {
-            brace_count -= 1;
         }
 
         if in_function {
             body.push(ch);
-            if brace_count == 0 {
+            if scanner.depth == 0 {
                 return Some(body);
             }
         }
@@ -357,6 +419,38 @@ mod tests {
             Protocol::Git
         );
         assert_eq!(Protocol::from_url("local-file.tar.gz"), Protocol::File);
+    }
+
+    #[test]
+    fn crlf_multibyte_install_does_not_panic() {
+        // Defect #4: with CRLF line endings the old offset math (`len()+1` per
+        // line) under-counts by one byte per preceding line. With multibyte
+        // content above the hook, the resulting offset lands mid-UTF-8-codepoint
+        // and `&content[offset..]` panics -- a scan DoS on a crafted `.install`.
+        // Several CRLF-terminated multibyte lines precede the hook so the drift
+        // reaches into a 3-byte char rather than a terminator byte.
+        let content = "pkgname=x\r\ny=1\r\n# \u{8a9e}\r\npost_install() {\r\n  echo hi\r\n}\r\n";
+        let hooks = parse_install_hooks(content);
+        assert_eq!(
+            hooks.len(),
+            1,
+            "post_install hook must be detected on a CRLF file"
+        );
+        assert_eq!(hooks[0].name, "post_install");
+        assert!(
+            hooks[0].content.contains("echo hi"),
+            "hook body must start at the right offset on a CRLF file, got: {:?}",
+            hooks[0].content
+        );
+    }
+
+    #[test]
+    fn lf_install_hook_body_is_correct() {
+        // Guard the LF path still works (regression net for the offset rewrite).
+        let content = "pkgname=x\npost_install() {\n  echo done\n}\n";
+        let hooks = parse_install_hooks(content);
+        assert_eq!(hooks.len(), 1);
+        assert!(hooks[0].content.contains("echo done"));
     }
 
     #[test]

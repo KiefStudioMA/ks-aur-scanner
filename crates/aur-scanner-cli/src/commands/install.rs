@@ -11,12 +11,13 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 use aur_scanner_core::aur::AurClient;
 use aur_scanner_core::depgraph::{self, ResolveOptions};
 use aur_scanner_core::sbom::{self, ComponentScan};
+use aur_scanner_core::validate::validate_package_name;
 use aur_scanner_core::{Scanner, Severity};
 
 use super::banner;
@@ -38,6 +39,120 @@ pub struct InstallArgs {
     pub workspace: Option<PathBuf>,
     /// Optional CycloneDX SBOM output path.
     pub sbom_path: Option<PathBuf>,
+    /// Keep the per-package build directories after a successful install.
+    /// Default is to clean them up (the install tidies after itself).
+    pub keep_build: bool,
+}
+
+/// Decision for the pre-build confirmation, computed before any answer is read.
+/// Kept separate from the IO so the fail-closed contract is unit-testable.
+#[derive(Debug, PartialEq, Eq)]
+enum ConsentGate {
+    /// `--noconfirm` given: the operator pre-consented; build without prompting.
+    Proceed,
+    /// Interactive terminal: prompt the user for an explicit yes.
+    Prompt,
+    /// Non-interactive stdin and no `--noconfirm`: fail closed and abort.
+    AbortNonInteractive,
+}
+
+/// Map `(--noconfirm, stdin-is-a-terminal)` to a consent decision.
+///
+/// SECURITY (defect #11): without this guard the prompt was read unconditionally,
+/// so a piped `y` on a non-terminal stdin (CI, cron, `yes |`) was accepted as
+/// consent to build attacker-authored AUR code. Only an explicit `--noconfirm`
+/// or a real interactive `yes` may proceed.
+fn consent_gate(noconfirm: bool, stdin_is_terminal: bool) -> ConsentGate {
+    if noconfirm {
+        ConsentGate::Proceed
+    } else if stdin_is_terminal {
+        ConsentGate::Prompt
+    } else {
+        ConsentGate::AbortNonInteractive
+    }
+}
+
+/// What the scan gate decided about building. Pure so the fail-closed invariant
+/// (audit ME-8) is unit-testable.
+#[derive(Debug, PartialEq, Eq)]
+enum GateOutcome {
+    /// One or more packages could not be fetched/scanned at all. This is a HARD
+    /// stop: `--force` is for findings the user has actually seen, and must NEVER
+    /// wave through a package that was never analyzed.
+    BlockUnscannable,
+    /// Findings at/above the threshold and no `--force`: blocked.
+    BlockFindings,
+    /// Findings at/above the threshold, but `--force` was given: proceed, having
+    /// shown the user the findings they are overriding.
+    ForceOverride,
+    /// No blocking findings: proceed.
+    Pass,
+}
+
+/// Decide the gate outcome (audit ME-8). The ordering is the invariant: an
+/// unscannable package blocks BEFORE the `--force`-overridable findings gate is
+/// even consulted, so `--force` can never silently build a package that was
+/// never reviewed.
+fn gate_outcome(has_unscannable: bool, gate_tripped: bool, force: bool) -> GateOutcome {
+    if has_unscannable {
+        GateOutcome::BlockUnscannable
+    } else if gate_tripped {
+        if force {
+            GateOutcome::ForceOverride
+        } else {
+            GateOutcome::BlockFindings
+        }
+    } else {
+        GateOutcome::Pass
+    }
+}
+
+/// Build a sanitized environment for the `makepkg` invocation (audit ME-4).
+///
+/// A clean scan can be undone at *build* time by a poisoned environment: a
+/// hostile `PATH` pointing `gpg`/`git`/`sed`/`sudo` at attacker binaries, a
+/// `GNUPGHOME` of attacker keys that makes signature checks pass, a `BUILDDIR`/
+/// `PKGDEST` redirect, or `GIT_SSL_NO_VERIFY`/`GIT_SSH`. So we do NOT inherit the
+/// ambient environment for the build: start from empty, force a known-good
+/// `PATH`, and pass through only an allowlist of variables makepkg legitimately
+/// needs and that are not a vector for redirecting a trusted helper.
+///
+/// Build-control and redirect variables (`GNUPGHOME`, `BUILDDIR`, `PKGDEST`,
+/// `SRCDEST`, `GIT_*`, `LD_*`, …) are deliberately dropped: makepkg falls back to
+/// `/etc/makepkg.conf` + the user's real `$HOME/.gnupg`, which is what a from-a-
+/// clean-scan build must use.
+fn sanitized_build_env<I>(ambient: I) -> Vec<(String, String)>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    /// Variables passed through unchanged: locale/UX and build parallelism, none
+    /// of which can redirect a trusted helper binary.
+    const ALLOW: &[&str] = &[
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "TERM",
+        "TZ",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "LC_COLLATE",
+        "LC_NUMERIC",
+        "LC_TIME",
+        "MAKEFLAGS",
+        "PACKAGER",
+    ];
+    /// Known-good search path so a poisoned ambient `PATH` cannot point makepkg's
+    /// helpers at attacker-controlled binaries. `.`/cwd is never on it.
+    const SAFE_PATH: &str = "/usr/bin:/bin:/usr/local/bin";
+
+    let mut env: Vec<(String, String)> = ambient
+        .into_iter()
+        .filter(|(k, _)| ALLOW.contains(&k.as_str()))
+        .collect();
+    env.push(("PATH".to_string(), SAFE_PATH.to_string()));
+    env
 }
 
 pub async fn run(args: InstallArgs) -> Result<()> {
@@ -51,7 +166,10 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     println!();
 
     // 1. Resolve the full dependency tree.
-    let opts = ResolveOptions { include_optional: args.include_optional, ..Default::default() };
+    let opts = ResolveOptions {
+        include_optional: args.include_optional,
+        ..Default::default()
+    };
     println!("{}", "Resolving dependency tree...".dimmed());
     let graph = depgraph::resolve(&client, &args.package_names, &opts)
         .await
@@ -72,16 +190,41 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     let mut base_dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut node_base: BTreeMap<String, String> = BTreeMap::new();
     for node in graph.aur_packages() {
-        let base = node.package_base.clone().unwrap_or_else(|| node.name.clone());
+        let base = node
+            .package_base
+            .clone()
+            .unwrap_or_else(|| node.name.clone());
+        // `package_base`/`name` come straight from AUR RPC JSON and are about to
+        // become filesystem paths (clone dest, and `remove_dir_all`/`create_dir_all`
+        // targets). A value like `../../../.config/systemd/user` would escape the
+        // workspace and delete arbitrary directories BEFORE any gate runs. Reject
+        // anything that is not a bare package identifier up front.
+        validate_package_name(&base)
+            .with_context(|| format!("refusing to install: illegal package base {base:?}"))?;
         node_base.insert(node.name.clone(), base.clone());
         base_dirs.entry(base).or_default();
     }
 
     println!();
     let mut scans: BTreeMap<String, ComponentScan> = BTreeMap::new();
-    let mut blocked = false;
+    // Distinguish two block reasons. `gate_tripped`: a package was reviewed and
+    // had findings at/above the threshold -- a deliberate --force can override
+    // this. `unscannable`: a package could not be fetched or scanned at all, so
+    // it was never reviewed -- --force must NOT build these blind.
+    let mut gate_tripped = false;
+    let mut unscannable: Vec<String> = Vec::new();
     for base in base_dirs.keys().cloned().collect::<Vec<_>>() {
         let dir = workspace.join(&base);
+        // Defense in depth: `base` is a validated single component, so the clone
+        // directory must be a direct child of the workspace. Refuse to touch
+        // (remove/create) anything that is not, so a future bug can never turn
+        // this into an out-of-tree delete.
+        if dir.parent() != Some(workspace.as_path()) {
+            anyhow::bail!(
+                "internal error: build dir {} escaped workspace",
+                dir.display()
+            );
+        }
         // Fresh clone: remove any stale copy so we scan and build the same bytes.
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -90,26 +233,29 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         io::stdout().flush().ok();
         if let Err(e) = client.clone_repo(&base, &dir).await {
             println!("{}", format!("clone failed: {e}").red());
-            blocked = true; // a package we cannot fetch is unreviewed -> block
+            unscannable.push(base.clone()); // cannot fetch -> never reviewed
             continue;
         }
         let result = match scanner.scan_pkgbuild(&dir.join("PKGBUILD")).await {
             Ok(r) => r,
             Err(e) => {
                 println!("{}", format!("scan failed: {e}").red());
-                blocked = true;
+                unscannable.push(base.clone()); // cannot scan -> never reviewed
                 continue;
             }
         };
         let scan = ComponentScan::from_findings(&result.findings);
-        let trips = result.findings.iter().any(|f| f.severity <= args.fail_on);
+        let trips = result
+            .findings
+            .iter()
+            .any(|f| f.severity.is_at_least(args.fail_on));
         if scan.critical > 0 || scan.high > 0 {
             println!("{}", format!("{}C/{}H", scan.critical, scan.high).red());
         } else {
             println!("{}", "ok".green());
         }
         if trips {
-            blocked = true;
+            gate_tripped = true;
         }
         // Attribute this base's scan to all of its package names for the tree.
         for (name, b) in &node_base {
@@ -124,13 +270,21 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     println!();
     println!("{}", "Dependency tree:".cyan().bold());
     print!("{}", sbom::render_tree(&graph, &scans));
-    let opaque: Vec<&String> = scans.iter().filter(|(_, s)| s.opaque).map(|(k, _)| k).collect();
+    let opaque: Vec<&String> = scans
+        .iter()
+        .filter(|(_, s)| s.opaque)
+        .map(|(k, _)| k)
+        .collect();
     if !opaque.is_empty() {
         println!(
             "{} {} package(s) fetch/run external code (opaque): {}",
             "OPAQUE:".red().bold(),
             opaque.len(),
-            opaque.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            opaque
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
 
@@ -144,33 +298,83 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         );
         std::fs::write(path, serde_json::to_string_pretty(&bom)?)
             .with_context(|| format!("writing SBOM to {}", path.display()))?;
-        println!("{} SBOM written to {}", "SBOM:".green().bold(), path.display());
+        println!(
+            "{} SBOM written to {}",
+            "SBOM:".green().bold(),
+            path.display()
+        );
     }
 
-    // 4. Gate.
+    // 4. Gate (audit ME-8: --force can override reviewed findings, but NEVER an
+    //    unscannable/never-reviewed package).
     println!();
-    if blocked {
-        println!(
-            "{}",
-            "GATE: findings at or above the threshold (or an unscannable package).".red().bold()
-        );
-        if !args.force {
-            anyhow::bail!("blocked by scan gate; not building (use --force to override deliberately)");
+    match gate_outcome(!unscannable.is_empty(), gate_tripped, args.force) {
+        GateOutcome::BlockUnscannable => {
+            println!(
+                "{} could not fetch/scan (unreviewed): {}",
+                "GATE:".red().bold(),
+                unscannable.join(", ")
+            );
+            anyhow::bail!(
+                "refusing to build {} unreviewed package(s); --force cannot override unscannable packages",
+                unscannable.len()
+            );
         }
-        println!("{}", "--force given: overriding the gate.".yellow().bold());
-    } else {
-        println!("{}", "GATE: passed -- no blocking findings.".green().bold());
+        GateOutcome::BlockFindings => {
+            println!(
+                "{}",
+                "GATE: findings at or above the threshold.".red().bold()
+            );
+            anyhow::bail!(
+                "blocked by scan gate; not building (use --force to override deliberately)"
+            );
+        }
+        GateOutcome::ForceOverride => {
+            println!(
+                "{}",
+                "GATE: findings at or above the threshold.".red().bold()
+            );
+            println!(
+                "{}",
+                "--force given: overriding findings gate.".yellow().bold()
+            );
+        }
+        GateOutcome::Pass => {
+            println!("{}", "GATE: passed -- no blocking findings.".green().bold());
+        }
     }
 
     // 5. Confirm, then build in dependency order from the SAME directories.
-    if !args.noconfirm {
-        print!("{} ", "Build and install these packages now? [y/N]:".yellow().bold());
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
-            println!("{}", "Aborted by user. Nothing was built.".yellow());
+    match consent_gate(args.noconfirm, io::stdin().is_terminal()) {
+        // Explicit --noconfirm: the operator has pre-consented; build.
+        ConsentGate::Proceed => {}
+        // Non-interactive stdin without --noconfirm cannot give genuine consent.
+        // A piped "y" is not a person agreeing to build attacker-authored code,
+        // so fail closed and abort (mirrors the wrapper's confirm contract).
+        ConsentGate::AbortNonInteractive => {
+            println!(
+                "{}",
+                "Aborted: stdin is not a terminal and --noconfirm was not given; \
+                 refusing to build without interactive consent."
+                    .yellow()
+            );
             return Ok(());
+        }
+        // Interactive TTY: prompt and require an explicit yes.
+        ConsentGate::Prompt => {
+            print!(
+                "{} ",
+                "Build and install these packages now? [y/N]:"
+                    .yellow()
+                    .bold()
+            );
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                println!("{}", "Aborted by user. Nothing was built.".yellow());
+                return Ok(());
+            }
         }
     }
 
@@ -193,8 +397,24 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         };
         println!();
         println!("{} {}", "Building:".cyan().bold(), base.white().bold());
-        let mut cmd = tokio::process::Command::new("makepkg");
+        // Resolve makepkg to an absolute path rather than letting it be looked
+        // up relative to the (attacker-controlled) package directory we set as
+        // the cwd. This prevents a hostile package from shipping its own
+        // `makepkg` that would run if `.` were ever on PATH.
+        let makepkg_bin = ["/usr/bin/makepkg", "/bin/makepkg"]
+            .iter()
+            .find(|p| std::path::Path::new(p).is_file())
+            .copied()
+            .unwrap_or("makepkg");
+        let mut cmd = tokio::process::Command::new(makepkg_bin);
         cmd.arg("-si").current_dir(&dir);
+        // Sanitize the build environment (audit ME-4): do not let a poisoned
+        // ambient PATH/GNUPGHOME/GIT_*/BUILDDIR undo the clean scan by redirecting
+        // makepkg's trusted helpers. Start empty and apply only the allowlist.
+        cmd.env_clear();
+        for (k, v) in sanitized_build_env(std::env::vars()) {
+            cmd.env(k, v);
+        }
         if args.noconfirm {
             cmd.arg("--noconfirm");
         }
@@ -204,7 +424,36 @@ pub async fn run(args: InstallArgs) -> Result<()> {
                 "makepkg failed for '{}' (exit {:?}); stopping. Built so far: {}",
                 base,
                 status.code(),
-                built.iter().filter(|b| *b != &base).cloned().collect::<Vec<_>>().join(", ")
+                built
+                    .iter()
+                    .filter(|b| *b != &base)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
+    // 6. Tidy up after a successful install: remove the per-package build dirs we
+    //    created in the workspace (large clones + build trees that otherwise just
+    //    accumulate). Only on full success, and only dirs that are direct children
+    //    of the workspace (the same invariant enforced at fetch time).
+    if !args.keep_build {
+        let mut cleaned = 0usize;
+        for base in &built {
+            if let Some(dir) = base_dirs.get(base) {
+                if dir.parent() == Some(workspace.as_path()) && std::fs::remove_dir_all(dir).is_ok()
+                {
+                    cleaned += 1;
+                }
+            }
+        }
+        if cleaned > 0 {
+            println!(
+                "{} removed {} build dir(s) from {} (use --keep-build to retain)",
+                "cleanup:".dimmed(),
+                cleaned,
+                workspace.display()
             );
         }
     }
@@ -212,4 +461,131 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     println!();
     println!("{}", "All packages built and installed.".green().bold());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- build-consent fail-closed contract (defect #11) ---------------------
+
+    #[test]
+    fn noconfirm_proceeds_regardless_of_tty() {
+        // Explicit operator pre-consent: build whether or not stdin is a TTY.
+        assert_eq!(consent_gate(true, true), ConsentGate::Proceed);
+        assert_eq!(consent_gate(true, false), ConsentGate::Proceed);
+    }
+
+    #[test]
+    fn interactive_without_noconfirm_prompts() {
+        assert_eq!(consent_gate(false, true), ConsentGate::Prompt);
+    }
+
+    #[test]
+    fn non_interactive_without_noconfirm_fails_closed() {
+        // The regression for defect #11: a pipe/CI/cron stdin with no
+        // --noconfirm must abort, never silently accept a piped "y".
+        assert_eq!(consent_gate(false, false), ConsentGate::AbortNonInteractive);
+    }
+
+    // --- gate: --force never overrides an unscannable package (audit ME-8) ----
+
+    #[test]
+    fn force_cannot_override_unscannable() {
+        // The invariant: a never-reviewed package is a hard stop regardless of
+        // --force, and regardless of whether the findings gate also tripped.
+        assert_eq!(
+            gate_outcome(true, false, false),
+            GateOutcome::BlockUnscannable
+        );
+        assert_eq!(
+            gate_outcome(true, false, true),
+            GateOutcome::BlockUnscannable
+        );
+        assert_eq!(
+            gate_outcome(true, true, true),
+            GateOutcome::BlockUnscannable
+        );
+    }
+
+    #[test]
+    fn force_overrides_only_reviewed_findings() {
+        // Findings the user has seen: blocked without --force, overridable with.
+        assert_eq!(gate_outcome(false, true, false), GateOutcome::BlockFindings);
+        assert_eq!(gate_outcome(false, true, true), GateOutcome::ForceOverride);
+    }
+
+    #[test]
+    fn clean_scan_passes_the_gate() {
+        assert_eq!(gate_outcome(false, false, false), GateOutcome::Pass);
+        assert_eq!(gate_outcome(false, false, true), GateOutcome::Pass);
+    }
+
+    // --- sanitized build environment (audit ME-4) ----------------------------
+
+    #[test]
+    fn build_env_forces_known_good_path() {
+        // A poisoned ambient PATH must be replaced, never inherited.
+        let env = sanitized_build_env([(
+            "PATH".to_string(),
+            "/tmp/evil:/home/x/.local/bin".to_string(),
+        )]);
+        let path = env
+            .iter()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(path, Some("/usr/bin:/bin:/usr/local/bin"));
+        assert!(
+            !env.iter().any(|(_, v)| v.contains("evil")),
+            "poisoned PATH must be dropped"
+        );
+    }
+
+    #[test]
+    fn build_env_drops_redirect_vectors() {
+        // GNUPGHOME / BUILDDIR / GIT_* / LD_PRELOAD must NOT pass through, so they
+        // cannot redirect a trusted helper or weaken signature checks.
+        let ambient = [
+            ("GNUPGHOME", "/tmp/attacker-keys"),
+            ("BUILDDIR", "/tmp/redirect"),
+            ("PKGDEST", "/tmp/redirect"),
+            ("GIT_SSL_NO_VERIFY", "1"),
+            ("GIT_SSH", "/tmp/evil-ssh"),
+            ("LD_PRELOAD", "/tmp/evil.so"),
+            ("PATH", "/tmp/evil"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()));
+        let env = sanitized_build_env(ambient);
+        let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+        for dropped in [
+            "GNUPGHOME",
+            "BUILDDIR",
+            "PKGDEST",
+            "GIT_SSL_NO_VERIFY",
+            "GIT_SSH",
+            "LD_PRELOAD",
+        ] {
+            assert!(
+                !keys.contains(&dropped),
+                "{dropped} must be dropped from the build env"
+            );
+        }
+    }
+
+    #[test]
+    fn build_env_keeps_safe_passthroughs() {
+        let ambient = [
+            ("HOME", "/home/alice"),
+            ("LANG", "en_US.UTF-8"),
+            ("MAKEFLAGS", "-j4"),
+            ("EVIL", "x"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()));
+        let env = sanitized_build_env(ambient);
+        let get = |k: &str| env.iter().find(|(ek, _)| ek == k).map(|(_, v)| v.clone());
+        assert_eq!(get("HOME").as_deref(), Some("/home/alice"));
+        assert_eq!(get("LANG").as_deref(), Some("en_US.UTF-8"));
+        assert_eq!(get("MAKEFLAGS").as_deref(), Some("-j4"));
+        assert_eq!(get("EVIL"), None, "non-allowlisted vars must be dropped");
+    }
 }

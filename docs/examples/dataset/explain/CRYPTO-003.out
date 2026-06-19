@@ -1,0 +1,17 @@
+
+======================================================================
+CRYPTO-003 Monero/Bitcoin wallet address [CRITICAL]
+======================================================================
+
+Category:
+  Cryptomining  (detector: rules)
+
+Description:
+  Cryptocurrency wallet addresses indicate mining or theft
+
+Recommendation:
+  Wallet addresses in packages are highly suspicious
+
+CWE: CWE-506
+
+======================================================================

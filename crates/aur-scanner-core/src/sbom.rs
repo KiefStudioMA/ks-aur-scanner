@@ -39,7 +39,11 @@ impl ComponentScan {
             }
             // An opaque boundary: the package runs code fetched at build/install
             // time, so the dependency tree cannot be completed past it.
-            if f.metadata.get("opaque_boundary").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if f.metadata
+                .get("opaque_boundary")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 s.opaque = true;
             }
             if let Some(urls) = f.metadata.get("remote_urls").and_then(|v| v.as_array()) {
@@ -297,10 +301,17 @@ mod tests {
 
     fn graph() -> DependencyGraph {
         let mut nodes = BTreeMap::new();
-        nodes.insert("foo".into(), node("foo", PackageSource::Aur, &["bar", "glibc"]));
+        nodes.insert(
+            "foo".into(),
+            node("foo", PackageSource::Aur, &["bar", "glibc"]),
+        );
         nodes.insert("bar".into(), node("bar", PackageSource::Aur, &[]));
         nodes.insert("glibc".into(), node("glibc", PackageSource::Repo, &[]));
-        DependencyGraph { roots: vec!["foo".into()], nodes, truncated: vec![] }
+        DependencyGraph {
+            roots: vec!["foo".into()],
+            nodes,
+            truncated: vec![],
+        }
     }
 
     #[test]
@@ -312,7 +323,11 @@ mod tests {
         assert_eq!(bom["specVersion"], "1.5");
         assert_eq!(bom["components"].as_array().unwrap().len(), 3);
         // dependencies edge for foo present
-        assert!(bom["dependencies"].as_array().unwrap().iter().any(|d| d["ref"] == "foo"));
+        assert!(bom["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["ref"] == "foo"));
     }
 
     #[test]
@@ -340,7 +355,12 @@ mod tests {
         let mut scans = BTreeMap::new();
         scans.insert(
             "foo".to_string(),
-            ComponentScan { findings: vec![], critical: 2, high: 1, ..Default::default() },
+            ComponentScan {
+                findings: vec![],
+                critical: 2,
+                high: 1,
+                ..Default::default()
+            },
         );
         let tree = render_tree(&g, &scans);
         assert!(tree.contains("[AUR] foo"));
@@ -376,6 +396,7 @@ mod tests {
         assert!(props.iter().any(|p| p["name"] == "aur-scan:opaque"));
         assert!(props
             .iter()
-            .any(|p| p["name"] == "aur-scan:remote-source" && p["value"] == "https://evil.example/x.sh"));
+            .any(|p| p["name"] == "aur-scan:remote-source"
+                && p["value"] == "https://evil.example/x.sh"));
     }
 }

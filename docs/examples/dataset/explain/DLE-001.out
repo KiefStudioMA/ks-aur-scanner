@@ -1,0 +1,31 @@
+
+======================================================================
+DLE-001 Curl pipe to shell [CRITICAL]
+======================================================================
+
+Category:
+  Command Injection  (detector: rules)
+
+Description:
+  Downloading and executing remote scripts is extremely dangerous.
+  Used in 2018 xeactor attack.
+
+Recommendation:
+  Download scripts first, review them, then execute
+
+CWE: CWE-94
+
+Real-World Context:
+  Used in the July 2018 'xeactor' attack where orphaned AUR packages
+  (acroread, balz, minergate) were taken over and modified to
+  download malicious scripts from ptpb.pw using curl.
+
+Detection Patterns:
+  - curl\s+[^|]+\|\s*(ba)?sh
+  - curl .* \| sh
+  - curl .* \| bash
+
+Related Codes:
+  DLE-002, DLE-003, PASTE-001
+
+======================================================================

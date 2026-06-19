@@ -6,8 +6,12 @@ use colored::Colorize;
 use aur_scanner_core::catalog::Catalog;
 use aur_scanner_core::Severity;
 
-pub fn run(category: Option<&str>, format: &str) -> Result<()> {
-    let catalog = Catalog::load();
+pub fn run(
+    category: Option<&str>,
+    format: &str,
+    extra_rule_dirs: &[std::path::PathBuf],
+) -> Result<()> {
+    let catalog = Catalog::load_with(extra_rule_dirs);
     // The catalog enforces uniqueness; surface any problem loudly.
     if let Err(e) = catalog.validate() {
         eprintln!("{} {}", "catalog error:".red().bold(), e);
@@ -29,7 +33,12 @@ pub fn run(category: Option<&str>, format: &str) -> Result<()> {
     println!("{}", "=".repeat(60));
     println!(
         "{}",
-        format!("{} codes across {} categories\n", catalog.entries.len(), catalog.categories().len()).dimmed()
+        format!(
+            "{} codes across {} categories\n",
+            catalog.entries.len(),
+            catalog.categories().len()
+        )
+        .dimmed()
     );
 
     let filter = category.map(|c| c.to_lowercase());
@@ -39,7 +48,11 @@ pub fn run(category: Option<&str>, format: &str) -> Result<()> {
                 continue;
             }
         }
-        let in_cat: Vec<_> = catalog.entries.iter().filter(|e| e.category.to_string() == cat).collect();
+        let in_cat: Vec<_> = catalog
+            .entries
+            .iter()
+            .filter(|e| e.category.to_string() == cat)
+            .collect();
         if in_cat.is_empty() {
             continue;
         }
@@ -80,7 +93,11 @@ fn print_markdown(catalog: &Catalog) {
         Severity::Low,
         Severity::Info,
     ] {
-        let rows: Vec<_> = catalog.entries.iter().filter(|e| e.severity == sev).collect();
+        let rows: Vec<_> = catalog
+            .entries
+            .iter()
+            .filter(|e| e.severity == sev)
+            .collect();
         if rows.is_empty() {
             continue;
         }

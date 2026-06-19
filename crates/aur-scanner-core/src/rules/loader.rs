@@ -2,6 +2,7 @@
 
 use super::Rule;
 use crate::error::{Result, ScanError};
+use crate::types::FileType;
 use std::path::Path;
 use tracing::{debug, warn};
 
@@ -60,11 +61,25 @@ impl RuleLoader {
             rule: Vec<Rule>,
         }
 
-        let file: RulesFile = toml::from_str(content).map_err(|e| {
-            ScanError::Config(format!("Failed to parse {}: {}", path.display(), e))
-        })?;
+        let file: RulesFile = toml::from_str(content)
+            .map_err(|e| ScanError::Config(format!("Failed to parse {}: {}", path.display(), e)))?;
 
-        Ok(file.rule)
+        // A community rule that omits `file_types` would otherwise deserialize to
+        // an empty list, load, count toward the catalog, and never fire (audit
+        // LOW). Default it to the standard scanned file types so it actually runs,
+        // and warn so the author can pin it explicitly.
+        let mut rules = file.rule;
+        for rule in &mut rules {
+            if rule.file_types.is_empty() {
+                warn!(
+                    "rule {} in {} declares no file_types; defaulting to [Pkgbuild, InstallScript] so it is not silently inert",
+                    rule.id,
+                    path.display()
+                );
+                rule.file_types = vec![FileType::Pkgbuild, FileType::InstallScript];
+            }
+        }
+        Ok(rules)
     }
 }
 
@@ -101,5 +116,31 @@ pattern = "test.*pattern"
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].id, "TEST-001");
         assert_eq!(rules[0].patterns.len(), 1);
+    }
+
+    #[test]
+    fn rule_without_file_types_defaults_to_scanned_types() {
+        // audit LOW: a community rule that omits `file_types` must not load inert.
+        let toml = r#"
+[[rule]]
+id = "TEST-002"
+name = "No file types"
+description = "omits file_types"
+severity = "high"
+category = "command_injection"
+recommendation = "Fix it"
+
+[[rule.patterns]]
+type = "regex"
+pattern = "x"
+"#;
+        let loader = RuleLoader::new();
+        let rules = loader.parse_toml(toml, Path::new("test.toml")).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(
+            rules[0].file_types,
+            vec![FileType::Pkgbuild, FileType::InstallScript],
+            "a rule omitting file_types must default to the scanned types, not stay inert"
+        );
     }
 }

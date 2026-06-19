@@ -7,6 +7,7 @@ use colored::Colorize;
 use std::path::PathBuf;
 
 /// Run the scan command
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     path: PathBuf,
     format: crate::OutputFormat,
@@ -14,6 +15,8 @@ pub async fn run(
     fail_on: Option<Severity>,
     min_severity: Option<Severity>,
     include_info: bool,
+    quiet: bool,
+    mut config: ScanConfig,
 ) -> Result<()> {
     // Determine if path is file or directory
     let scan_path = if path.is_dir() {
@@ -26,12 +29,13 @@ pub async fn run(
         anyhow::bail!("PKGBUILD not found at: {}", scan_path.display());
     }
 
-    // Create scanner configuration
-    let mut config = ScanConfig::default();
+    // Severity floor. An explicit --severity wins; otherwise --include-info
+    // lowers the floor to Info so informational findings surface; otherwise we
+    // keep whatever the config carries (Low by default).
     if let Some(severity) = min_severity {
         config.min_severity = severity;
-    } else if !include_info {
-        config.min_severity = Severity::Low;
+    } else if include_info {
+        config.min_severity = Severity::Info;
     }
 
     // Create scanner
@@ -54,6 +58,7 @@ pub async fn run(
     let output_str = output::format_result(&result, format)?;
 
     // Write output
+    let wrote_to_file = output_path.is_some();
     if let Some(output_file) = output_path {
         std::fs::write(&output_file, &output_str)
             .context(format!("Failed to write to {}", output_file.display()))?;
@@ -62,8 +67,19 @@ pub async fn run(
         println!("{}", output_str);
     }
 
-    // Print summary
-    print_summary(&result);
+    // Print the human summary. For a machine-readable format written to stdout,
+    // the summary would corrupt the JSON/SARIF stream (`aur-scan scan --format
+    // json | jq` must work), so send it to stderr instead. When the machine
+    // output went to a file, or for the text format, stdout is free for it.
+    // In quiet mode, show only the findings — suppress the summary block.
+    if !quiet {
+        let machine_format = !matches!(format, OutputFormat::Text);
+        if machine_format && !wrote_to_file {
+            print_summary(&result, &mut std::io::stderr());
+        } else {
+            print_summary(&result, &mut std::io::stdout());
+        }
+    }
 
     // Exit with appropriate code
     if let Some(threshold) = fail_on {
@@ -75,7 +91,12 @@ pub async fn run(
     Ok(())
 }
 
-fn print_summary(result: &ScanResult) {
+fn print_summary<W: std::io::Write>(result: &ScanResult, w: &mut W) {
+    // Best-effort: a broken pipe / closed stderr must not crash the scan.
+    let _ = write_summary(result, w);
+}
+
+fn write_summary<W: std::io::Write>(result: &ScanResult, w: &mut W) -> std::io::Result<()> {
     let counts = result.count_by_severity();
 
     let critical = counts.get(&Severity::Critical).unwrap_or(&0);
@@ -83,35 +104,48 @@ fn print_summary(result: &ScanResult) {
     let medium = counts.get(&Severity::Medium).unwrap_or(&0);
     let low = counts.get(&Severity::Low).unwrap_or(&0);
 
-    println!();
-    println!("{}", "=".repeat(60));
-    println!(
+    writeln!(w)?;
+    writeln!(w, "{}", "=".repeat(60))?;
+    writeln!(
+        w,
         "Package: {} v{}",
         result.package_name.bold(),
         result.package_version
-    );
-    println!("Scan duration: {}ms", result.scan_duration_ms);
-    println!();
+    )?;
+    writeln!(w, "Scan duration: {}ms", result.scan_duration_ms)?;
+    writeln!(w)?;
 
     if result.findings.is_empty() {
-        println!("{}", "No security issues found.".green().bold());
+        writeln!(w, "{}", "No security issues found.".green().bold())?;
     } else {
-        println!(
+        writeln!(
+            w,
             "Found {} issue(s):",
             result.findings.len().to_string().bold()
-        );
+        )?;
         if *critical > 0 {
-            println!("  {} {}", critical.to_string().red().bold(), "CRITICAL".red());
+            writeln!(
+                w,
+                "  {} {}",
+                critical.to_string().red().bold(),
+                "CRITICAL".red()
+            )?;
         }
         if *high > 0 {
-            println!("  {} {}", high.to_string().yellow().bold(), "HIGH".yellow());
+            writeln!(
+                w,
+                "  {} {}",
+                high.to_string().yellow().bold(),
+                "HIGH".yellow()
+            )?;
         }
         if *medium > 0 {
-            println!("  {} {}", medium.to_string().cyan(), "MEDIUM".cyan());
+            writeln!(w, "  {} {}", medium.to_string().cyan(), "MEDIUM".cyan())?;
         }
         if *low > 0 {
-            println!("  {} LOW", low);
+            writeln!(w, "  {} LOW", low)?;
         }
     }
-    println!("{}", "=".repeat(60));
+    writeln!(w, "{}", "=".repeat(60))?;
+    Ok(())
 }

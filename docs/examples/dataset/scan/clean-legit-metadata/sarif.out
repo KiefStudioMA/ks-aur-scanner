@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/clean/legit-metadata/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 15
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Package provides another package name, may be impersonating. CHAOS RAT used this technique."
+          },
+          "ruleId": "META-001"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Package provides another package name, may be impersonating. CHAOS RAT used this technique."
+              },
+              "help": {
+                "text": "Verify this package is a legitimate alternative"
+              },
+              "id": "META-001",
+              "name": "Provides impersonation",
+              "shortDescription": {
+                "text": "Provides impersonation"
+              }
+            }
+          ],
+          "version": "1.1.0"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

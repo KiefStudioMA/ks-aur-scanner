@@ -1,0 +1,23 @@
+
+======================================================================
+PERSIST-002 Systemd timer creation [CRITICAL]
+======================================================================
+
+Category:
+  Persistence  (detector: rules)
+
+Description:
+  Creating systemd timers enables periodic malware execution. Used
+  in 2018 xeactor attack.
+
+Recommendation:
+  Timers should be user-controlled; review carefully
+
+CWE: CWE-506
+
+Real-World Context:
+  Systemd persistence was used in both the 2018 xeactor attack
+  (timers running every 360 seconds) and the July 2025 CHAOS RAT
+  attack (services running at boot as default.target dependency).
+
+======================================================================

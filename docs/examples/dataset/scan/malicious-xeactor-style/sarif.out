@@ -1,0 +1,369 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/xeactor-style/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 15
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Downloading from paste sites is a common malware technique. Used in 2018 xeactor attack via ptpb.pw"
+          },
+          "ruleId": "PASTE-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/xeactor-style/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 15
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Downloading from paste sites is a common malware technique. Used in 2018 xeactor attack via ptpb.pw"
+          },
+          "ruleId": "PASTE-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/xeactor-style/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 26
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Creating systemd timers enables periodic malware execution. Used in 2018 xeactor attack."
+          },
+          "ruleId": "PERSIST-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/xeactor-style/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 31
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Creating systemd timers enables periodic malware execution. Used in 2018 xeactor attack."
+          },
+          "ruleId": "PERSIST-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/xeactor-style/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 32
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Creating systemd timers enables periodic malware execution. Used in 2018 xeactor attack."
+          },
+          "ruleId": "PERSIST-002"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/xeactor-style/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 15
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Creating hidden files in user home directory"
+          },
+          "ruleId": "HIDDEN-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/xeactor-style/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 16
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Creating hidden files in user home directory"
+          },
+          "ruleId": "HIDDEN-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/xeactor-style/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 19
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Creating hidden files in user home directory"
+          },
+          "ruleId": "HIDDEN-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/xeactor-style/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 13
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Function 'build' contains network access command 'curl'"
+          },
+          "ruleId": "FUNC-001"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/xeactor-style/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Package has build() function but no source array"
+          },
+          "ruleId": "SRC-005"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Downloading from paste sites is a common malware technique. Used in 2018 xeactor attack via ptpb.pw"
+              },
+              "help": {
+                "text": "Never download code from paste sites - this is a major red flag"
+              },
+              "id": "PASTE-001",
+              "name": "Pastebin download",
+              "shortDescription": {
+                "text": "Pastebin download"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Downloading from paste sites is a common malware technique. Used in 2018 xeactor attack via ptpb.pw"
+              },
+              "help": {
+                "text": "Never download code from paste sites - this is a major red flag"
+              },
+              "id": "PASTE-001",
+              "name": "Pastebin download",
+              "shortDescription": {
+                "text": "Pastebin download"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Creating systemd timers enables periodic malware execution. Used in 2018 xeactor attack."
+              },
+              "help": {
+                "text": "Timers should be user-controlled; review carefully"
+              },
+              "id": "PERSIST-002",
+              "name": "Systemd timer creation",
+              "shortDescription": {
+                "text": "Systemd timer creation"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Creating systemd timers enables periodic malware execution. Used in 2018 xeactor attack."
+              },
+              "help": {
+                "text": "Timers should be user-controlled; review carefully"
+              },
+              "id": "PERSIST-002",
+              "name": "Systemd timer creation",
+              "shortDescription": {
+                "text": "Systemd timer creation"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Creating systemd timers enables periodic malware execution. Used in 2018 xeactor attack."
+              },
+              "help": {
+                "text": "Timers should be user-controlled; review carefully"
+              },
+              "id": "PERSIST-002",
+              "name": "Systemd timer creation",
+              "shortDescription": {
+                "text": "Systemd timer creation"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Creating hidden files in user home directory"
+              },
+              "help": {
+                "text": "Packages should not create hidden files in user home"
+              },
+              "id": "HIDDEN-001",
+              "name": "Hidden file creation in home",
+              "shortDescription": {
+                "text": "Hidden file creation in home"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Creating hidden files in user home directory"
+              },
+              "help": {
+                "text": "Packages should not create hidden files in user home"
+              },
+              "id": "HIDDEN-001",
+              "name": "Hidden file creation in home",
+              "shortDescription": {
+                "text": "Hidden file creation in home"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Creating hidden files in user home directory"
+              },
+              "help": {
+                "text": "Packages should not create hidden files in user home"
+              },
+              "id": "HIDDEN-001",
+              "name": "Hidden file creation in home",
+              "shortDescription": {
+                "text": "Hidden file creation in home"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Function 'build' contains network access command 'curl'"
+              },
+              "help": {
+                "text": "Network access should happen in source= array, not build functions"
+              },
+              "id": "FUNC-001",
+              "name": "Network access in build function",
+              "shortDescription": {
+                "text": "Network access in build function"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Package has build() function but no source array"
+              },
+              "help": {
+                "text": "Verify this is intentional; build() usually needs sources"
+              },
+              "id": "SRC-005",
+              "name": "No sources with build function",
+              "shortDescription": {
+                "text": "No sources with build function"
+              }
+            }
+          ],
+          "version": "1.1.0"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

@@ -1,0 +1,334 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/supplychain-metadata/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "The package declares replaces=/conflicts= of trusted package(s): sudo, apparmor. This forces pacman to displace the official (often security-critical) package with this AUR build. Only that package's own -git/-bin alternate should do this."
+          },
+          "ruleId": "META-003"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/supplychain-metadata/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "The package declares provides= of trusted package name(s): sudo, openssh. A package that is not that package's own alternate can satisfy a dependency in its place and be pulled in transparently."
+          },
+          "ruleId": "DEP-001"
+        },
+        {
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/supplychain-metadata/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "epoch=2 makes this package outrank the official package's version regardless of pkgver — and this package also provides/replaces a trusted name. epoch is legitimate for genuine versioning resets but, combined with provides/replaces of a trusted name, is a stealth force-upgrade."
+          },
+          "ruleId": "META-004"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/supplychain-metadata/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "One or more checksums are not valid hex of the expected length, so they cannot match the source and integrity verification is effectively disabled: sha256sums has a bad entry 'not-a-valid-…' (len 23)."
+          },
+          "ruleId": "CHK-008"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/supplychain-metadata/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "install=postinstall.hook.sh is not a plain `<name>.install` file in the package directory (it contains a path, `..`, or a non-.install name). makepkg runs this scriptlet as part of the package; an out-of-tree path is a way to run an unexpected file."
+          },
+          "ruleId": "META-005"
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/supplychain-metadata/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "backup= lists security-sensitive path(s): etc/sudoers.d/systemhelper, etc/ssh/sshd_config. A package that ships and marks such a file as a backup config can persistently alter authentication, the dynamic linker, or privilege rules."
+          },
+          "ruleId": "META-006"
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/supplychain-metadata/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 16
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Package provides another package name, may be impersonating. CHAOS RAT used this technique."
+          },
+          "ruleId": "META-001"
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/supplychain-metadata/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "url= is on the github forge but a source is on gitlab. A source hosted on a different forge than the stated upstream can be a personal fork swapped in for the real project."
+          },
+          "ruleId": "SRC-008"
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/fixtures/malicious/supplychain-metadata/PKGBUILD"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "validpgpkeys= lists trusted signing key(s) but no source carries a detached signature (.sig/.asc) or a ?signed VCS fragment, so the declared key verifies nothing — signature theatre that can lull a reviewer."
+          },
+          "ruleId": "META-002"
+        }
+      ],
+      "tool": {
+        "driver": {
+          "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
+          "name": "aur-scan",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "The package declares replaces=/conflicts= of trusted package(s): sudo, apparmor. This forces pacman to displace the official (often security-critical) package with this AUR build. Only that package's own -git/-bin alternate should do this."
+              },
+              "help": {
+                "text": "Remove the replaces/conflicts unless this package is the legitimate provider; report the package to the AUR maintainers."
+              },
+              "id": "META-003",
+              "name": "Replaces/conflicts a core or security package",
+              "shortDescription": {
+                "text": "Replaces/conflicts a core or security package"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "The package declares provides= of trusted package name(s): sudo, openssh. A package that is not that package's own alternate can satisfy a dependency in its place and be pulled in transparently."
+              },
+              "help": {
+                "text": "Remove the provides unless this is the legitimate provider; this is a dependency-confusion vector."
+              },
+              "id": "DEP-001",
+              "name": "Provides a core package name (dependency confusion)",
+              "shortDescription": {
+                "text": "Provides a core package name (dependency confusion)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "epoch=2 makes this package outrank the official package's version regardless of pkgver — and this package also provides/replaces a trusted name. epoch is legitimate for genuine versioning resets but, combined with provides/replaces of a trusted name, is a stealth force-upgrade."
+              },
+              "help": {
+                "text": "Confirm the epoch bump is a real upstream versioning reset, not a way to supersede the official package."
+              },
+              "id": "META-004",
+              "name": "epoch set (forces an upgrade over the repo version)",
+              "shortDescription": {
+                "text": "epoch set (forces an upgrade over the repo version)"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "One or more checksums are not valid hex of the expected length, so they cannot match the source and integrity verification is effectively disabled: sha256sums has a bad entry 'not-a-valid-…' (len 23)."
+              },
+              "help": {
+                "text": "Regenerate the checksums with updpkgsums; a malformed hash silently disables integrity verification."
+              },
+              "id": "CHK-008",
+              "name": "Malformed or wrong-length checksum",
+              "shortDescription": {
+                "text": "Malformed or wrong-length checksum"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "install=postinstall.hook.sh is not a plain `<name>.install` file in the package directory (it contains a path, `..`, or a non-.install name). makepkg runs this scriptlet as part of the package; an out-of-tree path is a way to run an unexpected file."
+              },
+              "help": {
+                "text": "Use a plain `<pkgname>.install` file shipped alongside the PKGBUILD."
+              },
+              "id": "META-005",
+              "name": "install= points outside the package",
+              "shortDescription": {
+                "text": "install= points outside the package"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "backup= lists security-sensitive path(s): etc/sudoers.d/systemhelper, etc/ssh/sshd_config. A package that ships and marks such a file as a backup config can persistently alter authentication, the dynamic linker, or privilege rules."
+              },
+              "help": {
+                "text": "Packages should not own or back up files under sudoers/ssh/pam.d/ld.so/etc.; review what content is installed there."
+              },
+              "id": "META-006",
+              "name": "backup= of a security-sensitive file",
+              "shortDescription": {
+                "text": "backup= of a security-sensitive file"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Package provides another package name, may be impersonating. CHAOS RAT used this technique."
+              },
+              "help": {
+                "text": "Verify this package is a legitimate alternative"
+              },
+              "id": "META-001",
+              "name": "Provides impersonation",
+              "shortDescription": {
+                "text": "Provides impersonation"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "url= is on the github forge but a source is on gitlab. A source hosted on a different forge than the stated upstream can be a personal fork swapped in for the real project."
+              },
+              "help": {
+                "text": "Verify the source forge is the project's official one."
+              },
+              "id": "SRC-008",
+              "name": "Source host differs from upstream url host",
+              "shortDescription": {
+                "text": "Source host differs from upstream url host"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "validpgpkeys= lists trusted signing key(s) but no source carries a detached signature (.sig/.asc) or a ?signed VCS fragment, so the declared key verifies nothing — signature theatre that can lull a reviewer."
+              },
+              "help": {
+                "text": "Either verify a signed source against the key, or remove the unused validpgpkeys."
+              },
+              "id": "META-002",
+              "name": "validpgpkeys declared but no signature is verified",
+              "shortDescription": {
+                "text": "validpgpkeys declared but no signature is verified"
+              }
+            }
+          ],
+          "version": "1.1.0"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

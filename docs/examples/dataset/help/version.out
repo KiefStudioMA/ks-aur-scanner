@@ -1,0 +1,10 @@
+Check scanner version and configuration
+
+Usage: aur-scan version [OPTIONS]
+
+Options:
+  -c, --config <CONFIG>      Configuration file path
+  -s, --severity <SEVERITY>  Minimum severity to report [possible values: critical, high, medium, low, info]
+  -v, --verbose              Enable verbose output
+  -q, --quiet                Quiet mode (only show findings)
+  -h, --help                 Print help

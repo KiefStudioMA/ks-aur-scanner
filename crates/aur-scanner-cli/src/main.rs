@@ -5,12 +5,12 @@
 mod commands;
 mod output;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
-use aur_scanner_core::Severity;
+use aur_scanner_core::{ScanConfig, Severity};
 
 #[derive(Parser)]
 #[command(name = "aur-scan")]
@@ -36,6 +36,10 @@ struct Cli {
     /// Quiet mode (only show findings)
     #[arg(short, long, global = true)]
     quiet: bool,
+
+    /// Disable colored output (also honored: the NO_COLOR environment variable)
+    #[arg(long, global = true)]
+    no_color: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -144,6 +148,11 @@ enum Commands {
         /// Write a CycloneDX SBOM to this path
         #[arg(long, value_name = "FILE")]
         sbom: Option<PathBuf>,
+
+        /// Keep the build directories after a successful install
+        /// (default: clean them up)
+        #[arg(long)]
+        keep_build: bool,
     },
 
     /// Scan all installed AUR packages on the system
@@ -207,6 +216,14 @@ enum OutputFormat {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Color: the `colored` crate already auto-disables on a non-terminal and
+    // honors NO_COLOR/CLICOLOR_FORCE. Force it off explicitly when `--no-color`
+    // is given or NO_COLOR is set, so the switch is deterministic regardless of
+    // where output goes.
+    if cli.no_color || std::env::var_os("NO_COLOR").is_some() {
+        colored::control::set_override(false);
+    }
+
     // Initialize logging - default to warn to keep output clean
     let filter = if cli.verbose {
         "aur_scanner=debug,aur_scanner_core=debug"
@@ -217,10 +234,23 @@ async fn main() -> Result<()> {
     };
 
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)),
+        )
         .with_target(false)
         .without_time()
         .init();
+
+    // Load the optional -c/--config file once. A present-but-unreadable or
+    // malformed config is a hard error rather than being silently ignored, so
+    // the flag can never appear to work while doing nothing.
+    let file_config: Option<ScanConfig> = match cli.config.as_ref() {
+        Some(path) => Some(
+            ScanConfig::from_toml_file(path)
+                .with_context(|| format!("failed to load config file {}", path.display()))?,
+        ),
+        None => None,
+    };
 
     match cli.command {
         Commands::Scan {
@@ -237,6 +267,8 @@ async fn main() -> Result<()> {
                 fail_on.map(Into::into),
                 cli.severity.map(Into::into),
                 include_info,
+                cli.quiet,
+                file_config.unwrap_or_default(),
             )
             .await
         }
@@ -269,6 +301,7 @@ async fn main() -> Result<()> {
             force,
             workspace,
             sbom,
+            keep_build,
         } => {
             commands::install::run(commands::install::InstallArgs {
                 package_names: packages,
@@ -278,6 +311,7 @@ async fn main() -> Result<()> {
                 force,
                 workspace,
                 sbom_path: sbom,
+                keep_build,
             })
             .await
         }
@@ -286,21 +320,22 @@ async fn main() -> Result<()> {
                 cli.severity.map(Into::into),
                 rescan,
                 cache_dir,
+                file_config.unwrap_or_default(),
             )
             .await
         }
         Commands::Rules { severity, details } => {
             commands::rules::run(severity.map(Into::into), details)
         }
-        Commands::Explain { code } => {
-            commands::explain::run(&code)
-        }
+        Commands::Explain { code } => commands::explain::run(&code),
         Commands::Codes { category, format } => {
-            commands::codes::run(category.as_deref(), &format)
+            // Honor a config-supplied custom rules dir so `codes` lists rules the
+            // scan engine would actually load.
+            let extra_dirs: Vec<PathBuf> =
+                file_config.and_then(|c| c.rules_path).into_iter().collect();
+            commands::codes::run(category.as_deref(), &format, &extra_dirs)
         }
-        Commands::Ioc { check } => {
-            commands::ioc::run(check.as_deref())
-        }
+        Commands::Ioc { check } => commands::ioc::run(check.as_deref()),
         Commands::Version => {
             commands::version::run();
             Ok(())

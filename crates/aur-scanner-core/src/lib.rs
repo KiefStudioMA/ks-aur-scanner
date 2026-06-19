@@ -12,13 +12,17 @@ pub mod cache;
 pub mod catalog;
 pub mod depgraph;
 pub mod error;
+pub mod neturl;
 pub mod overlay;
 pub mod parser;
 pub mod provenance;
+pub mod resolve;
 pub mod rules;
 pub mod sbom;
+pub mod textutil;
 pub mod threat_intel;
 pub mod types;
+pub mod validate;
 
 pub use error::{ParseError, Result, ScanError};
 pub use types::*;
@@ -43,11 +47,23 @@ pub struct Scanner {
 impl Scanner {
     /// Create a new scanner with the given configuration
     pub fn new(config: ScanConfig) -> Result<Self> {
-        // Use default() which loads built-in rules
-        let rule_engine = Arc::new(RuleEngine::default());
+        // Built-in rules + the standard rules.d dirs, plus any custom rules
+        // directory the config points at (so `rules_path` actually reaches the
+        // matching engine, not just the catalog listing).
+        let mut engine = RuleEngine::default();
+        if let Some(rules_path) = config.rules_path.as_ref() {
+            if let Err(e) = engine.load_rules_from_dir(rules_path) {
+                warn!(
+                    "failed to load custom rules from {}: {}",
+                    rules_path.display(),
+                    e
+                );
+            }
+        }
+        let rule_engine = Arc::new(engine);
         let ioc_db = Arc::new(IocDatabase::load());
 
-        let analyzers: Vec<Arc<dyn SecurityAnalyzer>> = vec![
+        let mut analyzers: Vec<Arc<dyn SecurityAnalyzer>> = vec![
             Arc::new(analyzer::PatternAnalyzer::new(rule_engine.clone())),
             Arc::new(analyzer::IocAnalyzer::new(ioc_db.clone())),
             Arc::new(analyzer::BinaryPayloadAnalyzer::new(ioc_db.clone())),
@@ -56,7 +72,23 @@ impl Scanner {
             Arc::new(analyzer::SourceAnalyzer::new()),
             Arc::new(analyzer::ChecksumAnalyzer::new()),
             Arc::new(analyzer::PrivilegeAnalyzer::new()),
+            Arc::new(analyzer::MetadataAnalyzer::new()),
         ];
+
+        // Opt-in, networked threat-intel analyzer. Added ONLY when the operator
+        // explicitly enabled it AND a provider key is available (config or env).
+        // Everything above this point is offline/static.
+        if config.enable_threat_intel {
+            if let Some(ti) = build_threat_intel_analyzer(&config) {
+                analyzers.push(Arc::new(ti));
+                info!("threat-intel lookups enabled (opt-in network access)");
+            } else {
+                warn!(
+                    "enable_threat_intel is set but no VirusTotal/URLhaus key was found \
+                     (config or env); threat-intel lookups are disabled"
+                );
+            }
+        }
 
         let parser: Box<dyn PkgbuildParser> = Box::new(parser::StaticParser::new());
 
@@ -119,7 +151,11 @@ impl Scanner {
                     hooks: parser::parse_install_hooks(&script_content),
                 }),
                 Err(e) => {
-                    warn!("Failed to read install script {}: {}", install_path.display(), e);
+                    warn!(
+                        "Failed to read install script {}: {}",
+                        install_path.display(),
+                        e
+                    );
                     None
                 }
             }
@@ -195,6 +231,53 @@ impl Scanner {
     }
 }
 
+/// Resolve a key from an explicit config value first, then a list of
+/// environment variables, returning the first non-empty match. Lets keys stay
+/// out of config files (`VT_API_KEY` etc.) without hard-coding precedence at
+/// each call site.
+fn resolve_key(configured: Option<&String>, env_vars: &[&str]) -> Option<String> {
+    configured
+        .map(|s| s.to_string())
+        .or_else(|| env_vars.iter().find_map(|v| std::env::var(v).ok()))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Construct the opt-in threat-intel analyzer from config + environment.
+///
+/// VirusTotal is enabled by a key alone; URLhaus additionally requires
+/// `urlhaus_enabled` (its `Auth-Key` is now mandatory). The verdict cache is
+/// built from [`CacheConfig`] when caching is on; if the (hardened, owner-only)
+/// cache dir cannot be created, we log and proceed without a cache rather than
+/// fail the scan. Returns `None` if no provider ends up usable.
+fn build_threat_intel_analyzer(config: &ScanConfig) -> Option<analyzer::ThreatIntelAnalyzer> {
+    let ti = &config.threat_intel;
+    let vt_key = resolve_key(
+        ti.virustotal_api_key.as_ref(),
+        &["VT_API_KEY", "VIRUSTOTAL_API_KEY"],
+    );
+    let urlhaus_key = if ti.urlhaus_enabled {
+        resolve_key(ti.urlhaus_auth_key.as_ref(), &["URLHAUS_AUTH_KEY"])
+    } else {
+        None
+    };
+
+    let cache = if config.cache.enabled {
+        match cache::DiskCache::new(config.cache.directory.clone(), config.cache.max_size_mb) {
+            Ok(c) => Some(Arc::new(c)),
+            Err(e) => {
+                warn!("threat-intel cache disabled (cannot use cache dir): {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let ttl = std::time::Duration::from_secs(ti.cache_duration_hours.saturating_mul(3600));
+
+    analyzer::ThreatIntelAnalyzer::new(vt_key, urlhaus_key, cache, ttl)
+}
+
 /// Maximum size of a file the scanner will read into memory. Real PKGBUILDs
 /// and install scripts are a few KB; anything past this is abnormal and a
 /// memory-exhaustion risk from a hostile repository.
@@ -225,7 +308,10 @@ fn read_text_capped(path: &Path) -> Result<String> {
 /// install hook is a primary malware delivery vector. Resolution order:
 /// 1. Expand `$pkgname`/`$pkgbase` in the declared `install=` value.
 /// 2. Fall back to a single `*.install` file in the package directory.
-fn resolve_install_path(dir: &Path, pkgbuild: &parser::ParsedPkgbuild) -> Option<std::path::PathBuf> {
+fn resolve_install_path(
+    dir: &Path,
+    pkgbuild: &parser::ParsedPkgbuild,
+) -> Option<std::path::PathBuf> {
     let pkgname = pkgbuild.pkgname.first().cloned().unwrap_or_default();
 
     if let Some(install_file) = &pkgbuild.install {
@@ -234,7 +320,10 @@ fn resolve_install_path(dir: &Path, pkgbuild: &parser::ParsedPkgbuild) -> Option
         // directory. Reject path separators / traversal so a hostile install=
         // value cannot make us read a file outside the cloned package dir.
         if expanded.is_empty() || expanded.contains('/') || expanded.contains("..") {
-            warn!("ignoring suspicious install= value '{}' (path traversal)", install_file);
+            warn!(
+                "ignoring suspicious install= value '{}' (path traversal)",
+                install_file
+            );
         } else {
             let candidate = dir.join(&expanded);
             if candidate.is_file() {
@@ -264,9 +353,7 @@ fn resolve_install_path(dir: &Path, pkgbuild: &parser::ParsedPkgbuild) -> Option
             // and warn so the gap is visible rather than silent.
             let preferred = install_files
                 .iter()
-                .find(|p| {
-                    p.file_stem().and_then(|s| s.to_str()) == Some(pkgname.as_str())
-                })
+                .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(pkgname.as_str()))
                 .cloned();
             if preferred.is_none() {
                 warn!(
@@ -316,9 +403,15 @@ mod tests {
 
     #[test]
     fn test_expand_pkg_vars() {
-        assert_eq!(expand_pkg_vars("${pkgname}.install", "alvr"), "alvr.install");
+        assert_eq!(
+            expand_pkg_vars("${pkgname}.install", "alvr"),
+            "alvr.install"
+        );
         assert_eq!(expand_pkg_vars("$pkgname.install", "alvr"), "alvr.install");
-        assert_eq!(expand_pkg_vars("\"$pkgbase.install\"", "alvr"), "alvr.install");
+        assert_eq!(
+            expand_pkg_vars("\"$pkgbase.install\"", "alvr"),
+            "alvr.install"
+        );
         assert_eq!(expand_pkg_vars("custom.install", "alvr"), "custom.install");
     }
 
@@ -338,8 +431,9 @@ mod tests {
             "expected ATOMIC-001 from the install hook; got: {:?}",
             result.findings.iter().map(|f| &f.id).collect::<Vec<_>>()
         );
-        assert!(result.scanned_files.iter().any(|p| {
-            p.extension().and_then(|e| e.to_str()) == Some("install")
-        }));
+        assert!(result
+            .scanned_files
+            .iter()
+            .any(|p| { p.extension().and_then(|e| e.to_str()) == Some("install") }));
     }
 }

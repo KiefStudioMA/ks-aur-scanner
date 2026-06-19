@@ -1,0 +1,10 @@
+# Maintainer: hijacked <attacker@evil.example>
+pkgname=sysprep
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="system prep"
+arch=('x86_64')
+url="https://example.com"
+license=('custom')
+install="${pkgname}.install"
+source=()

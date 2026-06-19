@@ -1,0 +1,23 @@
+Security scanner for AUR packages
+
+Usage: aur-scan [OPTIONS] <COMMAND>
+
+Commands:
+  scan     Scan a PKGBUILD file or directory
+  check    Check an AUR package BEFORE installation (fetches from AUR)
+  install  Race-free install: scan the exact bytes, then build them in dep order
+  system   Scan all installed AUR packages on the system
+  rules    List available detection rules
+  explain  Explain a detection code in detail
+  codes    List all detection codes with brief descriptions
+  ioc      Show or query the IOC (indicator of compromise) database
+  version  Check scanner version and configuration
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -c, --config <CONFIG>      Configuration file path
+  -s, --severity <SEVERITY>  Minimum severity to report [possible values: critical, high, medium, low, info]
+  -v, --verbose              Enable verbose output
+  -q, --quiet                Quiet mode (only show findings)
+  -h, --help                 Print help
+  -V, --version              Print version
