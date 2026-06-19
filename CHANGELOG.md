@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Configurable text output via an `[output]` config table.** Each finding's
+  rendered fields are now user-controllable: `line` (the `file:line` indicator),
+  `snippet`, `recommendation`, and `cwe`. Rich by default — every field shows
+  unless explicitly disabled, so a config can only make output terser, never
+  silently drop detail. A mistyped key is a hard error (`deny_unknown_fields`)
+  rather than a silent no-op. This also surfaces the finding location in
+  `aur-scan check`'s compact output (by basename), which previously only `scan`
+  showed (addresses discussion #16).
+
+  Strictly display-only: the toggles change *what is printed*, never which
+  findings exist, the process exit code, or whether a gate trips. The
+  machine-readable `--format json` / `--format sarif` output is unaffected and
+  always emits the complete record. There is deliberately no key to suppress a
+  finding itself.
+
 ## [2.0.0] - 2026-06-17
 
 Major release: optional, opt-in threat-intelligence lookups (VirusTotal +

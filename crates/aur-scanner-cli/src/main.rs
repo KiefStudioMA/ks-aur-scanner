@@ -290,6 +290,10 @@ async fn main() -> Result<()> {
                 include_optional,
                 sbom_path: sbom,
                 local_dirs: local,
+                // Display-only: honor the config's [output] table for how
+                // findings are rendered. The rest of the file config does not
+                // apply to `check` (it scans with engine defaults).
+                output: file_config.map(|c| c.output).unwrap_or_default(),
             })
             .await
         }

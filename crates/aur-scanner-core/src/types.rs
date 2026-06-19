@@ -208,6 +208,9 @@ pub struct ScanConfig {
     /// Cache configuration
     #[serde(default)]
     pub cache: CacheConfig,
+    /// Human-readable output display configuration
+    #[serde(default)]
+    pub output: OutputConfig,
     /// Scan timeout in seconds
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
@@ -225,7 +228,46 @@ impl Default for ScanConfig {
             enable_threat_intel: false,
             threat_intel: ThreatIntelConfig::default(),
             cache: CacheConfig::default(),
+            output: OutputConfig::default(),
             timeout_seconds: default_timeout(),
+        }
+    }
+}
+
+/// Which fields the human-readable text output includes for each finding.
+///
+/// **Display-only.** These toggles change *what is printed*, never which
+/// findings exist, the process exit code, or whether a security gate trips. A
+/// field hidden here is still present in the [`ScanResult`] and in the
+/// machine-readable JSON/SARIF output — those always emit the complete record so
+/// CI and tooling are never blinded by a display preference. There is
+/// deliberately **no** key to suppress a finding itself: verbosity is
+/// configurable, a finding's existence is not.
+///
+/// Rich by default — every field is shown unless explicitly disabled, so a
+/// config can only ever make the output terser, never silently drop detail the
+/// reader did not ask to drop. `deny_unknown_fields` turns a mistyped key
+/// (`line_numbers = true`) into a hard error rather than a silent no-op.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OutputConfig {
+    /// Append the `file:line` location to each finding.
+    pub line: bool,
+    /// Show the matched code snippet.
+    pub snippet: bool,
+    /// Show the remediation recommendation.
+    pub recommendation: bool,
+    /// Show the CWE reference.
+    pub cwe: bool,
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            line: true,
+            snippet: true,
+            recommendation: true,
+            cwe: true,
         }
     }
 }
@@ -365,5 +407,41 @@ mod tests {
         assert!(!Severity::High.is_at_least(Severity::Critical));
         assert!(Severity::High.is_at_least(Severity::High));
         assert!(!Severity::Info.is_at_least(Severity::Low));
+    }
+
+    #[test]
+    fn output_config_is_rich_by_default() {
+        // The default must show everything: a config can make output terser, but
+        // the absence of an [output] table never silently hides detail.
+        let cfg = OutputConfig::default();
+        assert!(cfg.line && cfg.snippet && cfg.recommendation && cfg.cwe);
+        // And the default ScanConfig carries that rich OutputConfig.
+        assert!(ScanConfig::default().output.line);
+    }
+
+    #[test]
+    fn output_config_partial_table_keeps_other_fields_default() {
+        // Setting one field must not reset the others to false (serde container
+        // default fills the omitted fields from OutputConfig::default()).
+        let cfg: ScanConfig = toml::from_str("[output]\nline = false\n").unwrap();
+        assert!(!cfg.output.line, "explicitly disabled");
+        assert!(cfg.output.snippet, "omitted field stays rich-default");
+        assert!(cfg.output.recommendation);
+        assert!(cfg.output.cwe);
+    }
+
+    #[test]
+    fn output_config_missing_table_is_rich() {
+        // No [output] table at all => every field on.
+        let cfg: ScanConfig = toml::from_str("min_severity = \"low\"\n").unwrap();
+        assert!(cfg.output.line && cfg.output.snippet);
+    }
+
+    #[test]
+    fn output_config_rejects_unknown_key() {
+        // A mistyped key must be a hard error, not a silent no-op that leaves the
+        // user thinking they disabled something they did not.
+        let err = toml::from_str::<ScanConfig>("[output]\nline_numbers = true\n");
+        assert!(err.is_err(), "unknown [output] key should be rejected");
     }
 }
