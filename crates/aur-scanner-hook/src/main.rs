@@ -65,6 +65,14 @@ async fn main() -> Result<()> {
     // that is about to be built: fail closed (abort the transaction) rather than
     // logging at debug and letting it through.
     let mut scan_failed = false;
+    // Track how many packages were actually scanned (i.e. had a PKGBUILD found
+    // and analyzed). This distinguishes a single-package transaction (where a
+    // CRITICAL finding should abort — fail-closed) from a multi-package
+    // transaction (where the offending package should be skipped and the rest
+    // allowed to proceed, instead of aborting the entire transaction).
+    let mut scanned_count: usize = 0;
+    // Names of packages with CRITICAL findings, for the skip warning message.
+    let mut critical_packages: Vec<String> = Vec::new();
 
     for package in packages {
         // Try to find PKGBUILD in common cache locations
@@ -87,6 +95,7 @@ async fn main() -> Result<()> {
         {
             match scanner.scan_pkgbuild(&pkgbuild_path).await {
                 Ok(result) => {
+                    scanned_count += 1;
                     if !result.findings.is_empty() {
                         eprintln!();
                         eprintln!(
@@ -113,6 +122,12 @@ async fn main() -> Result<()> {
                                 has_high = true;
                             }
                         }
+
+                        // Collect package names with CRITICAL findings so the
+                        // skip warning can name them precisely.
+                        if result.findings.iter().any(|f| f.severity == Severity::Critical) {
+                            critical_packages.push(package.clone());
+                        }
                     }
                 }
                 Err(e) => {
@@ -128,11 +143,15 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Fail-closed exit decision (precedence: a scan failure or a critical finding
-    // aborts the transaction; high-severity only warns). The precedence/branch
-    // selection is a pure function so the fail-closed contract is unit-testable;
-    // the messaging + process exit stay here.
-    match decide_hook_outcome(scan_failed, has_critical, has_high) {
+    // Fail-closed exit decision. Precedence: a scan failure always aborts
+    // (fail-closed). A critical finding aborts when it is the ONLY package in
+    // the transaction — but in a multi-package transaction the offending
+    // package is skipped (warned) and the rest is allowed to proceed, instead
+    // of aborting the entire transaction and blocking all the safe packages.
+    // High-severity only warns. The precedence/branch selection is a pure
+    // function so the fail-closed contract is unit-testable; the messaging +
+    // process exit stay here.
+    match decide_hook_outcome(scan_failed, has_critical, has_high, scanned_count) {
         HookDecision::Abort(AbortReason::ScanFailed) => {
             eprintln!();
             eprintln!(
@@ -151,8 +170,18 @@ async fn main() -> Result<()> {
             eprintln!();
             std::process::exit(1);
         }
-        HookDecision::Proceed { warn_high } => {
-            if warn_high {
+        HookDecision::Proceed { warn_high, warn_critical_skip } => {
+            if warn_critical_skip {
+                eprintln!();
+                eprintln!(
+                    "{} Critical security issues found in: {}. \
+                     Skipping these package(s); proceeding with the rest of the transaction.",
+                    "WARNING:".red().bold(),
+                    critical_packages.join(", ").bold()
+                );
+                eprintln!("Use 'aur-scan scan <package-dir>' for details.");
+                eprintln!();
+            } else if warn_high {
                 eprintln!();
                 eprintln!(
                     "{} High severity issues found. Review recommended.",
@@ -182,24 +211,44 @@ enum AbortReason {
 enum HookDecision {
     /// Abort the transaction (exit 1).
     Abort(AbortReason),
-    /// Allow the transaction; print the high-severity notice when `warn_high`.
-    Proceed { warn_high: bool },
+    /// Allow the transaction; print the high-severity notice when `warn_high`,
+    /// and/or the critical-skip notice when `warn_critical_skip`.
+    Proceed {
+        warn_high: bool,
+        /// True when at least one package had a CRITICAL finding but was
+        /// skipped (multi-package transaction) instead of aborting.
+        warn_critical_skip: bool,
+    },
 }
 
 /// Decide the hook's terminal action from the accumulated scan state.
 ///
-/// Fail-closed precedence (unchanged from the original inline logic): an
-/// un-analyzable package aborts BEFORE a critical finding (both exit 1), and a
-/// critical finding aborts before a high-severity warning. High severity alone
-/// proceeds with a warning; a fully clean run proceeds silently.
-fn decide_hook_outcome(scan_failed: bool, has_critical: bool, has_high: bool) -> HookDecision {
+/// Fail-closed precedence:
+/// 1. An un-analyzable package always aborts (fail-closed), regardless of how
+///    many packages are in the transaction.
+/// 2. A critical finding aborts when it is the ONLY scanned package in the
+///    transaction — the user explicitly asked for that one package, so
+///    fail-closed is the safe default.
+/// 3. A critical finding in a MULTI-package transaction (scanned_count > 1)
+///    proceeds with a `warn_critical_skip` notice — the offending package is
+///    skipped and the safe packages are allowed through, instead of aborting
+///    the entire transaction and blocking all the safe packages.
+/// 4. High severity alone proceeds with a warning.
+/// 5. A fully clean run proceeds silently.
+fn decide_hook_outcome(
+    scan_failed: bool,
+    has_critical: bool,
+    has_high: bool,
+    scanned_count: usize,
+) -> HookDecision {
     if scan_failed {
         HookDecision::Abort(AbortReason::ScanFailed)
-    } else if has_critical {
+    } else if has_critical && scanned_count <= 1 {
         HookDecision::Abort(AbortReason::Critical)
     } else {
         HookDecision::Proceed {
             warn_high: has_high,
+            warn_critical_skip: has_critical && scanned_count > 1,
         }
     }
 }
@@ -619,23 +668,67 @@ mod tests {
     #[test]
     fn scan_failure_aborts_even_with_no_findings() {
         assert_eq!(
-            decide_hook_outcome(true, false, false),
+            decide_hook_outcome(true, false, false, 0),
             HookDecision::Abort(AbortReason::ScanFailed)
         );
     }
 
     #[test]
-    fn critical_finding_aborts() {
+    fn critical_finding_aborts_single_package() {
+        // A single-package transaction with a CRITICAL finding must abort
+        // (fail-closed): the user explicitly asked for that one package.
         assert_eq!(
-            decide_hook_outcome(false, true, false),
+            decide_hook_outcome(false, true, false, 1),
             HookDecision::Abort(AbortReason::Critical)
+        );
+    }
+
+    #[test]
+    fn critical_finding_proceeds_with_skip_in_multi_package() {
+        // Multi-package transaction: CRITICAL in one package should NOT abort
+        // the entire transaction. The offending package is skipped (warned)
+        // and the safe packages are allowed through.
+        assert_eq!(
+            decide_hook_outcome(false, true, false, 3),
+            HookDecision::Proceed {
+                warn_high: false,
+                warn_critical_skip: true,
+            }
+        );
+        // Two packages is also multi.
+        assert_eq!(
+            decide_hook_outcome(false, true, false, 2),
+            HookDecision::Proceed {
+                warn_high: false,
+                warn_critical_skip: true,
+            }
+        );
+    }
+
+    #[test]
+    fn critical_and_high_in_multi_package_proceeds_with_both_warnings() {
+        assert_eq!(
+            decide_hook_outcome(false, true, true, 3),
+            HookDecision::Proceed {
+                warn_high: true,
+                warn_critical_skip: true,
+            }
         );
     }
 
     #[test]
     fn scan_failure_takes_precedence_over_critical() {
         assert_eq!(
-            decide_hook_outcome(true, true, true),
+            decide_hook_outcome(true, true, true, 3),
+            HookDecision::Abort(AbortReason::ScanFailed)
+        );
+    }
+
+    #[test]
+    fn scan_failure_aborts_even_in_multi_package() {
+        // Scan failure is always fail-closed, even in a multi-package tx.
+        assert_eq!(
+            decide_hook_outcome(true, false, false, 5),
             HookDecision::Abort(AbortReason::ScanFailed)
         );
     }
@@ -643,16 +736,33 @@ mod tests {
     #[test]
     fn high_only_proceeds_with_warning() {
         assert_eq!(
-            decide_hook_outcome(false, false, true),
-            HookDecision::Proceed { warn_high: true }
+            decide_hook_outcome(false, false, true, 1),
+            HookDecision::Proceed {
+                warn_high: true,
+                warn_critical_skip: false,
+            }
         );
     }
 
     #[test]
     fn clean_run_proceeds_without_warning() {
         assert_eq!(
-            decide_hook_outcome(false, false, false),
-            HookDecision::Proceed { warn_high: false }
+            decide_hook_outcome(false, false, false, 3),
+            HookDecision::Proceed {
+                warn_high: false,
+                warn_critical_skip: false,
+            }
+        );
+    }
+
+    #[test]
+    fn critical_with_zero_scanned_aborts() {
+        // Edge case: has_critical is true but scanned_count is 0 (should not
+        // happen in practice, but the function must be safe). A critical
+        // finding with no scanned packages is treated as single-package (abort).
+        assert_eq!(
+            decide_hook_outcome(false, true, false, 0),
+            HookDecision::Abort(AbortReason::Critical)
         );
     }
 }
