@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed — multi-package transaction handling
+
+- **CRITICAL findings no longer abort multi-package transactions.** Previously,
+  a single CRITICAL finding in any package aborted the entire pacman
+  transaction — blocking all safe packages along with the offending one. Now the
+  hook tracks the number of scanned packages: in a multi-package transaction
+  (scanned_count > 1), a CRITICAL finding proceeds with a prominent warning
+  naming the offending package(s), so the safe packages can be installed. In a
+  single-package transaction, CRITICAL still aborts (fail-closed). Scan failures
+  (un-analyzable PKGBUILDs) remain fail-closed regardless of transaction size.
+
+  **Live-tested on CachyOS:** installing `abracadabra`, `gqrx-git`,
+  `natpos-sdr`, and `sdrsharp` together — `sdrsharp` has a CRITICAL DEEP-001
+  finding. Before the fix, all 69 packages were blocked. After the fix, all
+  packages installed successfully with a warning naming `sdrsharp`.
+
 ## [2.0.0] - 2026-06-17
 
 Major release: optional, opt-in threat-intelligence lookups (VirusTotal +
