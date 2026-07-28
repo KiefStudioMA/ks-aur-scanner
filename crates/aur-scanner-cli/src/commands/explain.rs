@@ -183,13 +183,15 @@ fn get_real_world_context(code: &str) -> Option<String> {
              users into installing them as dependencies."
                 .to_string(),
         ),
-        "ATOMIC-001" | "ATOMIC-002" | "ATOMIC-003" => Some(
+        "ATOMIC-001" | "ATOMIC-002" | "ATOMIC-003" | "ATOMIC-004" => Some(
             "The June 2026 'Atomic Arch' campaign adopted hundreds of orphaned AUR \
              packages (alvr, premake-git, and 1,500+ others) and modified their \
-             PKGBUILD/install hooks to run `npm install atomic-lockfile` (wave 1) or \
-             `bun install js-digest` (wave 2). The payload is a credential stealer \
-             with an optional root-only eBPF rootkit (scales.bpf.c). The hijacked \
-             packages themselves looked clean, so signature scanners missed them."
+             PKGBUILD/install hooks to run `npm install atomic-lockfile` (wave 1), \
+             `bun install js-digest` (wave 2), or obfuscated `nextfile-js` (wave 3). \
+             Later waves used ALPM .hook delivery and a ~/.local/bin/sudo credential \
+             shim (ATOMIC-004). The payload is a credential stealer with an optional \
+             root-only eBPF rootkit (scales.bpf.c). The hijacked packages themselves \
+             looked clean, so signature scanners missed them."
                 .to_string(),
         ),
         _ => None,
@@ -281,9 +283,10 @@ fn get_related_codes(code: &str) -> Option<Vec<&'static str>> {
         "CRED-001" => Some(vec!["CRED-002", "CRED-003", "BROWSER-001", "BROWSER-002"]),
         "INSTALL-001" => Some(vec!["INSTALL-002", "INSTALL-003", "PERSIST-001"]),
         "OBF-001" => Some(vec!["OBF-002", "OBF-003", "OBF-005"]),
-        "ATOMIC-001" => Some(vec!["ATOMIC-002", "ATOMIC-003", "INSTALL-003"]),
-        "ATOMIC-002" => Some(vec!["ATOMIC-001", "ATOMIC-003", "INSTALL-003"]),
-        "ATOMIC-003" => Some(vec!["ATOMIC-001", "ATOMIC-002", "PERSIST-006"]),
+        "ATOMIC-001" => Some(vec!["ATOMIC-002", "ATOMIC-003", "ATOMIC-004", "INSTALL-003"]),
+        "ATOMIC-002" => Some(vec!["ATOMIC-001", "ATOMIC-003", "ATOMIC-004", "INSTALL-003"]),
+        "ATOMIC-003" => Some(vec!["ATOMIC-001", "ATOMIC-002", "ATOMIC-004", "PERSIST-006"]),
+        "ATOMIC-004" => Some(vec!["ATOMIC-001", "ATOMIC-002", "PRIV-001", "CRED-001"]),
         _ => None,
     }
 }

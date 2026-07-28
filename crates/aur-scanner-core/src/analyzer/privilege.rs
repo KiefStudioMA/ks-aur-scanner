@@ -51,8 +51,10 @@ impl PrivilegeAnalyzer {
             // exists in a 4-digit octal mode whose leading digit has the suid (4)
             // or sgid (2) bit set, i.e. leading digit 2-7 (a leading 0 = no special
             // bit, 1 = sticky only). Plain 3-digit modes (755, 644, 700) CANNOT set
-            // suid/sgid and must never match. Symbolic forms (u+s, g+s, +s) and
-            // `install -m<mode>` with a special bit are also covered.
+            // suid/sgid and must never match. Symbolic forms that *set* the bit
+            // (`u+s`, `g+s`, `+s`, `u=s`) are covered; forms that *clear* it
+            // (`u-s`, `g-s`, `-s`) must NOT fire — removing a setuid bit is the
+            // safe direction (issue #21, visual-studio-code-bin).
             // `(?ix)` so `CHMOD`/`INSTALL` case variants cannot evade PRIV-002
             // (audit HI-6). The octal mode digits are case-irrelevant; `(?i)` only
             // additionally lets the symbolic suid bit match `S` as well as `s`,
@@ -60,7 +62,7 @@ impl PrivilegeAnalyzer {
             suid_pattern: Regex::new(
                 r"(?ix)
                   chmod \s+ (?:-[A-Za-z]+ \s+)* 0?[2-7][0-7]{3} \b   # chmod [flags] 4755 / 02755
-                | chmod \s+ [ugoa]* [-+=] [rwxXt]* s \b              # chmod u+s / g+s / +s
+                | chmod \s+ [ugoa]* [+=] [rwxXt]* s \b               # chmod u+s / g+s / +s / u=s (SET only)
                 | install \s [^\n]* -[A-Za-z]*m [=\s]? 0?[2-7][0-7]{3} \b  # install -m4755 / -Dm4755
                 ",
             )
@@ -225,11 +227,10 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
             }
         }
 
-        // Check install script if present
-        if let Some(ref install_script) = context.install_script {
-            for hook in &install_script.hooks {
+        // Check install scriptlets and ALPM side scripts for sudo in hook bodies.
+        for script in context.all_scripts() {
+            for hook in &script.hooks {
                 let body = executable_body(&hook.content);
-                // Check for sudo in install hooks
                 if self.sudo_pattern.is_match(&body) {
                     findings.push(Finding {
                         id: "PRIV-006".to_string(),
@@ -241,7 +242,7 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
                             hook.name
                         ),
                         location: Location {
-                            file: install_script.path.clone(),
+                            file: script.path.clone(),
                             line: Some(hook.line_start),
                             column: None,
                             snippet: None,
@@ -279,6 +280,7 @@ mod tests {
         AnalysisContext {
             pkgbuild,
             install_script: None,
+            side_scripts: vec![],
             config: ScanConfig::default(),
             file_path: PathBuf::from("PKGBUILD"),
         }
@@ -454,6 +456,27 @@ build() {
             assert!(
                 findings.iter().any(|f| f.id == "PRIV-002"),
                 "expected PRIV-002 for: {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn clearing_suid_bit_does_not_trip_priv002() {
+        // Issue #21: visual-studio-code-bin and similar packages *remove* the
+        // SUID bit for sandbox safety. That is the opposite of escalation.
+        let analyzer = PrivilegeAnalyzer::new();
+        for body in [
+            "chmod u-s \"$pkgdir/usr/bin/code\"",
+            "chmod g-s \"$pkgdir/opt/app/chrome-sandbox\"",
+            "chmod -s \"$pkgdir/usr/lib/chromium/chrome-sandbox\"",
+        ] {
+            let src = format!("pkgname=test\npkgver=1.0\npkgrel=1\npackage() {{\n    {body}\n}}\n");
+            let context = create_test_context(&src);
+            let findings = analyzer.analyze(&context).await.unwrap();
+            assert!(
+                !findings.iter().any(|f| f.id == "PRIV-002"),
+                "clearing SUID must not trip PRIV-002 for: {body}; got {:?}",
+                findings.iter().map(|f| &f.id).collect::<Vec<_>>()
             );
         }
     }

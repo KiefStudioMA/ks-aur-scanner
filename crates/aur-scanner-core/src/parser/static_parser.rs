@@ -459,31 +459,39 @@ fn strip_inline_comment_stateful(
     mut escaped: bool,
 ) -> &str {
     let bytes = line.as_bytes();
-    let mut prev_ws = true; // start-of-line counts as a word boundary
+    // Start-of-line counts as a word boundary. After an unquoted `(` the next
+    // token can begin a shell comment (`source=(#"old-url"` is a comment in
+    // bash, not a source element) — matching that is what keeps CHK-006 from
+    // counting a commented-out source as a live entry (issue #24).
+    let mut at_word_boundary = true;
     for (i, &b) in bytes.iter().enumerate() {
         if escaped {
             escaped = false;
-            prev_ws = false;
+            at_word_boundary = false;
             continue;
         }
         match b {
             b'\\' if !in_single => {
                 escaped = true;
-                prev_ws = false;
+                at_word_boundary = false;
             }
             b'\'' if !in_double => {
                 in_single = !in_single;
-                prev_ws = false;
+                at_word_boundary = false;
             }
             b'"' if !in_single => {
                 in_double = !in_double;
-                prev_ws = false;
+                at_word_boundary = false;
             }
-            b'#' if !in_single && !in_double && prev_ws => {
+            b'#' if !in_single && !in_double && at_word_boundary => {
                 return line[..i].trim_end();
             }
-            b' ' | b'\t' => prev_ws = true,
-            _ => prev_ws = false,
+            b' ' | b'\t' => at_word_boundary = true,
+            // Unquoted `(` opens a new token context: `#` immediately after is a
+            // comment in bash (`a=(#cmt` / `a=( #cmt`). `=` alone is NOT a
+            // boundary (`a=#foo` assigns the literal `#foo`).
+            b'(' if !in_single && !in_double => at_word_boundary = true,
+            _ => at_word_boundary = false,
         }
     }
     line
@@ -862,6 +870,28 @@ package() {
             vec!["a", "b", "c"],
             "real comment (and its `)`) must be stripped: {urls:?}"
         );
+    }
+
+    #[test]
+    fn commented_out_source_after_open_paren_is_not_an_element() {
+        // Issue #24: `source=(#"old-url"\n "live-url")` — bash treats `#"..."`
+        // as a whole-line comment after `(`. Counting it as a source produces
+        // a false CHK-006 checksum mismatch.
+        let parser = StaticParser::new();
+        let content = concat!(
+            "pkgname=deadbeef\npkgver=1.0\npkgrel=1\n",
+            "source=(#\"https://example.com/old.tar.bz2\"\n",
+            "        \"https://example.com/new.tar.bz2\")\n",
+            "sha512sums=('deadbeef')\n",
+        );
+        let result = parser.parse(content).unwrap();
+        let urls: Vec<&str> = result.source.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec!["https://example.com/new.tar.bz2"],
+            "commented-out source after ( must not be parsed as an element: {urls:?}"
+        );
+        assert_eq!(result.checksums.sha512sums.len(), 1);
     }
 
     #[test]

@@ -30,7 +30,7 @@ pub use types::*;
 use analyzer::SecurityAnalyzer;
 use parser::PkgbuildParser;
 use rules::RuleEngine;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use threat_intel::IocDatabase;
 use tracing::{debug, info, warn};
@@ -161,12 +161,17 @@ impl Scanner {
         } else {
             None
         };
+        // ALPM .hook files ship next to the PKGBUILD in some attack waves and
+        // are installed into /usr/share/libalpm/hooks/ — scan them as side
+        // scriptlets. Never execute; text only.
+        let side_scripts = discover_alpm_hooks(dir);
         let scanned_install = install_script.as_ref().map(|s| s.path.clone());
 
         // Create analysis context
         let context = AnalysisContext {
             pkgbuild: pkgbuild.clone(),
             install_script,
+            side_scripts,
             config: self.config.clone(),
             file_path: path.to_path_buf(),
         };
@@ -364,6 +369,48 @@ fn resolve_install_path(
             preferred.or_else(|| Some(install_files.remove(0)))
         }
     }
+}
+
+/// Discover ALPM hook files (`*.hook`) beside the PKGBUILD.
+///
+/// Atomic Arch wave 4 delivered payload via `.hook` files installed into
+/// `/usr/share/libalpm/hooks/`. These are not referenced by `install=`, so a
+/// scanner that only reads the install scriptlet misses them. Each discovered
+/// file is read as text (capped) and returned for static analysis — never
+/// executed. Path components are the directory listing only (no attacker-
+/// controlled name expansion).
+fn discover_alpm_hooks(dir: &Path) -> Vec<parser::ParsedInstallScript> {
+    let mut hooks: Vec<parser::ParsedInstallScript> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return hooks;
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension().and_then(|e| e.to_str()) == Some("hook")
+                // Refuse odd names that look like traversal even though
+                // read_dir only yields direct children.
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| !n.is_empty() && !n.starts_with('.') && !n.contains(".."))
+        })
+        .collect();
+    paths.sort();
+    for path in paths {
+        match read_text_capped(&path) {
+            Ok(content) => hooks.push(parser::ParsedInstallScript {
+                content: content.clone(),
+                path,
+                hooks: parser::parse_install_hooks(&content),
+            }),
+            Err(e) => {
+                warn!("Failed to read ALPM hook {}: {}", path.display(), e);
+            }
+        }
+    }
+    hooks
 }
 
 /// Expand the small set of PKGBUILD variables that legitimately appear in an

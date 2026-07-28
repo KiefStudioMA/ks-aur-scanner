@@ -292,6 +292,53 @@ impl ScanConfig {
             Ok(Self::default())
         }
     }
+
+    /// Default config search paths, highest priority first.
+    ///
+    /// 1. `$XDG_CONFIG_HOME/aur-scanner/config.toml` (or `~/.config/...`)
+    /// 2. `/etc/aur-scanner/config.toml`
+    ///
+    /// An explicit `-c/--config` path is handled by the CLI and is never in this
+    /// list. The first path that exists wins; a present-but-malformed file is a
+    /// hard error (never silently skipped in favor of a lower-priority path).
+    pub fn default_config_paths() -> Vec<PathBuf> {
+        let mut paths = Vec::with_capacity(2);
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            let p = PathBuf::from(xdg);
+            if !p.as_os_str().is_empty() {
+                paths.push(p.join("aur-scanner").join("config.toml"));
+            }
+        } else if let Some(home) = dirs::home_dir() {
+            paths.push(
+                home.join(".config")
+                    .join("aur-scanner")
+                    .join("config.toml"),
+            );
+        }
+        paths.push(PathBuf::from("/etc/aur-scanner/config.toml"));
+        paths
+    }
+
+    /// Load the effective config: `cli_path` if given, otherwise the first
+    /// existing default path, otherwise built-in defaults.
+    ///
+    /// Returns `(config, path_loaded)` where `path_loaded` is `None` only when
+    /// no file was found and defaults were used. A present-but-unreadable or
+    /// malformed file is always an error — a security config must never look
+    /// like it is in effect while being silently ignored (issue #25).
+    pub fn resolve(cli_path: Option<&std::path::Path>) -> crate::Result<(Self, Option<PathBuf>)> {
+        if let Some(path) = cli_path {
+            let cfg = Self::from_toml_file(path)?;
+            return Ok((cfg, Some(path.to_path_buf())));
+        }
+        for path in Self::default_config_paths() {
+            if path.exists() {
+                let cfg = Self::from_toml_file(&path)?;
+                return Ok((cfg, Some(path)));
+            }
+        }
+        Ok((Self::default(), None))
+    }
 }
 
 /// Threat intelligence provider configuration.
@@ -366,12 +413,26 @@ impl Default for CacheConfig {
 pub struct AnalysisContext {
     /// Parsed PKGBUILD
     pub pkgbuild: crate::parser::ParsedPkgbuild,
-    /// Parsed install script if present
+    /// Parsed install script if present (`install=` / `*.install`)
     pub install_script: Option<crate::parser::ParsedInstallScript>,
+    /// Additional package-side scripts discovered next to the PKGBUILD
+    /// (notably ALPM `*.hook` files used in later Atomic Arch waves).
+    /// Analyzed with the same install-script rule surface; never executed.
+    pub side_scripts: Vec<crate::parser::ParsedInstallScript>,
     /// Scanner configuration
     pub config: ScanConfig,
     /// Path to the PKGBUILD file
     pub file_path: PathBuf,
+}
+
+impl AnalysisContext {
+    /// Every package-side scriptlet (primary `.install` plus side scripts such
+    /// as ALPM hooks). Analyzers that scan install-time content should iterate
+    /// this rather than only `install_script`, so a payload moved into a `.hook`
+    /// file cannot escape analysis.
+    pub fn all_scripts(&self) -> impl Iterator<Item = &crate::parser::ParsedInstallScript> {
+        self.install_script.iter().chain(self.side_scripts.iter())
+    }
 }
 
 /// File type for rule matching
@@ -407,6 +468,43 @@ mod tests {
         assert!(!Severity::High.is_at_least(Severity::Critical));
         assert!(Severity::High.is_at_least(Severity::High));
         assert!(!Severity::Info.is_at_least(Severity::Low));
+    }
+
+    #[test]
+    fn resolve_prefers_explicit_path_and_errors_on_malformed() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good.toml");
+        std::fs::write(&good, "enable_threat_intel = true\n").unwrap();
+        let (cfg, path) = ScanConfig::resolve(Some(&good)).unwrap();
+        assert!(cfg.enable_threat_intel);
+        assert_eq!(path.as_deref(), Some(good.as_path()));
+
+        let bad = dir.path().join("bad.toml");
+        std::fs::write(&bad, "enable_threat_intel = [not valid\n").unwrap();
+        assert!(
+            ScanConfig::resolve(Some(&bad)).is_err(),
+            "malformed config must be a hard error"
+        );
+    }
+
+    #[test]
+    fn default_config_paths_put_user_before_system() {
+        let paths = ScanConfig::default_config_paths();
+        assert!(
+            !paths.is_empty(),
+            "must always include at least the system path"
+        );
+        assert_eq!(
+            paths.last().map(|p| p.as_os_str()),
+            Some(std::ffi::OsStr::new("/etc/aur-scanner/config.toml"))
+        );
+        if paths.len() > 1 {
+            assert!(
+                paths[0].ends_with("aur-scanner/config.toml"),
+                "user path should be first when present: {:?}",
+                paths[0]
+            );
+        }
     }
 
     #[test]

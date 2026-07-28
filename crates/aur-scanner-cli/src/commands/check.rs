@@ -13,7 +13,7 @@ use aur_scanner_core::overlay::{info_from_pkgbuild, OverlaySource};
 use aur_scanner_core::parser::{PkgbuildParser, StaticParser};
 use aur_scanner_core::sbom::{self, ComponentScan};
 use aur_scanner_core::validate::{is_valid_package_name, validate_package_name};
-use aur_scanner_core::{Finding, OutputConfig, Scanner, Severity};
+use aur_scanner_core::{Finding, OutputConfig, ScanConfig, Scanner, Severity};
 
 use super::banner;
 
@@ -35,9 +35,10 @@ pub struct CheckArgs {
     pub sbom_path: Option<PathBuf>,
     /// Already-fetched package directories to scan from disk (race-free).
     pub local_dirs: Vec<PathBuf>,
-    /// How findings are rendered in the text output (display-only; never
-    /// affects which findings exist or the exit code).
-    pub output: OutputConfig,
+    /// Full scan configuration (threat-intel, cache, rules, display). The
+    /// `[output]` table is display-only and never affects findings or exit
+    /// codes; every other field is honored by the scanner engine.
+    pub config: ScanConfig,
 }
 
 /// How a `--local` dir's self-declared pkgname relates to what the user asked
@@ -72,7 +73,8 @@ fn classify_local_dir(
 /// Run the pre-install check.
 pub async fn run(args: CheckArgs) -> Result<()> {
     let client = AurClient::new().context("Failed to create AUR client")?;
-    let scanner = Scanner::with_defaults().context("Failed to create scanner")?;
+    let output = args.config.output.clone();
+    let scanner = Scanner::new(args.config).context("Failed to create scanner")?;
 
     banner::print_header("Pre-Install Check");
     println!();
@@ -251,7 +253,7 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                     &node.name,
                     &result.findings,
                     args.min_severity,
-                    &args.output,
+                    &output,
                 );
                 scans.insert(node.name.clone(), scan);
             }

@@ -241,16 +241,20 @@ async fn main() -> Result<()> {
         .without_time()
         .init();
 
-    // Load the optional -c/--config file once. A present-but-unreadable or
-    // malformed config is a hard error rather than being silently ignored, so
-    // the flag can never appear to work while doing nothing.
-    let file_config: Option<ScanConfig> = match cli.config.as_ref() {
-        Some(path) => Some(
-            ScanConfig::from_toml_file(path)
-                .with_context(|| format!("failed to load config file {}", path.display()))?,
-        ),
-        None => None,
-    };
+    // Resolve config: explicit -c/--config wins, else the first existing
+    // default path ($XDG_CONFIG_HOME/aur-scanner/config.toml, then
+    // /etc/aur-scanner/config.toml), else built-in defaults. A present-but-
+    // unreadable or malformed file is a hard error — never silently ignored
+    // (issue #25: threat-intel settings in the default path were previously
+    // never read unless -c was passed).
+    let (file_config, loaded_config_path) = ScanConfig::resolve(cli.config.as_deref())
+        .with_context(|| match cli.config.as_ref() {
+            Some(p) => format!("failed to load config file {}", p.display()),
+            None => "failed to load aur-scanner config".into(),
+        })?;
+    if let Some(path) = &loaded_config_path {
+        tracing::debug!("loaded config from {}", path.display());
+    }
 
     match cli.command {
         Commands::Scan {
@@ -268,7 +272,7 @@ async fn main() -> Result<()> {
                 cli.severity.map(Into::into),
                 include_info,
                 cli.quiet,
-                file_config.unwrap_or_default(),
+                file_config.clone(),
             )
             .await
         }
@@ -290,10 +294,9 @@ async fn main() -> Result<()> {
                 include_optional,
                 sbom_path: sbom,
                 local_dirs: local,
-                // Display-only: honor the config's [output] table for how
-                // findings are rendered. The rest of the file config does not
-                // apply to `check` (it scans with engine defaults).
-                output: file_config.map(|c| c.output).unwrap_or_default(),
+                // Full config: threat-intel, cache, rules_path, and display
+                // [output] all apply to pre-install check (issue #25).
+                config: file_config.clone(),
             })
             .await
         }
@@ -324,7 +327,7 @@ async fn main() -> Result<()> {
                 cli.severity.map(Into::into),
                 rescan,
                 cache_dir,
-                file_config.unwrap_or_default(),
+                file_config.clone(),
             )
             .await
         }
@@ -336,7 +339,7 @@ async fn main() -> Result<()> {
             // Honor a config-supplied custom rules dir so `codes` lists rules the
             // scan engine would actually load.
             let extra_dirs: Vec<PathBuf> =
-                file_config.and_then(|c| c.rules_path).into_iter().collect();
+                file_config.rules_path.clone().into_iter().collect();
             commands::codes::run(category.as_deref(), &format, &extra_dirs)
         }
         Commands::Ioc { check } => commands::ioc::run(check.as_deref()),

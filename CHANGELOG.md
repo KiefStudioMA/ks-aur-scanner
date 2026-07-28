@@ -6,22 +6,67 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.1.0-rc.1] - 2026-07-28
+
+Release candidate focused on correctness and Atomic Arch coverage depth. External
+pull requests are treated as untrusted input: only reimplemented, adversarially
+tested changes land. The pacman hook remains fail-closed on Critical findings
+in multi-package transactions (PR #23's soft-continue default is not accepted).
+
 ### Added
 
 - **Configurable text output via an `[output]` config table.** Each finding's
-  rendered fields are now user-controllable: `line` (the `file:line` indicator),
-  `snippet`, `recommendation`, and `cwe`. Rich by default — every field shows
-  unless explicitly disabled, so a config can only make output terser, never
-  silently drop detail. A mistyped key is a hard error (`deny_unknown_fields`)
-  rather than a silent no-op. This also surfaces the finding location in
-  `aur-scan check`'s compact output (by basename), which previously only `scan`
-  showed (addresses discussion #16).
+  rendered fields are user-controllable: `line`, `snippet`, `recommendation`,
+  and `cwe`. Rich by default; mistyped keys are hard errors
+  (`deny_unknown_fields`). Display-only — never changes findings, exit codes, or
+  gates. `check` compact output now shows `file:line` (discussion #16).
+- **Default config discovery.** Without `-c`, the CLI and hook load the first
+  existing path among `$XDG_CONFIG_HOME/aur-scanner/config.toml` (or
+  `~/.config/...`) and `/etc/aur-scanner/config.toml`. A present-but-malformed
+  file is a hard error. Fixes threat-intel appearing dead when keys lived only
+  in the system config (issue #25). `check` now applies the full config (not
+  only the display table).
+- **ALPM `*.hook` side-script scanning.** Package-dir `.hook` files are read as
+  text and analyzed with the install-scriptlet rule surface (Atomic Arch wave 4
+  delivery path). Never executed.
+- **ATOMIC-004** — `~/.local/bin/sudo` (and similar) credential-stealer shim
+  detection.
+- **ATOMIC-001** expanded with wave-3 package names (`nextfile-js`,
+  `ansi-colors-nextfile-js`).
+- **ENV-003** expanded to fish/zsh/profile.d startup paths (still subject to the
+  pure-printer / heredoc informational filter).
 
-  Strictly display-only: the toggles change *what is printed*, never which
-  findings exist, the process exit code, or whether a gate trips. The
-  machine-readable `--format json` / `--format sarif` output is unaffected and
-  always emits the complete record. There is deliberately no key to suppress a
-  finding itself.
+### Fixed
+
+- **SRC-004 false positive on `raw.githubusercontent.com`** — shortener match is
+  host-label-boundary via `neturl`, not a substring (issue #22; `t.co` inside
+  `githubusercontent.com`).
+- **CHK-006 false positive on commented-out sources** — `#` after an unquoted
+  `(` is a shell comment, matching bash (`source=(#"old"` …) (issue #24).
+- **PRIV-002 false positive on clearing SUID** — symbolic modes that *remove*
+  the bit (`u-s`, `g-s`, `-s`) no longer fire; only set forms (`u+s`, `=s`,
+  octal 2–7xxx) do (issue #21).
+- **ENV-003 / HIDDEN-001 on printed install messages** — path-prefixed pure
+  printers (`/bin/cat <<EOF`) are recognized so documentation heredocs that
+  mention `~/.bashrc` do not fire (issue #15).
+- **PERSIST-003 on cron removal** — requires a write/install verb (or
+  `crontab -e` / file install); `rm /etc/cron.d/...` and `crontab -l`/`-r` do
+  not fire (issue #21).
+- **`aur-scanner-git` prepare()** — GitHub merge commits signed by GitHub's key
+  fall back to verifying the first parent against `validpgpkeys` (issue #20).
+
+### Security
+
+- Hook multi-package policy: **unchanged fail-closed**. A Critical finding still
+  aborts the entire transaction. Soft-skip of the offending package only is not
+  the default; it would let a malicious package ride alongside clean ones.
+- `anyhow` bumped past RUSTSEC-2026-0190 (unsound `downcast_mut`).
+
+### Not in this RC (tracked)
+
+- Offline ELF/`-bin` payload analyzer (PR #9) — valuable; requires fail-closed
+  parser hardening and path confinement before any cherry-pick.
+- Binary hash reputation beyond existing opt-in threat-intel paths.
 
 ## [2.0.0] - 2026-06-17
 
