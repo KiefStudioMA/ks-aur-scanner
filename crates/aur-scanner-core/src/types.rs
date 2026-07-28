@@ -309,11 +309,7 @@ impl ScanConfig {
                 paths.push(p.join("aur-scanner").join("config.toml"));
             }
         } else if let Some(home) = dirs::home_dir() {
-            paths.push(
-                home.join(".config")
-                    .join("aur-scanner")
-                    .join("config.toml"),
-            );
+            paths.push(home.join(".config").join("aur-scanner").join("config.toml"));
         }
         paths.push(PathBuf::from("/etc/aur-scanner/config.toml"));
         paths

@@ -283,9 +283,24 @@ fn get_related_codes(code: &str) -> Option<Vec<&'static str>> {
         "CRED-001" => Some(vec!["CRED-002", "CRED-003", "BROWSER-001", "BROWSER-002"]),
         "INSTALL-001" => Some(vec!["INSTALL-002", "INSTALL-003", "PERSIST-001"]),
         "OBF-001" => Some(vec!["OBF-002", "OBF-003", "OBF-005"]),
-        "ATOMIC-001" => Some(vec!["ATOMIC-002", "ATOMIC-003", "ATOMIC-004", "INSTALL-003"]),
-        "ATOMIC-002" => Some(vec!["ATOMIC-001", "ATOMIC-003", "ATOMIC-004", "INSTALL-003"]),
-        "ATOMIC-003" => Some(vec!["ATOMIC-001", "ATOMIC-002", "ATOMIC-004", "PERSIST-006"]),
+        "ATOMIC-001" => Some(vec![
+            "ATOMIC-002",
+            "ATOMIC-003",
+            "ATOMIC-004",
+            "INSTALL-003",
+        ]),
+        "ATOMIC-002" => Some(vec![
+            "ATOMIC-001",
+            "ATOMIC-003",
+            "ATOMIC-004",
+            "INSTALL-003",
+        ]),
+        "ATOMIC-003" => Some(vec![
+            "ATOMIC-001",
+            "ATOMIC-002",
+            "ATOMIC-004",
+            "PERSIST-006",
+        ]),
         "ATOMIC-004" => Some(vec!["ATOMIC-001", "ATOMIC-002", "PRIV-001", "CRED-001"]),
         _ => None,
     }

@@ -338,8 +338,7 @@ async fn main() -> Result<()> {
         Commands::Codes { category, format } => {
             // Honor a config-supplied custom rules dir so `codes` lists rules the
             // scan engine would actually load.
-            let extra_dirs: Vec<PathBuf> =
-                file_config.rules_path.clone().into_iter().collect();
+            let extra_dirs: Vec<PathBuf> = file_config.rules_path.clone().into_iter().collect();
             commands::codes::run(category.as_deref(), &format, &extra_dirs)
         }
         Commands::Ioc { check } => commands::ioc::run(check.as_deref()),

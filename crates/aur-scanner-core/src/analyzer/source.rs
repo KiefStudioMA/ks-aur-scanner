@@ -34,11 +34,7 @@ const URL_SHORTENERS: &[&str] = &[
 fn url_shortener_host(url: &str) -> Option<&'static str> {
     // Strip a leading `name::` source rename (`pkg::https://...`) before host
     // extraction — neturl does not know about makepkg rename syntax.
-    let bare = url
-        .find("::")
-        .map(|i| &url[i + 2..])
-        .unwrap_or(url)
-        .trim();
+    let bare = url.find("::").map(|i| &url[i + 2..]).unwrap_or(url).trim();
     let host = crate::neturl::extract_host(bare)?;
     URL_SHORTENERS
         .iter()
@@ -489,10 +485,7 @@ sha256sums=('SKIP')
             None,
             "t.co must not match inside githubusercontent.com"
         );
-        assert_eq!(
-            url_shortener_host("git+https://github.com/u/r.git"),
-            None
-        );
+        assert_eq!(url_shortener_host("git+https://github.com/u/r.git"), None);
     }
 
     #[tokio::test]

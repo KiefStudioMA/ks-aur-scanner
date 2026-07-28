@@ -249,12 +249,7 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                 } else {
                     println!("{}", "ok".green());
                 }
-                print_findings_for(
-                    &node.name,
-                    &result.findings,
-                    args.min_severity,
-                    &output,
-                );
+                print_findings_for(&node.name, &result.findings, args.min_severity, &output);
                 scans.insert(node.name.clone(), scan);
             }
             Err(e) => {

@@ -55,12 +55,7 @@ impl SecurityAnalyzer for PatternAnalyzer {
         // Analyze install scriptlets and ALPM side scripts (*.hook). Same rule
         // surface: both run with elevated trust during a pacman transaction.
         for script in context.all_scripts() {
-            let kind = if script
-                .path
-                .extension()
-                .and_then(|e| e.to_str())
-                == Some("hook")
-            {
+            let kind = if script.path.extension().and_then(|e| e.to_str()) == Some("hook") {
                 "alpm hook"
             } else {
                 "install script"

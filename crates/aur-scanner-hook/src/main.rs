@@ -24,11 +24,7 @@ async fn main() -> Result<()> {
     let config = match ScanConfig::resolve(None) {
         Ok((config, _)) => config,
         Err(e) => {
-            eprintln!(
-                "{} invalid config: {}",
-                "aur-scanner:".red().bold(),
-                e
-            );
+            eprintln!("{} invalid config: {}", "aur-scanner:".red().bold(), e);
             std::process::exit(2);
         }
     };

@@ -23,7 +23,7 @@ jobs:
     name: clippy / test / build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -41,15 +41,12 @@ jobs:
       - name: Release build
         run: cargo build --all --release
 
-  # Formatting is reported but NON-BLOCKING: the codebase predates rustfmt
-  # enforcement and has pre-existing drift. Do a one-time `cargo fmt --all` in a
-  # dedicated commit, then move this into the `test` job to make it a hard gate.
+  # Formatting is a hard gate. Applied repo-wide with `cargo fmt --all`.
   fmt:
-    name: rustfmt (non-blocking)
+    name: rustfmt
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -61,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@beta
         with:
           components: clippy
@@ -76,7 +73,7 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
