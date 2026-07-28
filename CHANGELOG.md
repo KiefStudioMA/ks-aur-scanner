@@ -38,6 +38,11 @@ in multi-package transactions (PR #23's soft-continue default is not accepted).
 
 ### Fixed
 
+- **`aur-scan-wrap` / plugin / `install` config discovery** — those paths used
+  built-in `ScanConfig::default()` only, so XDG/`/etc` settings (including
+  threat-intel) never applied when scanning through the wrapper. They now share
+  `ScanConfig::resolve` via `Scanner::with_system_config()` (same contract as the
+  CLI and hook). Pure built-in defaults remain available for unit tests.
 - **SRC-004 false positive on `raw.githubusercontent.com`** — shortener match is
   host-label-boundary via `neturl`, not a substring (issue #22; `t.co` inside
   `githubusercontent.com`).

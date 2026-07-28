@@ -22,7 +22,21 @@ impl AurScannerPlugin {
         })
     }
 
-    /// Create a plugin with default configuration
+    /// Create a plugin using the same config discovery as `aur-scan` / the
+    /// pacman hook (XDG user config, then `/etc`, else built-in defaults).
+    ///
+    /// Malformed config files are hard errors. For unit tests that must ignore
+    /// on-disk config, use [`Self::new`] with [`ScanConfig::default`].
+    pub fn with_system_config() -> Result<Self, aur_scanner_core::ScanError> {
+        let (config, _) = ScanConfig::resolve(None)?;
+        Self::new(config)
+    }
+
+    /// Built-in engine defaults only (no config file load).
+    ///
+    /// Prefer [`Self::with_system_config`] for real AUR-helper gates so threat
+    /// intel and other file settings apply. Kept for tests and explicit pure
+    /// defaults.
     pub fn with_defaults() -> Result<Self, aur_scanner_core::ScanError> {
         Self::new(ScanConfig::default())
     }

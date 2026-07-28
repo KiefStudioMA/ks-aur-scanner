@@ -195,7 +195,10 @@ async fn run() -> Result<ExitCode> {
     println!("{}", "=".repeat(60));
 
     let client = AurClient::new().context("Failed to create AUR client")?;
-    let scanner = Scanner::with_defaults().context("Failed to create scanner")?;
+    // Same config discovery as `aur-scan` / the pacman hook (XDG then /etc).
+    // Built-in-only defaults would silently ignore threat-intel and other
+    // file settings (issue #25 / wrap path gap).
+    let scanner = Scanner::with_system_config().context("Failed to create scanner")?;
 
     let mut high_found = false;
     let mut critical_found = false;

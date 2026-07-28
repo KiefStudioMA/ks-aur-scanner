@@ -105,9 +105,29 @@ impl Scanner {
         self.ioc_db.clone()
     }
 
-    /// Create a scanner with default configuration
+    /// Create a scanner with **built-in** configuration only (no config file).
+    ///
+    /// Prefer [`Self::with_system_config`] for user-facing gates (CLI install,
+    /// `aur-scan-wrap`, hook already resolves explicitly) so XDG/`/etc` settings
+    /// such as threat-intel are honored. This method stays pure for unit tests
+    /// and callers that must not touch the filesystem.
     pub fn with_defaults() -> Result<Self> {
         Self::new(ScanConfig::default())
+    }
+
+    /// Create a scanner using the same config discovery as the CLI without
+    /// `-c` and the pacman hook: first existing path among
+    /// `$XDG_CONFIG_HOME/aur-scanner/config.toml` (or `~/.config/...`) and
+    /// `/etc/aur-scanner/config.toml`, else built-in defaults.
+    ///
+    /// A present-but-malformed file is a hard error (fail closed) — the same
+    /// contract as [`ScanConfig::resolve`].
+    pub fn with_system_config() -> Result<Self> {
+        let (config, path) = ScanConfig::resolve(None)?;
+        if let Some(p) = &path {
+            debug!("loaded scanner config from {}", p.display());
+        }
+        Self::new(config)
     }
 
     /// Load rules from a directory
@@ -433,6 +453,15 @@ mod tests {
     async fn test_scanner_creation() {
         let scanner = Scanner::with_defaults();
         assert!(scanner.is_ok());
+    }
+
+    #[test]
+    fn with_system_config_matches_resolve() {
+        // Same discovery path as ScanConfig::resolve(None): built-in defaults
+        // when no file exists, hard error only when a present file is bad.
+        let a = Scanner::with_system_config();
+        let b = ScanConfig::resolve(None).and_then(|(c, _)| Scanner::new(c));
+        assert_eq!(a.is_ok(), b.is_ok());
     }
 
     #[test]
