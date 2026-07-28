@@ -67,11 +67,10 @@ in multi-package transactions (PR #23's soft-continue default is not accepted).
   the default; it would let a malicious package ride alongside clean ones.
 - `anyhow` bumped past RUSTSEC-2026-0190 (unsound `downcast_mut`).
 
-### Not in this RC (tracked)
+### Deferred (not this RC)
 
-- Offline ELF/`-bin` payload analyzer (PR #9) — valuable; requires fail-closed
-  parser hardening and path confinement before any cherry-pick.
-- Binary hash reputation beyond existing opt-in threat-intel paths.
+- Offline analysis of prebuilt `-bin` artifacts (planned follow-up; opt-in threat
+  intel already covers declared hashes when enabled).
 
 ## [2.0.0] - 2026-06-17
 

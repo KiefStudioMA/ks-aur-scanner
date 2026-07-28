@@ -147,11 +147,11 @@ gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51
 ```
 
 > **Release-candidate channel — [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc):**
-> tracks the next release before it is promoted to stable, so you can test changes
-> early; when there is no pending candidate it follows the current stable. The RC
-> **fails closed** (the wrapper/hook deny on a scan error, timeout, or no-TTY
-> prompt rather than proceeding). Most users — and all production systems — should
-> install the stable `aur-scanner`.
+> tracks the next release before it is promoted to stable (currently the
+> `v2.1.0-rc.1` pre-release when that tag is published). The RC **fails closed**
+> (the wrapper/hook deny on a scan error, timeout, or no-TTY prompt rather than
+> proceeding). Most users — and all production systems — should install the
+> stable `aur-scanner`.
 
 ### From Source
 
@@ -573,6 +573,7 @@ NeedsTargets
 | `ATOMIC-001` | Atomic Arch malicious npm/bun package | Malicious Code | rules | CWE-506 |
 | `ATOMIC-002` | Node/Bun package manager in install hook | Malicious Code | rules | CWE-494 |
 | `ATOMIC-003` | eBPF rootkit / payload artifact | Persistence | rules | CWE-506 |
+| `ATOMIC-004` | Sudo shim in user local bin | Malicious Code | rules | CWE-506 |
 | `BROWSER-001` | Browser profile access | Credential Theft | rules | CWE-522 |
 | `BROWSER-002` | Browser database access | Credential Theft | rules | CWE-522 |
 | `CRED-001` | SSH key access | Credential Theft | rules | CWE-522 |
@@ -587,7 +588,7 @@ NeedsTargets
 | `DLE-002` | Wget pipe to shell | Command Injection | rules | CWE-94 |
 | `DLE-003` | Curl output executed | Command Injection | rules | CWE-94 |
 | `ENV-001` | LD_PRELOAD manipulation | Malicious Code | rules | CWE-426 |
-| `ENV-003` | Bashrc/profile modification | Persistence | rules | CWE-506 |
+| `ENV-003` | Shell startup file modification | Persistence | rules | CWE-506 |
 | `EXEC-002` | Shell -c command substitution fetch | Malicious Code | rules | CWE-494 |
 | `EXEC-REMOTE` | Fetches and runs external code | Malicious Code | remote_exec | CWE-494 |
 | `EXFIL-001` | Curl POST data exfiltration | Data Exfiltration | rules | CWE-200 |
@@ -817,7 +818,18 @@ The shell integration scans what's **named** on the command line — `-S pkg`, a
 
 ### Configuration File
 
-Optional configuration file at `/etc/aur-scanner/config.toml`:
+Config is **optional**. Without `-c` / `--config`, `aur-scan`, the pacman hook,
+`aur-scan-wrap`, and `aur-scan install` all load the **first existing** file from:
+
+1. `$XDG_CONFIG_HOME/aur-scanner/config.toml` (or `~/.config/aur-scanner/config.toml`)
+2. `/etc/aur-scanner/config.toml`
+
+If neither path exists, built-in defaults are used (fully offline, static). A
+file that is present but unreadable or malformed is a **hard error** — the tool
+will not silently ignore a broken security config. Pass `-c /path/to.toml` to
+force a specific file.
+
+Example (`/etc/aur-scanner/config.toml` or the user path above):
 
 ```toml
 # Minimum severity to report
