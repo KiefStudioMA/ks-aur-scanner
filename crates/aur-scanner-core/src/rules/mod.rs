@@ -1093,26 +1093,33 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             // Require a write/install verb (or crontab schedule edit). Bare path
             // mentions and removal (`rm /etc/cron.d/foo`) must not fire — packages
             // that clean up stale cron entries are the safe direction (issue #21).
+            //
+            // Adversarial notes (2.1.0-rc.1 review):
+            // - Do NOT anchor with `^` alone: package() bodies are indented, and
+            //   rust `regex` `^` is start-of-string unless `(?m)`.
+            // - Do NOT match `crontab\s+-` as a prefix of `-l`/`-r` (that FPs).
+            // - `regex` has no lookaround; enumerate write forms only.
             patterns: vec![
+                // Copy/install/move/tee into a cron path (word-boundary, any indent).
                 Pattern::Regex {
-                    pattern: r"(?:^|[;&|]\s*)(?:cp|install|mv|tee|cat|echo|printf)\b[^\n]*/etc/cron"
-                        .to_string(),
+                    pattern: r"\b(?:cp|install|mv|tee)\b[^\n]*/etc/cron".to_string(),
                 },
-                // `regex` crate has no lookaround, so enumerate the write forms
-                // instead of "not -l/-r". List (`-l`) and remove-all (`-r`) stay
-                // silent; edit (`-e`), stdin (`-`), and file install fire.
+                // Redirected printers into a cron path.
+                Pattern::Regex {
+                    pattern: r"(?:echo|printf|cat)\b[^\n]*>\s*[^\n]*/etc/cron".to_string(),
+                },
+                // crontab -e (edit schedule).
                 Pattern::Regex {
                     pattern: r"\bcrontab\s+-e\b".to_string(),
                 },
+                // crontab -u USER -e (user-targeted edit). Bare `-u` with `-l`
+                // must not fire — no lookaround, so require the `-e` form.
                 Pattern::Regex {
-                    // Other dash-flags that are not -l or -r (e.g. -u user -e
-                    // is covered when -e appears; -u alone is still a write path
-                    // prelude on some systems — keep narrow: only non-lr flags).
-                    pattern: r"\bcrontab\s+-[^lr\s\-]".to_string(),
+                    pattern: r"\bcrontab\s+-u\s+\S+\s+-e\b".to_string(),
                 },
+                // crontab FILE / path / var (not a dash-flag).
                 Pattern::Regex {
-                    // File path or stdin marker: `crontab FILE`, `crontab -`.
-                    pattern: r"\bcrontab\s+(?:-|[^-\s])".to_string(),
+                    pattern: r"\bcrontab\s+(?:/|\./|\.\./|~|\$|[A-Za-z0-9_.])".to_string(),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -2393,15 +2400,35 @@ mod tests {
             !m.iter().any(|x| x.rule_id == "PERSIST-003"),
             "rm of a cron path must not trip PERSIST-003: {m:?}"
         );
-        // But installing one still must.
-        let m = engine.match_content(
+        // But installing one still must — including indented package() bodies
+        // (adversarial review: `^` without (?m) missed leading whitespace).
+        for s in [
             "install -Dm644 chrome.cron /etc/cron.daily/google-chrome",
-            FileType::InstallScript,
-        );
-        assert!(
-            m.iter().any(|x| x.rule_id == "PERSIST-003"),
-            "install into /etc/cron must trip PERSIST-003"
-        );
+            "    install -Dm644 chrome.cron /etc/cron.daily/google-chrome",
+            "cp x /etc/cron.d/x",
+            "echo '* * * * * evil' > /etc/cron.d/x",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "PERSIST-003"),
+                "write into /etc/cron must trip PERSIST-003 for: {s}"
+            );
+        }
+        // crontab write forms fire; list/remove must not (prefix `-` bug).
+        for s in ["crontab -e", "crontab /tmp/mycron", "crontab ./tabs"] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "PERSIST-003"),
+                "crontab write form must fire for: {s}"
+            );
+        }
+        for s in ["crontab -l", "crontab -r", "crontab -l -u bob"] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "PERSIST-003"),
+                "crontab list/remove must not fire for: {s} -> {m:?}"
+            );
+        }
     }
 
     #[test]
