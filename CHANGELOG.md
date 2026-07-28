@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.1.0-rc.2] - 2026-07-28
+
+Same candidate as 2.1.0-rc.1 plus packaging/CI hygiene. The `v2.1.0-rc.1` tag is
+**immutable** (repo rules block tag deletion/move); this RC re-points testers at
+the clean tip.
+
+### Changed
+
+- Repo-wide `cargo fmt --all`; CI rustfmt is now a hard gate (was non-blocking).
+- CI/audit workflows: `actions/checkout@v4` → `@v5` (Node 24 Actions runtime).
+- `aur-scanner-rc` tracks `v2.1.0-rc.2`.
+
+No detection/rule behaviour changes vs 2.1.0-rc.1.
+
 ## [2.1.0-rc.1] - 2026-07-28
 
 Release candidate focused on correctness and Atomic Arch coverage depth. External
