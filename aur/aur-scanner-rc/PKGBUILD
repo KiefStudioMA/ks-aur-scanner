@@ -15,7 +15,7 @@ pkgname=aur-scanner-rc
 # becomes '2.1.0rc1' here; the upstream git tag keeps the canonical form.
 pkgver=2.1.0rc1
 _tag=v2.1.0-rc.1
-pkgrel=1
+pkgrel=2
 pkgdesc="Security scanner for Arch Linux AUR packages (release candidate) - detect malicious PKGBUILDs before installation"
 arch=('x86_64' 'aarch64')
 url="https://github.com/KiefStudioMA/ks-aur-scanner"
