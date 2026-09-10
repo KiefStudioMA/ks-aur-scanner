@@ -376,7 +376,14 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                 // history is an enhancement, never a reason to fail a scan.
                 if let Some(h) = history.as_ref().filter(|_| !shadowing) {
                     match diff_against_history(h, &result, &scanned_path, maintainer) {
-                        Ok(diff_findings) => result.findings.extend(diff_findings),
+                        // Honour the configured threshold. These are produced
+                        // after the scan returns, so they miss the filter the
+                        // engine applies to everything else.
+                        Ok(diff_findings) => result.findings.extend(
+                            diff_findings
+                                .into_iter()
+                                .filter(|f| f.severity <= scanner.min_severity()),
+                        ),
                         Err(e) => {
                             tracing::debug!("history comparison for {} failed: {e}", node.name)
                         }

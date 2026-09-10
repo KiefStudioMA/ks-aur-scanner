@@ -6,10 +6,105 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+Change detection, name-impersonation and ownership analysis. Not yet tagged.
+
+Every threshold below was set by measuring against the live data -- all 15,436
+official package names and all 119,170 AUR packages -- not by intuition. Two
+rules were deleted outright once measured, and one was demoted from High to an
+informational note.
+
+### Added
+
+- **`aur-scan diff <old> <new>`** — compare two package directories and report
+  findings that appeared, findings that were resolved, and structural changes
+  (upstream moved, install script added, new functions) that a severity count
+  hides. Stateless, so it is safe in CI. `--fail-on` trips only on **newly
+  added** findings, so a package with long-standing Mediums can still be
+  approved.
+- **Automatic change detection** on `check` and `install` (`DIFF-001..004`):
+  new findings since the last scan, ownership moved, upstream moved, install
+  script added. Silent on a first scan and on a plain version bump. Source URLs
+  compare at `host/owner/repo`, so new tags and release tarballs do not read as
+  an upstream change.
+- **Name impersonation** (`SQUAT-001..004`). Rendering collision — confusable
+  glyphs or a separator swap — measured at **zero** false positives across the
+  official corpus, reported Critical. One-keystroke substitution restricted to a
+  curated high-value list and gated on registry standing. Edit-distance matching
+  was implemented, measured at 23,662 false positives for two-character edits and
+  2,039 for one-character insert/delete, and **removed** — those kinds are
+  absent, not tuned down.
+- **`[[owned_namespaces]]`** — declare the package-name prefixes you publish and
+  the accounts allowed to publish them. The AUR reserves no variant namespace, so
+  owning `foo` does not reserve `foo-bin`. 42.5% of real AUR build variants have
+  a different maintainer than their base and are legitimate, so the scanner will
+  not accuse anyone on that basis; declaring your own names turns the ambiguous
+  case into a Critical with no false positives by construction. Empty by default.
+- **Ownership signals** (`OWN-001..004`) — orphaned (11.9% of the AUR, so Low),
+  orphaned *and* out-of-date (4.2%, Medium), stale out-of-date flag, and a new
+  package with no community validation that runs build or install code. Zero
+  votes is 50% of the AUR and is never reported on its own.
+- **`aur-scan completions <shell>`** for bash, zsh and fish, installed by the
+  packages. Generated from the command tree so they cannot drift. Deliberately
+  exempt from config loading: a typo in `config.toml` is a hard error everywhere
+  else and must not break a shell setup at package-install time.
+- **`PERM-001`/`PERM-002`** world-writable permission rules, shipped as a
+  community TOML file so they double as a worked example (issue #8).
+- A clean-room VM acceptance suite (`tests/vm-acceptance.sh`) that installs the
+  built package and exercises the installed binaries, every documented command,
+  and all four shell integrations in their real interpreters.
+
+### Fixed
+
+- **`SHELL-002` false positive** — the netcat rule matched the `nc` at the *end*
+  of `MEGAsync`, reporting `git -C MEGAsync -c protocol.file.allow=...` as a
+  Critical reverse shell (issue #32). Command-position anchoring via a shared
+  `CMD_START`, and the flag search is bounded to the command itself so a benign
+  `-c` on a later command in the same line cannot complete the match.
+- **`CHK-004`/`CHK-005` named their sources** — a bare count was unactionable;
+  the reporter could not tell a detached signature from a tarball (issue #31).
+  Now named in the description and exposed as structured metadata with positional
+  indices.
+- **Registry context reached only `check`.** `install`, the AUR-helper wrapper,
+  `system`, and the pacman hook all scanned with a strictly smaller analyzer set,
+  so `SQUAT-*`, `OWN-*`, `DIFF-*` and the operator's own `[[owned_namespaces]]`
+  were inert on every path that gates an installation. The convenience overload
+  that defaulted to no registry has been removed; the choice is now a required
+  `Registry` argument.
+- **`AUR_SCAN_MODE=install` was the weaker mode** despite being documented as
+  stronger: it routed to the one command with no registry context *and* raised
+  the blocking threshold from High to Critical. The integrations now pass
+  `--gate "$AUR_SCAN_SEVERITY"` so the configured threshold governs both modes.
+- **`DIFF-003` fired on adding a patch file.** Local `source=()` entries were
+  recorded as upstream origins, so a routine `0001-fix-build.patch` produced
+  `now fetches from 0001-fix-build.patch` at High — enough to trip the
+  `--fail-on high` the shell integration uses.
+- **Scan history could be poisoned.** The record is keyed on the name a PKGBUILD
+  declares about itself, so `check --local ./fork` declaring `pkgname=firefox`
+  overwrote the real baseline — and because `DIFF-*` are pure deltas, a poisoned
+  baseline *silences* the next real change. Shadowing local dirs are no longer
+  recorded.
+- **Concurrent scans could corrupt a history record.** The temp file used a fixed
+  name shared by every writer; a torn write was then swallowed as "no history",
+  silently disabling change detection for that package.
+- **`SQUAT-001` emitted High from one of its two code paths** while the catalog,
+  the README and every `--fail-on critical` gate treated it as Critical.
+- **Non-ASCII detection no longer depends on a hand-written table.** AUR names
+  are ASCII by policy, so any non-ASCII glyph is anomalous; the confusable table
+  now only explains a name rather than deciding about one.
+- **Shell integrations wrote their banner to stdout.** These are sourced from a
+  shell rc, so that breaks `scp`, `rsync`, and `ssh host cmd`, all of which read
+  the remote shell's stdout as protocol data.
+- **The packages installed only `example.toml`** from `rules.d/`, so any other
+  rule file shipped would silently not exist on user systems.
+- **Config keys are now validated everywhere**, including inside
+  `[threat_intel]` and `[cache]`. A mistyped `virustotal_apikey` previously did
+  nothing at all, which is the exact failure mode issue #25 was about.
+
+
 ## [2.1.0] - 2026-09-10
 
 Promotes `2.1.0-rc.2` unchanged. No detection, rule, or behaviour differences
-from the release candidate — the RC soaked for six weeks and the code is the
+**between rc.2 and this tag** — the RC soaked for six weeks and the code is the
 code that was tested, so the tag is a promotion rather than a new build.
 
 Everything under 2.1.0-rc.1 and 2.1.0-rc.2 below is part of this release.

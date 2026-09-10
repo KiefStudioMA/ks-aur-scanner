@@ -303,7 +303,11 @@ pub async fn run(args: InstallArgs) -> Result<()> {
                 .get(base.as_str())
                 .and_then(|i| i.maintainer.clone());
             match super::check::diff_against_history(h, &result, &pkgbuild_path, maintainer) {
-                Ok(diff_findings) => result.findings.extend(diff_findings),
+                Ok(diff_findings) => result.findings.extend(
+                    diff_findings
+                        .into_iter()
+                        .filter(|f| f.severity <= scanner.min_severity()),
+                ),
                 Err(e) => tracing::debug!("history comparison for {base} failed: {e}"),
             }
             result.findings.sort_by_key(|f| f.severity);

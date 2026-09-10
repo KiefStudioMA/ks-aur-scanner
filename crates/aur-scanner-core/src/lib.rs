@@ -105,6 +105,17 @@ impl Scanner {
         })
     }
 
+    /// The minimum severity this scanner reports.
+    ///
+    /// Exposed so that findings produced *after* a scan returns -- change
+    /// detection compares against stored history, which the scan itself cannot
+    /// do -- can be filtered by the same threshold. Otherwise `DIFF-*` would
+    /// appear at severities the operator had explicitly filtered out, while
+    /// every other code obeyed the setting.
+    pub fn min_severity(&self) -> Severity {
+        self.config.min_severity
+    }
+
     /// The IOC database backing this scanner (embedded defaults + overrides).
     pub fn ioc_database(&self) -> Arc<IocDatabase> {
         self.ioc_db.clone()

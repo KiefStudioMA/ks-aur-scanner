@@ -165,22 +165,64 @@ impl History {
         }
     }
 
-    /// Store a record, replacing any previous one. Written to a temp file and
-    /// renamed so an interrupted write cannot leave a truncated record behind.
+    /// Store a record, replacing any previous one.
+    ///
+    /// Written to a **process-private** temp file and renamed, so that neither
+    /// an interrupted write nor a concurrent one can publish a partial record.
+    ///
+    /// The temp name carries a pid and a per-call counter deliberately. A fixed
+    /// `<pkg>.json.tmp` is
+    /// shared by every process scanning that package, and `fs::write` truncates
+    /// in place: two concurrent scans interleave their bytes and whichever
+    /// renames last publishes the mixture. That fails quietly in the worst
+    /// direction — `get()` swallows the unparseable result as "no history", so
+    /// change detection silently switches off for that package with nothing
+    /// above a `debug!` to say so. The pacman hook and an interactive
+    /// `aur-scan check` can easily overlap, and a dependency tree writes a
+    /// record for every transitive node.
+    ///
+    /// Permissions are set on the temp file *before* the content is written, so
+    /// there is no window in which a complete record sits at the default mode.
     pub fn put(&self, record: &PackageRecord) -> std::io::Result<()> {
         let Some(path) = self.path_for(&record.package) else {
             return Ok(());
         };
-        let tmp = path.with_extension("json.tmp");
+        // Unique per CALL, not merely per process: a pid alone still collides
+        // between threads or concurrent async tasks inside one process, which
+        // the race test below demonstrates. pid disambiguates across processes,
+        // the counter across everything within one.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_extension(format!("json.tmp.{}.{seq}", std::process::id()));
         let json = serde_json::to_vec_pretty(record)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(&tmp, json)?;
+
+        // Create with restrictive permissions from the outset rather than
+        // chmod-ing after the bytes are already on disk.
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
         }
-        std::fs::rename(&tmp, &path)
+        let write_result = opts.open(&tmp).and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(&json)?;
+            f.sync_all()
+        });
+        if let Err(e) = write_result {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+
+        // Atomic publish. If this fails, drop the temp file rather than leaving
+        // per-pid litter in the cache directory.
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Every package we have a record for.
@@ -884,6 +926,60 @@ mod tests {
         assert!(h.packages().contains(&"round-trip-tool".to_string()));
         h.forget("round-trip-tool").unwrap();
         assert!(h.get("round-trip-tool").is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn concurrent_writers_never_publish_a_mixed_record() {
+        // Two writers with different-sized payloads racing on the same package.
+        // With a shared temp name they interleave and publish a mixture, which
+        // `get()` then swallows as "no history" -- change detection silently
+        // off. Each writer must own its own temp file.
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!(
+            "aur-scan-hist-race-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = Arc::new(History::open(dir.clone()).unwrap());
+
+        let mut small = rec("racer");
+        small.version = "1.0-1".into();
+        let mut big = rec("racer");
+        big.version = "2.0-1".into();
+        // Make the payloads very different lengths so a torn write would not
+        // accidentally still parse.
+        for i in 0..200 {
+            big.finding_ids.insert(format!("PAD-{i:03}"));
+        }
+
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let h = Arc::clone(&h);
+                let r = if i % 2 == 0 {
+                    small.clone()
+                } else {
+                    big.clone()
+                };
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        h.put(&r).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in handles {
+            t.join().unwrap();
+        }
+
+        // Whoever won, the published record must be one of the two INTACT
+        // records, never a blend and never unreadable.
+        let got = h.get("racer").expect("a readable record must survive");
+        assert!(
+            got == small || got == big,
+            "published record is neither writer's input -- torn write"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

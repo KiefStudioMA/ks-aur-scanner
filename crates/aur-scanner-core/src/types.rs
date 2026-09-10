@@ -389,6 +389,9 @@ impl ScanConfig {
 /// environment (`VT_API_KEY`/`VIRUSTOTAL_API_KEY`, `URLHAUS_AUTH_KEY`) so they
 /// need not be written to a config file.
 #[derive(Debug, Clone, Default, Deserialize)]
+// A typo in a threat-intel key is the exact failure this whole validation
+// posture exists for: the operator believes lookups are on, and they are not.
+#[serde(deny_unknown_fields)]
 pub struct ThreatIntelConfig {
     /// VirusTotal API key. Without it, the VirusTotal hash lookup is skipped.
     pub virustotal_api_key: Option<String>,
@@ -409,6 +412,7 @@ fn default_cache_hours() -> u64 {
 
 /// Cache configuration
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CacheConfig {
     /// Enable caching
     #[serde(default = "default_true")]

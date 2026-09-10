@@ -224,11 +224,31 @@ pub fn confusable_to_ascii(c: char) -> Option<char> {
 
 /// Every non-ASCII character in `name` that imitates an ASCII one, with the
 /// character it imitates. Empty for an honest ASCII name.
+///
+/// Only reports glyphs in the table above, so it answers "what is this
+/// pretending to be". For "is anything here non-ASCII at all", which is the
+/// actual security question, use [`non_ascii_chars`].
 pub fn confusables(name: &str) -> Vec<(char, char)> {
     name.chars()
         .filter(|c| !c.is_ascii())
         .filter_map(|c| confusable_to_ascii(c).map(|a| (c, a)))
         .collect()
+}
+
+/// Every non-ASCII character in a package name, whether or not it is a known
+/// confusable.
+///
+/// The confusable table is hand-written and Unicode is not: an attacker who
+/// picks a lookalike glyph outside the table would be invisible to a
+/// table-driven check. The table is therefore for *explaining* a name, not for
+/// deciding about one.
+///
+/// The decision rests on policy instead. AUR package names are restricted to
+/// alphanumerics and `@._+-`, all ASCII, so a non-ASCII character in a package
+/// name is anomalous no matter which one it is — there is no legitimate name
+/// this rejects, and no glyph it can miss.
+pub fn non_ascii_chars(name: &str) -> Vec<char> {
+    name.chars().filter(|c| !c.is_ascii()).collect()
 }
 
 /// Fold a name to the ASCII it *looks* like: confusables become the character
@@ -799,6 +819,31 @@ mod tests {
         assert_eq!(edit_distance_within("abc", "abd", 2), Some(1));
         assert_eq!(edit_distance_within("abc", "xyz", 2), None);
         assert_eq!(edit_distance_within("a", "abcdef", 2), None);
+    }
+
+    #[test]
+    fn non_ascii_detection_does_not_depend_on_the_table() {
+        // The confusable table is hand-written; Unicode is not. A lookalike
+        // glyph outside the table must still be caught, because the rule is
+        // "AUR names are ASCII", not "AUR names avoid the glyphs we listed".
+        let exotic = "pyth\u{1D5FC}n"; // MATHEMATICAL MONOSPACE SMALL O, not in the table
+        assert!(
+            confusable_to_ascii('\u{1D5FC}').is_none(),
+            "this test is only meaningful while the glyph is absent from the table"
+        );
+        assert!(
+            confusables(exotic).is_empty(),
+            "table-driven check cannot see it, by construction"
+        );
+        assert_eq!(
+            non_ascii_chars(exotic),
+            vec!['\u{1D5FC}'],
+            "the policy-based check must still catch it"
+        );
+        assert!(non_ascii_chars("python-requests").is_empty());
+        assert!(non_ascii_chars("gtk3-nocsd").is_empty());
+        assert!(non_ascii_chars("lib32-glibc").is_empty());
+        assert!(non_ascii_chars("c++").is_empty());
     }
 
     #[test]

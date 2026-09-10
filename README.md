@@ -1066,10 +1066,12 @@ cwe = true             # show the CWE reference
 # maintainers = ["KiefStudio"]
 ```
 
-**Every key is validated.** A mistyped key anywhere in this file — not just in
-`[output]` — is a hard error rather than a silent no-op. A security setting that
-quietly evaporates because of a typo is worse than one that fails loudly: you
-would believe threat intel was on when it was not.
+**Every key is validated**, at the top level and inside every table
+(`[output]`, `[threat_intel]`, `[cache]`, `[[owned_namespaces]]`). A mistyped key
+anywhere in this file is a hard error rather than a silent no-op. A security
+setting that quietly evaporates because of a typo is worse than one that fails
+loudly: `virustotal_apikey` instead of `virustotal_api_key` would otherwise leave
+you believing threat intel was on when it was not.
 
 > **Display-only.** The `[output]` table changes *what is printed*, never which
 > findings exist, the exit code, or whether a gate trips. The machine-readable

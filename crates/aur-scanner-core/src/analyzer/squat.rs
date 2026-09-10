@@ -177,13 +177,28 @@ impl SquatAnalyzer {
         // by policy; a Cyrillic character in a package name is not a typo a
         // maintainer makes by accident. Zero false positives across the full
         // official corpus.
+        // Decide on POLICY (any non-ASCII glyph), explain with the table.
+        //
+        // Deciding from the confusable table would mean a lookalike glyph the
+        // table happens not to list is invisible -- the table is hand-written
+        // and Unicode is not. AUR names are restricted to alphanumerics and
+        // `@._+-`, so any non-ASCII character is anomalous whichever one it is.
+        let exotic = squat::non_ascii_chars(name);
         let marks = squat::confusables(name);
-        if !marks.is_empty() {
-            let rendered: String = marks
-                .iter()
-                .map(|(c, a)| format!("{c:?} (U+{:04X}) imitating '{a}'", *c as u32))
-                .collect::<Vec<_>>()
-                .join(", ");
+        if !exotic.is_empty() {
+            let rendered: String = if marks.is_empty() {
+                exotic
+                    .iter()
+                    .map(|c| format!("{c:?} (U+{:04X})", *c as u32))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                marks
+                    .iter()
+                    .map(|(c, a)| format!("{c:?} (U+{:04X}) imitating '{a}'", *c as u32))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             findings.push(Finding {
                 id: "SQUAT-001".to_string(),
                 severity: Severity::Critical,
@@ -205,6 +220,13 @@ impl SquatAnalyzer {
                     .to_string(),
                 cwe_id: Some("CWE-1007".to_string()),
                 metadata: serde_json::json!({
+                    "non_ascii": exotic
+                        .iter()
+                        .map(|c| serde_json::json!({
+                            "char": c.to_string(),
+                            "codepoint": format!("U+{:04X}", *c as u32),
+                        }))
+                        .collect::<Vec<_>>(),
                     "confusables": marks
                         .iter()
                         .map(|(c, a)| serde_json::json!({
@@ -221,10 +243,22 @@ impl SquatAnalyzer {
         // (`python_requests` for `python-requests`).
         if let Some(m) = squat::nearest(name, reg.official_names.iter().map(|s| s.as_str()), false)
         {
-            if m.kind == SquatKind::Lookalike && marks.is_empty() {
+            if m.kind == SquatKind::Lookalike && exotic.is_empty() {
+                // Critical, matching the confusable path above. One finding ID
+                // must mean one severity: the catalog and the README both list
+                // SQUAT-001 as Critical, and a CI job running
+                // `--fail-on critical` on the strength of that would have
+                // sailed past `python_requests` impersonating the official
+                // `python-requests`. The fail-closed hook and wrapper are
+                // likewise scoped to Critical.
+                //
+                // The evidence is the same strength either way: this fires only
+                // when two distinct names FOLD TO THE SAME RENDERING, measured
+                // at zero false positives across all 15,436 official package
+                // names.
                 findings.push(Finding {
                     id: "SQUAT-001".to_string(),
-                    severity: Severity::High,
+                    severity: Severity::Critical,
                     category: Category::MaliciousCode,
                     title: "Package name renders like an official package".to_string(),
                     description: format!(
@@ -532,6 +566,41 @@ mod tests {
         let a = SquatAnalyzer::new();
         let f = a.analyze_with("python_requests", &reg(), Path::new("PKGBUILD"), NOW);
         assert!(ids(&f).contains(&"SQUAT-001"), "got {:?}", ids(&f));
+    }
+
+    #[test]
+    fn a_lookalike_glyph_outside_the_table_is_still_caught() {
+        // The confusable table cannot be complete. The rule that catches this
+        // is "AUR names are ASCII", which has no gaps.
+        let a = SquatAnalyzer::new();
+        let f = a.analyze_with("pyth\u{1D5FC}n3", &reg(), Path::new("PKGBUILD"), NOW);
+        let s1: Vec<&Finding> = f.iter().filter(|x| x.id == "SQUAT-001").collect();
+        assert_eq!(s1.len(), 1, "exactly one SQUAT-001, got {:?}", ids(&f));
+        assert_eq!(s1[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn every_squat001_emission_site_is_critical() {
+        // One ID, one severity. The catalog, the README and every
+        // `--fail-on critical` gate treat SQUAT-001 as Critical; an emission
+        // site that quietly used High meant a CI gate scoped to Critical
+        // silently passed an impersonating package.
+        let a = SquatAnalyzer::new();
+        for name in [
+            "firefоx",         // Cyrillic 'о' -- confusable path
+            "python_requests", // separator swap -- ASCII-fold path
+        ] {
+            let f = a.analyze_with(name, &reg(), Path::new("PKGBUILD"), NOW);
+            let s1: Vec<&Finding> = f.iter().filter(|x| x.id == "SQUAT-001").collect();
+            assert!(!s1.is_empty(), "{name} should raise SQUAT-001");
+            for finding in s1 {
+                assert_eq!(
+                    finding.severity,
+                    Severity::Critical,
+                    "SQUAT-001 from {name:?} must be Critical to match the catalog"
+                );
+            }
+        }
     }
 
     #[test]
