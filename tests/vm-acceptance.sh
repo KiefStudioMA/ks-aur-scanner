@@ -520,7 +520,25 @@ OUT=$(aur-scan check --local /tmp/hp --no-confirm --no-deps 2>&1)
 grep -q "new finding(s) since"          <<<"$OUT" && pass "re-scan reports new findings since last time" || fail "no DIFF-001 on re-scan"
 grep -q "fetches from a new upstream"   <<<"$OUT" && pass "re-scan reports the upstream move"            || fail "no DIFF-003 on re-scan"
 grep -q "gained an install script"      <<<"$OUT" && pass "re-scan reports the new install script"       || fail "no DIFF-004 on re-scan"
-[[ -f /tmp/acc-cache/aur-scan/history/difftool.json ]] && pass "history record is written" || fail "no history record written"
+# A --local scan records under the LOCAL namespace, never the AUR one: the name
+# is self-declared, so a directory claiming `pkgname=firefox` must not be able to
+# overwrite the real firefox baseline (a poisoned baseline SILENCES the next real
+# change rather than raising a false alarm).
+[[ -f /tmp/acc-cache/aur-scan/history/local/difftool.json ]] \
+    && pass "local scan recorded in the local namespace" \
+    || fail "no local history record written"
+[[ -f /tmp/acc-cache/aur-scan/history/difftool.json ]] \
+    && fail "a --local scan leaked into the AUR history namespace" \
+    || pass "local scan did not touch the AUR namespace"
+# The history directory must not be world-readable: it says which packages this
+# user scanned and when.
+PERM=$(stat -c '%a' /tmp/acc-cache/aur-scan/history 2>/dev/null)
+[[ $PERM == "700" ]] && pass "history dir is 0700 (got $PERM)" || fail "history dir mode is $PERM, expected 700"
+PERM=$(stat -c '%a' /tmp/acc-cache/aur-scan/history/local/difftool.json 2>/dev/null)
+[[ $PERM == "600" ]] && pass "history record is 0600 (got $PERM)" || fail "history record mode is $PERM, expected 600"
+# No temp files left behind.
+LEFT=$(find /tmp/acc-cache/aur-scan/history -name '*.tmp*' 2>/dev/null | wc -l)
+[[ ${LEFT:-0} -eq 0 ]] && pass "no temp files left in the history store" || fail "$LEFT temp file(s) left behind"
 unset XDG_CACHE_HOME
 
 sect "Result"
