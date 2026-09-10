@@ -16,9 +16,11 @@ pub mod neturl;
 pub mod overlay;
 pub mod parser;
 pub mod provenance;
+pub mod registry;
 pub mod resolve;
 pub mod rules;
 pub mod sbom;
+pub mod squat;
 pub mod textutil;
 pub mod threat_intel;
 pub mod types;
@@ -72,6 +74,7 @@ impl Scanner {
             Arc::new(analyzer::ChecksumAnalyzer::new()),
             Arc::new(analyzer::PrivilegeAnalyzer::new()),
             Arc::new(analyzer::MetadataAnalyzer::new()),
+            Arc::new(analyzer::SquatAnalyzer::new()),
         ];
 
         // Opt-in, networked threat-intel analyzer. Added ONLY when the operator
@@ -138,8 +141,23 @@ impl Scanner {
         Ok(())
     }
 
-    /// Scan a PKGBUILD file
+    /// Scan a PKGBUILD file with no registry context.
+    ///
+    /// Ownership and typo-squat analysis stays silent on this path: without a
+    /// registry lookup there is no maintainer, no vote count, and no name list
+    /// to compare against, and guessing at them would be worse than saying
+    /// nothing. Use [`Self::scan_pkgbuild_with_registry`] from `check`/`install`
+    /// where the AUR RPC result is already in hand.
     pub async fn scan_pkgbuild(&self, path: &Path) -> Result<ScanResult> {
+        self.scan_pkgbuild_with_registry(path, None).await
+    }
+
+    /// Scan a PKGBUILD file, supplying what the registry says about it.
+    pub async fn scan_pkgbuild_with_registry(
+        &self,
+        path: &Path,
+        registry: Option<RegistryContext>,
+    ) -> Result<ScanResult> {
         let start = std::time::Instant::now();
         info!("Scanning PKGBUILD: {}", path.display());
 
@@ -194,6 +212,7 @@ impl Scanner {
             side_scripts,
             config: self.config.clone(),
             file_path: path.to_path_buf(),
+            registry,
         };
 
         // Run all analyzers
@@ -244,6 +263,15 @@ impl Scanner {
 
     /// Scan a directory containing a PKGBUILD
     pub async fn scan_directory(&self, dir: &Path) -> Result<ScanResult> {
+        self.scan_directory_with_registry(dir, None).await
+    }
+
+    /// Scan a directory containing a PKGBUILD, supplying registry context.
+    pub async fn scan_directory_with_registry(
+        &self,
+        dir: &Path,
+        registry: Option<RegistryContext>,
+    ) -> Result<ScanResult> {
         let pkgbuild_path = dir.join("PKGBUILD");
         if !pkgbuild_path.exists() {
             return Err(ScanError::Io(std::io::Error::new(
@@ -251,7 +279,8 @@ impl Scanner {
                 format!("PKGBUILD not found in {}", dir.display()),
             )));
         }
-        self.scan_pkgbuild(&pkgbuild_path).await
+        self.scan_pkgbuild_with_registry(&pkgbuild_path, registry)
+            .await
     }
 }
 

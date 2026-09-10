@@ -11,6 +11,7 @@ use aur_scanner_core::aur::{AurClient, PackageInfoSource};
 use aur_scanner_core::depgraph::{self, DependencyGraph, PackageSource, ResolveOptions};
 use aur_scanner_core::overlay::{info_from_pkgbuild, OverlaySource};
 use aur_scanner_core::parser::{PkgbuildParser, StaticParser};
+use aur_scanner_core::registry;
 use aur_scanner_core::sbom::{self, ComponentScan};
 use aur_scanner_core::validate::{is_valid_package_name, validate_package_name};
 use aur_scanner_core::{Finding, OutputConfig, ScanConfig, Scanner, Severity};
@@ -177,6 +178,43 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     println!();
 
     // 2. Scan every AUR node (the untrusted set).
+    //
+    // The official-repo name list is the trusted corpus for name-impersonation
+    // comparison. Read it once for the whole tree rather than per package.
+    let official_names = registry::load_official_names().await;
+    if official_names.is_empty() {
+        eprintln!(
+            "{} could not read the pacman sync databases; name-impersonation \
+             checks are disabled for this run",
+            "note:".yellow()
+        );
+    }
+
+    // Registry records for the AUR nodes, in one batch. Resolution kept only the
+    // fields it needed for the graph; ownership analysis needs the rest
+    // (submission date, votes, out-of-date flag). A failure here is not fatal --
+    // the scan proceeds with no registry context and the name analyzers stay
+    // silent rather than guessing.
+    let aur_node_names: Vec<String> = graph
+        .aur_packages()
+        .iter()
+        .map(|n| n.name.clone())
+        .collect();
+    let node_info: HashMap<String, aur_scanner_core::aur::AurPackageInfo> = {
+        let refs: Vec<&str> = aur_node_names.iter().map(|s| s.as_str()).collect();
+        match source.info_batch(&refs).await {
+            Ok(infos) => infos.into_iter().map(|i| (i.name.clone(), i)).collect(),
+            Err(e) => {
+                eprintln!(
+                    "{} could not load AUR package metadata ({e}); ownership and \
+                     name-impersonation checks are disabled for this run",
+                    "note:".yellow()
+                );
+                HashMap::new()
+            }
+        }
+    };
+
     let mut scans: BTreeMap<String, ComponentScan> = BTreeMap::new();
     let mut total_critical = 0usize;
     let mut total_high = 0usize;
@@ -217,14 +255,23 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         );
         io::stdout().flush().ok();
 
+        // What the registry says about this package: who maintains it, how long
+        // it has existed, and -- when the name is a `-bin`/`-git` variant --
+        // who maintains the package it is a variant of. Absent for a node the
+        // RPC did not return, in which case the name analyzers stay silent.
+        let registry_ctx = match node_info.get(&node.name) {
+            Some(info) => Some(registry::context_for(info, official_names.clone(), source).await),
+            None => None,
+        };
+
         let result = match &local_pkgbuild {
             Some(p) => scanner
-                .scan_pkgbuild(p)
+                .scan_pkgbuild_with_registry(p, registry_ctx)
                 .await
                 .map_err(|e| format!("scan error: {e}")),
             None => match client.fetch_pkgbuild(&node.name).await {
                 Ok(fetched) => scanner
-                    .scan_pkgbuild(&fetched.pkgbuild_path)
+                    .scan_pkgbuild_with_registry(&fetched.pkgbuild_path, registry_ctx)
                     .await
                     .map_err(|e| format!("scan error: {e}")),
                 Err(e) => Err(format!("fetch error: {e}")),

@@ -488,6 +488,56 @@ pub async fn is_aur_package(package_name: &str) -> Result<bool> {
     Ok(classify_aur_membership(in_official_repos, aur_lookup))
 }
 
+/// Every package name in the configured official repositories.
+///
+/// Read from the local pacman sync databases -- no network, no new parsing
+/// dependency, and exactly the set of names the user's own pacman would resolve.
+/// Used as the trusted corpus for name-impersonation comparison.
+///
+/// Returns an empty vector rather than an error when pacman is unavailable or
+/// the sync databases have never been populated. A missing corpus must make the
+/// name analyzer quieter, never noisier: there is no safe way to guess at what
+/// is official, so we simply do not compare.
+pub async fn official_package_names() -> Vec<String> {
+    let output = match tokio::process::Command::new("pacman")
+        .args(["-Slq"])
+        .output()
+        .await
+    {
+        Ok(o) if o.status.success() => o,
+        Ok(_) => {
+            debug!("pacman -Slq returned non-zero; skipping official-name comparison");
+            return Vec::new();
+        }
+        Err(e) => {
+            debug!("pacman unavailable ({e}); skipping official-name comparison");
+            return Vec::new();
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut names: Vec<String> = stdout
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Whether a package name exists in the official repositories.
+pub async fn is_official_package(name: &str) -> bool {
+    // `--` so a name beginning with `-` can never be parsed as a flag.
+    tokio::process::Command::new("pacman")
+        .args(["-Si", "--", name])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Get list of installed AUR packages
 pub async fn get_installed_aur_packages() -> Result<Vec<String>> {
     let output = tokio::process::Command::new("pacman")

@@ -238,6 +238,7 @@ mod tests {
             side_scripts: vec![],
             config: ScanConfig::default(),
             file_path: PathBuf::from("PKGBUILD"),
+            registry: None,
         }
     }
 

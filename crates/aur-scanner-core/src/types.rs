@@ -214,6 +214,42 @@ pub struct ScanConfig {
     /// Scan timeout in seconds
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
+    /// Package-name namespaces you publish, and the accounts allowed to
+    /// publish them. Empty by default.
+    #[serde(default)]
+    pub owned_namespaces: Vec<OwnedNamespace>,
+}
+
+/// A package-name namespace the operator claims, and who is allowed to publish
+/// in it.
+///
+/// The AUR reserves nothing: owning `foo` does not reserve `foo-bin`, and
+/// anyone may publish it. Measured across the live AUR, 42.5% of build-variant
+/// packages are maintained by someone other than the base package's maintainer
+/// and essentially all of them are legitimate -- different people package the
+/// git build and the release build all the time. So "different maintainer" is
+/// not, on its own, evidence of anything, and the scanner will not accuse
+/// anyone on that basis.
+///
+/// What *is* evidence is a publisher you did not authorise using a name you
+/// own. Only you know that. Declaring it here converts knowledge the scanner
+/// cannot infer into a precise, zero-false-positive check:
+///
+/// ```toml
+/// [[owned_namespaces]]
+/// prefix = "aur-scanner"
+/// maintainers = ["KiefStudio"]
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedNamespace {
+    /// Package-name prefix you claim (`"aur-scanner"` covers `aur-scanner`,
+    /// `aur-scanner-bin`, `aur-scanner-git`, ...).
+    pub prefix: String,
+    /// AUR accounts permitted to publish in this namespace. A package matching
+    /// `prefix` maintained by anyone else -- including an orphaned one -- is
+    /// reported.
+    pub maintainers: Vec<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -230,6 +266,7 @@ impl Default for ScanConfig {
             cache: CacheConfig::default(),
             output: OutputConfig::default(),
             timeout_seconds: default_timeout(),
+            owned_namespaces: Vec::new(),
         }
     }
 }
@@ -419,6 +456,64 @@ pub struct AnalysisContext {
     pub config: ScanConfig,
     /// Path to the PKGBUILD file
     pub file_path: PathBuf,
+    /// Registry metadata for this package, when the caller knows it.
+    ///
+    /// `check`, `install`, and `system` all resolve the package through the AUR
+    /// RPC before scanning, so they can say who maintains it, how long it has
+    /// existed, and how much community validation it has. A bare
+    /// `scan <path>` has no registry context and leaves this `None`.
+    ///
+    /// Analyzers that consume this **must** degrade to silence when it is
+    /// absent rather than guessing: a missing maintainer field means "we did
+    /// not look", not "orphaned".
+    pub registry: Option<RegistryContext>,
+}
+
+/// What the package registry says about a package, independent of its files.
+///
+/// Ownership and community-validation signals are a real part of AUR risk --
+/// the 2018 xeactor hijack and the June 2026 Atomic Arch campaign both worked
+/// by adopting orphaned packages rather than by writing novel malicious code --
+/// but they are *context*, not proof, so they are reported at modest severity
+/// and always alongside what the files actually do.
+#[derive(Debug, Clone, Default)]
+pub struct RegistryContext {
+    /// Current maintainer; `None` means the package is orphaned.
+    pub maintainer: Option<String>,
+    /// Community votes, when known.
+    pub num_votes: Option<i32>,
+    /// Popularity score, when known.
+    pub popularity: Option<f64>,
+    /// Unix timestamp the package was flagged out-of-date, if it is.
+    pub out_of_date: Option<i64>,
+    /// Unix timestamp of first submission to the AUR.
+    pub first_submitted: Option<i64>,
+    /// Unix timestamp of the last modification.
+    pub last_modified: Option<i64>,
+    /// Names of packages in the official repositories, for typo-squat
+    /// comparison. Empty when the sync databases could not be read.
+    pub official_names: Vec<String>,
+    /// When this package's name is a build variant of another package
+    /// (`foo-bin` of `foo`), what the registry says about that base package.
+    ///
+    /// The AUR does not reserve a package's variant namespace, so anyone may
+    /// publish `foo-bin`. Knowing who maintains `foo` is the only way to tell
+    /// an upstream's own binary build from someone else trading on the name.
+    pub variant_base: Option<VariantBase>,
+}
+
+/// The registry record of the package a variant name is derived from.
+#[derive(Debug, Clone)]
+pub struct VariantBase {
+    /// The base package name (`foo` for `foo-bin`).
+    pub name: String,
+    /// The base package's maintainer; `None` if the base is orphaned.
+    pub maintainer: Option<String>,
+    /// Whether the base package lives in the official repositories, which
+    /// makes an AUR variant of it a strictly stronger reputation claim.
+    pub official: bool,
+    /// Community votes on the base, when known.
+    pub num_votes: Option<i32>,
 }
 
 impl AnalysisContext {
@@ -428,6 +523,11 @@ impl AnalysisContext {
     /// file cannot escape analysis.
     pub fn all_scripts(&self) -> impl Iterator<Item = &crate::parser::ParsedInstallScript> {
         self.install_script.iter().chain(self.side_scripts.iter())
+    }
+
+    /// The package name this context is about, preferring the parsed PKGBUILD.
+    pub fn package_name(&self) -> Option<&str> {
+        self.pkgbuild.pkgname.first().map(|s| s.as_str())
     }
 }
 

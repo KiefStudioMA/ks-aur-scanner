@@ -249,6 +249,15 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
           "backup= lists a security-sensitive path (sudoers/ssh/pam.d/ld.so/etc.), a persistent root-level tamper surface.", "Packages should not own/back up authentication, linker, or privilege files."),
         e("DEP-001", "Provides a core package name (dependency confusion)", High, SuspiciousMetadata, "metadata", Some("CWE-427"),
           "provides= a curated core package name from a package that is not that package's own alternate, satisfying a dependency in its place.", "Remove the provides unless this is the legitimate provider."),
+        // -- squat analyzer (name impersonation; requires registry context) --
+        e("SQUAT-001", "Package name imitates a trusted name", Critical, MaliciousCode, "squat", Some("CWE-1007"),
+          "The package name renders like a trusted package's name -- via non-ASCII lookalike characters, or a separator swap. Two distinct packages do not display the same name by accident.", "Compare the name character by character against the package you meant to install."),
+        e("SQUAT-002", "Package name is one keystroke from a widely-installed package", High, MaliciousCode, "squat", Some("CWE-1007"),
+          "The name differs by a single visually-similar or keyboard-adjacent character from a high-value package, and the package has no age or community standing of its own.", "Confirm which package you actually meant to install."),
+        e("SQUAT-003", "Build variant is in different hands from its base", Low, SuspiciousMetadata, "squat", None,
+          "The package is the -bin/-git build of another AUR package but is published by a different account. Informational only: measured against the live AUR, 42.5% of build variants are in different hands and are legitimate, so this is context for a human, never evidence on its own.", "If you expected the base project to publish this build, confirm that they do; declare names you own under [[owned_namespaces]] to make this decisive."),
+        e("SQUAT-004", "Package occupies an owned namespace under an unauthorised account", Critical, MaliciousCode, "squat", Some("CWE-1007"),
+          "A package matching a name prefix the operator declared they publish is maintained by an account they did not authorise. The AUR reserves no variant namespace, so owning 'foo' does not reserve 'foo-bin'.", "Do not install it; report it to the AUR maintainers as an impersonation."),
         // -- source analyzer (host-aware metadata) --
         e("SRC-008", "Source host differs from upstream url host", Low, NetworkSecurity, "source", None,
           "url= and a source= are both on known forges but different ones (a personal-fork-vs-upstream signal).", "Verify the source forge is the project's official one."),
@@ -319,6 +328,10 @@ mod tests {
             "META-004",
             "META-005",
             "META-006",
+            "SQUAT-001",
+            "SQUAT-002",
+            "SQUAT-003",
+            "SQUAT-004",
             "DEP-001",
         ];
         let catalog = Catalog::load();
