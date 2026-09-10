@@ -18,6 +18,8 @@
 
 A comprehensive security scanner for Arch Linux AUR packages that analyzes PKGBUILDs and install scripts for malicious patterns, suspicious behavior, and security vulnerabilities. Written in Rust for performance and safety.
 
+**Built and maintained by [Kief Studio](https://kief.studio)** — [@HxHippy](https://github.com/HxHippy) and [@m33lie](https://github.com/m33lie) are the maintainers and the review gate for every change ([CODEOWNERS](.github/CODEOWNERS)). Outside contributors propose from forks and have no write access; their work is credited in [Contributors](#contributors). GitHub's sidebar lists commit authors, not the team.
+
 ---
 
 ## TL;DR
@@ -1432,6 +1434,11 @@ Some of the above were brought in by cherry-pick rather than the merge button �
 - [**@nikoraasu**](https://github.com/nikoraasu) — [#12](https://github.com/KiefStudioMA/ks-aur-scanner/issues/12): diagnosed that the shell wrapper only gated `-S`-style operations, shaping the operation classifier and broader AUR-helper coverage
 
 Sent a PR? Add yourself here. See the full list on the [contributors page](https://github.com/KiefStudioMA/ks-aur-scanner/graphs/contributors).
+
+Being listed here — or in GitHub's contributors sidebar — means you authored code
+that landed. It does not mean you maintain this project, review it, or vouch for
+it: [Kief Studio](https://kief.studio) does that, and the responsibility is ours.
+The distinction protects contributors as much as it does us.
 
 ### References
 
