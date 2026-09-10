@@ -6,7 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-Change detection, name-impersonation and ownership analysis. Not yet tagged.
+## [2.2.0-rc.1] - 2026-09-10
+
+Change detection, name impersonation, ownership signals, and static binary
+analysis.
+
+**This is a release candidate, and it is a large one.** The detection surface
+grew from 118 codes to 133 and every scanning path was rewired, so it wants soak
+time rather than going straight to stable. Install `aur-scanner-rc` to test it.
 
 Every threshold below was set by measuring against the live data -- all 15,436
 official package names and all 119,170 AUR packages -- not by intuition. Two
@@ -99,6 +106,70 @@ informational note.
 - **Config keys are now validated everywhere**, including inside
   `[threat_intel]` and `[cache]`. A mistyped `virustotal_apikey` previously did
   nothing at all, which is the exact failure mode issue #25 was about.
+
+
+### Added (since the section above was first drafted)
+
+- **Static binary analysis** (`BIN-001`..`BIN-005`). A hand-written, bounds-checked
+  ELF reader — no new dependency in a supply-chain tool — parses the header,
+  section table, `DT_NEEDED`, `DT_RPATH`/`RUNPATH`, imported symbol names and
+  section entropy. Nothing is executed. `ldd` is specifically off-limits and the
+  acceptance suite asserts it: on glibc it is a shell script that
+  `eval`-executes its target through the loader, so calling it on a hostile
+  `-bin` payload runs that payload.
+- **`SRC-010`** — a source that fetches the same repository name under a
+  *different owner* than the declared `url=`. `SRC-008` structurally could not
+  see this: it compares forge hosts and skips VCS sources.
+- **`DEEP-003`** — Unicode bidi controls (Trojan Source, CVE-2021-42574), which
+  make the code a reviewer reads differ from the code that runs.
+- **`ESCAPE-001`** — extraction or installation outside `$srcdir`/`$pkgdir`.
+- **Local `source=()` files are now read.** A payload in a build-fix `.patch`, or
+  a sidecar script the PKGBUILD sources, was previously invisible.
+- **`aur-scan version` validates the configuration** and exits 2 if it is broken,
+  so an operator can check before upgrading rather than finding out when the
+  pacman hook aborts a transaction.
+
+### Fixed (since the section above was first drafted)
+
+- **`aur-scan check --no-confirm` exited 0 on a Critical finding.** The gate was
+  only ever evaluated when `--fail-on` was passed, and the shell integrations
+  invoke `check --severity <sev> --no-confirm` with no `--fail-on` — `--severity`
+  is a display floor, not a gate. With `AUR_SCAN_INTERACTIVE=0` the primary
+  documented protection was a no-op. Both sides fixed.
+- **Registry context reached only `check`.** `install`, the AUR-helper wrapper,
+  `system` and the hook all ran a strictly smaller analyzer set, so `SQUAT-*`,
+  `OWN-*`, `DIFF-*` and `[[owned_namespaces]]` were inert on every path that
+  gates an installation. The convenience overload that defaulted to no registry
+  is gone; the choice is now a required argument.
+- **`AUR_SCAN_MODE=install` was the weaker mode** while documented as stronger.
+- **Two false-positive classes in `DIFF-003`**: local patch files recorded as
+  upstream origins, and version-in-path URLs where a routine bump looked like an
+  upstream move.
+- **Scan history** — poisoning via a `--local` directory's self-declared name,
+  a torn-write race between concurrent scans, unbounded growth, a
+  world-writable fallback path, discarding computed findings when the store
+  could not be written, and reporting "orphaned" when a lookup had merely
+  failed.
+- **`SQUAT-001` emitted High from one of its two paths** while the catalog and
+  every `--fail-on critical` gate treated it as Critical.
+- **Non-ASCII detection no longer depends on a hand-written table** — AUR names
+  are ASCII by policy, so any non-ASCII glyph is anomalous.
+- **Terminal escape injection.** Findings quote package-controlled text; printed
+  raw, an escape sequence let the scanned file drive the reviewer's display.
+- **Config keys are validated inside every table**, including `[threat_intel]`
+  and `[cache]`.
+
+### Notes for testers
+
+Known gaps, named rather than hidden: decompression bombs and hostile
+`makedepends` are not detected, and VirusTotal lookups still key off the
+PKGBUILD's declared `sha256sums` rather than hashing a committed binary.
+
+Thresholds in this release were set by measuring against the live corpus — all
+15,436 official package names and all 119,170 AUR packages — not by intuition.
+Two rules were deleted outright after measurement and one was demoted from High
+to an informational note. If you see a false positive, that number is wrong and
+we want the report.
 
 
 ## [2.1.0] - 2026-09-10
@@ -468,6 +539,7 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
+[2.2.0-rc.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0-rc.1
 [2.1.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0
 [2.1.0-rc.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0-rc.2
 [2.1.0-rc.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0-rc.1
