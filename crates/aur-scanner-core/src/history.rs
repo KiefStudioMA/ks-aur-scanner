@@ -104,6 +104,37 @@ impl PackageRecord {
     }
 }
 
+/// Which namespace a record belongs to.
+///
+/// Records are keyed by package NAME, and for a `--local` directory that name
+/// is whatever the PKGBUILD declares about itself. Without separation, scanning
+/// a local directory that declares `pkgname=firefox` overwrites the baseline
+/// for the real AUR `firefox` -- and because the `DIFF-*` codes are pure deltas
+/// against the stored record, a poisoned baseline does not raise a false alarm,
+/// it *silences* the next real change.
+///
+/// Refusing to record local scans was the first fix and was wrong: it broke the
+/// documented `aur-scan check --local ./pkg` workflow, where re-scanning your
+/// own package directory and seeing what changed is the entire point. Separate
+/// namespaces keep both properties -- local scans diff against local scans, and
+/// can never touch an AUR package's record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Identity came from the AUR: the name is authoritative.
+    Aur,
+    /// Identity is self-declared by a directory on disk.
+    Local,
+}
+
+impl Scope {
+    fn subdir(self) -> Option<&'static str> {
+        match self {
+            Scope::Aur => None,
+            Scope::Local => Some("local"),
+        }
+    }
+}
+
 /// On-disk store of package records.
 ///
 /// One JSON file per package under a directory the user owns. Read failures and
@@ -114,6 +145,11 @@ pub struct History {
 }
 
 impl History {
+    /// Records for packages whose identity came from the AUR.
+    pub const AUR: Scope = Scope::Aur;
+    /// Records for packages whose identity is self-declared by a directory.
+    pub const LOCAL: Scope = Scope::Local;
+
     /// Open (and create) the history directory.
     pub fn open(dir: PathBuf) -> std::io::Result<Self> {
         std::fs::create_dir_all(&dir)?;
@@ -139,7 +175,7 @@ impl History {
     /// Path for one package's record. The name is validated by the caller
     /// before it ever reaches here; this additionally refuses anything that is
     /// not a plain file name so a hostile package name cannot escape the dir.
-    fn path_for(&self, package: &str) -> Option<PathBuf> {
+    fn path_for(&self, package: &str, scope: Scope) -> Option<PathBuf> {
         if package.is_empty()
             || package.contains('/')
             || package.contains('\\')
@@ -148,13 +184,17 @@ impl History {
             warn!("refusing to use history path for suspicious package name {package:?}");
             return None;
         }
-        Some(self.dir.join(format!("{package}.json")))
+        let base = match scope.subdir() {
+            Some(sub) => self.dir.join(sub),
+            None => self.dir.clone(),
+        };
+        Some(base.join(format!("{package}.json")))
     }
 
     /// The stored record for a package, or `None` if we have never scanned it
     /// (or the stored file is unreadable/corrupt).
-    pub fn get(&self, package: &str) -> Option<PackageRecord> {
-        let path = self.path_for(package)?;
+    pub fn get(&self, package: &str, scope: Scope) -> Option<PackageRecord> {
+        let path = self.path_for(package, scope)?;
         let bytes = std::fs::read(&path).ok()?;
         match serde_json::from_slice::<PackageRecord>(&bytes) {
             Ok(r) => Some(r),
@@ -183,10 +223,18 @@ impl History {
     ///
     /// Permissions are set on the temp file *before* the content is written, so
     /// there is no window in which a complete record sits at the default mode.
-    pub fn put(&self, record: &PackageRecord) -> std::io::Result<()> {
-        let Some(path) = self.path_for(&record.package) else {
+    pub fn put(&self, record: &PackageRecord, scope: Scope) -> std::io::Result<()> {
+        let Some(path) = self.path_for(&record.package, scope) else {
             return Ok(());
         };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            }
+        }
         // Unique per CALL, not merely per process: a pid alone still collides
         // between threads or concurrent async tasks inside one process, which
         // the race test below demonstrates. pid disambiguates across processes,
@@ -242,8 +290,8 @@ impl History {
     }
 
     /// Forget one package's history.
-    pub fn forget(&self, package: &str) -> std::io::Result<()> {
-        let Some(path) = self.path_for(package) else {
+    pub fn forget(&self, package: &str, scope: Scope) -> std::io::Result<()> {
+        let Some(path) = self.path_for(package, scope) else {
             return Ok(());
         };
         match std::fs::remove_file(path) {
@@ -920,12 +968,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("aur-scan-hist-{}", std::process::id()));
         let h = History::open(dir.clone()).unwrap();
         let r = rec("round-trip-tool");
-        assert!(h.get("round-trip-tool").is_none(), "starts empty");
-        h.put(&r).unwrap();
-        assert_eq!(h.get("round-trip-tool").as_ref(), Some(&r));
+        assert!(
+            h.get("round-trip-tool", Scope::Aur).is_none(),
+            "starts empty"
+        );
+        h.put(&r, Scope::Aur).unwrap();
+        assert_eq!(h.get("round-trip-tool", Scope::Aur).as_ref(), Some(&r));
         assert!(h.packages().contains(&"round-trip-tool".to_string()));
-        h.forget("round-trip-tool").unwrap();
-        assert!(h.get("round-trip-tool").is_none());
+        h.forget("round-trip-tool", Scope::Aur).unwrap();
+        assert!(h.get("round-trip-tool", Scope::Aur).is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -964,7 +1015,7 @@ mod tests {
                 };
                 std::thread::spawn(move || {
                     for _ in 0..25 {
-                        h.put(&r).unwrap();
+                        h.put(&r, Scope::Aur).unwrap();
                     }
                 })
             })
@@ -975,10 +1026,47 @@ mod tests {
 
         // Whoever won, the published record must be one of the two INTACT
         // records, never a blend and never unreadable.
-        let got = h.get("racer").expect("a readable record must survive");
+        let got = h
+            .get("racer", Scope::Aur)
+            .expect("a readable record must survive");
         assert!(
             got == small || got == big,
             "published record is neither writer's input -- torn write"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_local_scan_cannot_overwrite_an_aur_packages_record() {
+        // The poisoning case: a directory declaring `pkgname=firefox` must not
+        // touch the real firefox baseline. Refusing to record local scans was
+        // the first attempt and broke `check --local`, which exists precisely
+        // to re-scan your own directory and see what changed.
+        let dir = std::env::temp_dir().join(format!("aur-scan-hist-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = History::open(dir.clone()).unwrap();
+
+        let mut real = rec("firefox");
+        real.maintainer = Some("arch".into());
+        real.source_origins = ["github.com/mozilla/firefox".to_string()]
+            .into_iter()
+            .collect();
+        h.put(&real, Scope::Aur).unwrap();
+
+        let mut impostor = rec("firefox");
+        impostor.maintainer = Some("mallory".into());
+        impostor.source_origins = ["cdn.evil.example/x".to_string()].into_iter().collect();
+        h.put(&impostor, Scope::Local).unwrap();
+
+        assert_eq!(
+            h.get("firefox", Scope::Aur).as_ref(),
+            Some(&real),
+            "the AUR record must be untouched by a local scan of the same name"
+        );
+        assert_eq!(
+            h.get("firefox", Scope::Local).as_ref(),
+            Some(&impostor),
+            "the local scan still gets its own history, so --local diffing works"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -990,7 +1078,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("aur-scan-hist-bad-{}", std::process::id()));
         let h = History::open(dir.clone()).unwrap();
         std::fs::write(dir.join("busted.json"), b"{not json").unwrap();
-        assert!(h.get("busted").is_none());
+        assert!(h.get("busted", Scope::Aur).is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -999,8 +1087,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("aur-scan-hist-trav-{}", std::process::id()));
         let h = History::open(dir.clone()).unwrap();
         for bad in ["../../etc/passwd", "a/b", "..", ""] {
-            assert!(h.path_for(bad).is_none(), "{bad:?} must be refused");
-            assert!(h.get(bad).is_none());
+            assert!(
+                h.path_for(bad, Scope::Aur).is_none(),
+                "{bad:?} must be refused"
+            );
+            assert!(h.get(bad, Scope::Aur).is_none());
         }
         std::fs::remove_dir_all(&dir).ok();
     }

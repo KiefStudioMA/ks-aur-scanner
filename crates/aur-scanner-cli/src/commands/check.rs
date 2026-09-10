@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use aur_scanner_core::aur::{AurClient, PackageInfoSource};
 use aur_scanner_core::depgraph::{self, DependencyGraph, PackageSource, ResolveOptions};
 use aur_scanner_core::history::{
-    compare as history_compare, findings_for_changes, History, PackageRecord,
+    compare as history_compare, findings_for_changes, History, PackageRecord, Scope,
 };
 use aur_scanner_core::overlay::{info_from_pkgbuild, OverlaySource};
 use aur_scanner_core::parser::{PkgbuildParser, StaticParser};
@@ -85,6 +85,7 @@ pub(crate) fn diff_against_history(
     result: &aur_scanner_core::ScanResult,
     pkgbuild_path: &std::path::Path,
     maintainer: Option<String>,
+    scope: Scope,
 ) -> anyhow::Result<Vec<Finding>> {
     let content = std::fs::read_to_string(pkgbuild_path)?;
     let parsed = StaticParser::new().parse(&content)?;
@@ -114,7 +115,7 @@ pub(crate) fn diff_against_history(
     }
 
     let current = PackageRecord::from_scan(result, &parsed, maintainer).with_scripts(&scripts);
-    let findings = match history.get(&current.package) {
+    let findings = match history.get(&current.package, scope) {
         Some(previous) => {
             let changes = history_compare(&previous, &current);
             findings_for_changes(
@@ -127,7 +128,7 @@ pub(crate) fn diff_against_history(
         }
         None => Vec::new(),
     };
-    history.put(&current)?;
+    history.put(&current, scope)?;
     Ok(findings)
 }
 
@@ -305,23 +306,27 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         let local_pkgbuild = local_dir_by_name
             .get(&node.name)
             .map(|d| d.join("PKGBUILD"));
-        // A local dir claiming a name the user did not ask for must never be
-        // written to the scan history. The history is keyed on the name the
-        // PKGBUILD declares about ITSELF, so a directory declaring
-        // `pkgname=firefox` would otherwise overwrite the real firefox record.
-        // Because DIFF-* are pure deltas against the stored record, a poisoned
-        // baseline SILENCES the next real change: pre-listing an origin kills
-        // DIFF-003, and shipping any .install file makes the real package's
-        // first-ever scriptlet look like a mere edit (High -> Medium). That can
-        // drop a tree under the `--fail-on high` the shell integration uses.
-        let shadowing = local_pkgbuild.is_some()
+        // History is keyed by package NAME, and for a --local dir that name is
+        // whatever the PKGBUILD declares about itself. Recording it in the same
+        // namespace as AUR packages lets a directory declaring
+        // `pkgname=firefox` overwrite the real firefox baseline -- and because
+        // DIFF-* are pure deltas, a poisoned baseline does not raise a false
+        // alarm, it SILENCES the next real change. So local scans go in their
+        // own namespace: they still diff against previous local scans of the
+        // same directory (which is the whole point of `check --local`), and can
+        // never touch an AUR package's record.
+        let scope = if local_pkgbuild.is_some() {
+            History::LOCAL
+        } else {
+            History::AUR
+        };
+        if local_pkgbuild.is_some()
             && classify_local_dir(&node.name, &requested_roots)
-                == LocalDirBinding::UnrequestedShadow;
-        if shadowing {
+                == LocalDirBinding::UnrequestedShadow
+        {
             eprintln!(
                 "{} a --local dir is providing {:?}, which you did not explicitly request; \
-                 its real AUR source is NOT being checked, and it will NOT be recorded \
-                 in the scan history",
+                 its real AUR source is NOT being checked",
                 "note:".yellow(),
                 node.name
             );
@@ -374,8 +379,8 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                 // nothing to compare against, and complaining about a cold
                 // cache is noise. Any failure here is logged and ignored: the
                 // history is an enhancement, never a reason to fail a scan.
-                if let Some(h) = history.as_ref().filter(|_| !shadowing) {
-                    match diff_against_history(h, &result, &scanned_path, maintainer) {
+                if let Some(h) = history.as_ref() {
+                    match diff_against_history(h, &result, &scanned_path, maintainer, scope) {
                         // Honour the configured threshold. These are produced
                         // after the scan returns, so they miss the filter the
                         // engine applies to everything else.

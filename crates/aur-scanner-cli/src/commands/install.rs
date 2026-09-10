@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 use aur_scanner_core::aur::{AurClient, PackageInfoSource};
 use aur_scanner_core::depgraph::{self, ResolveOptions};
-use aur_scanner_core::history::History;
+use aur_scanner_core::history::{History, Scope};
 use aur_scanner_core::registry;
 use aur_scanner_core::sbom::{self, ComponentScan};
 use aur_scanner_core::validate::validate_package_name;
@@ -302,7 +302,13 @@ pub async fn run(args: InstallArgs) -> Result<()> {
             let maintainer = node_info
                 .get(base.as_str())
                 .and_then(|i| i.maintainer.clone());
-            match super::check::diff_against_history(h, &result, &pkgbuild_path, maintainer) {
+            match super::check::diff_against_history(
+                h,
+                &result,
+                &pkgbuild_path,
+                maintainer,
+                Scope::Aur,
+            ) {
                 Ok(diff_findings) => result.findings.extend(
                     diff_findings
                         .into_iter()
