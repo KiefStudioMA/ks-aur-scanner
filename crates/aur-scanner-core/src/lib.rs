@@ -12,6 +12,7 @@ pub mod cache;
 pub mod catalog;
 pub mod depgraph;
 pub mod error;
+pub mod history;
 pub mod neturl;
 pub mod overlay;
 pub mod parser;

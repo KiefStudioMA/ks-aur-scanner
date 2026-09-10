@@ -9,6 +9,9 @@ use std::path::PathBuf;
 
 use aur_scanner_core::aur::{AurClient, PackageInfoSource};
 use aur_scanner_core::depgraph::{self, DependencyGraph, PackageSource, ResolveOptions};
+use aur_scanner_core::history::{
+    compare as history_compare, findings_for_changes, History, PackageRecord,
+};
 use aur_scanner_core::overlay::{info_from_pkgbuild, OverlaySource};
 use aur_scanner_core::parser::{PkgbuildParser, StaticParser};
 use aur_scanner_core::registry;
@@ -69,6 +72,63 @@ fn classify_local_dir(
     } else {
         LocalDirBinding::UnrequestedShadow
     }
+}
+
+/// Compare a fresh scan against the stored record for the same package, emit
+/// findings for what moved, and store the new record.
+///
+/// Returns an empty vector on a first scan. Every failure path is an `Err` the
+/// caller logs and discards: change detection is an enhancement layered on top
+/// of the scan, and a broken cache must never turn a good scan into a bad one.
+fn diff_against_history(
+    history: &History,
+    result: &aur_scanner_core::ScanResult,
+    pkgbuild_path: &std::path::Path,
+    maintainer: Option<String>,
+) -> anyhow::Result<Vec<Finding>> {
+    let content = std::fs::read_to_string(pkgbuild_path)?;
+    let parsed = StaticParser::new().parse(&content)?;
+
+    // Hash the package-side scripts separately from the PKGBUILD so "gained an
+    // install script" is distinguishable from "the PKGBUILD changed".
+    let dir = pkgbuild_path.parent().unwrap_or(std::path::Path::new("."));
+    let mut scripts: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_file()
+                    && matches!(
+                        p.extension().and_then(|e| e.to_str()),
+                        Some("install") | Some("hook")
+                    )
+            })
+            .collect();
+        paths.sort();
+        for path in paths {
+            if let Ok(c) = std::fs::read_to_string(&path) {
+                scripts.push(c);
+            }
+        }
+    }
+
+    let current = PackageRecord::from_scan(result, &parsed, maintainer).with_scripts(&scripts);
+    let findings = match history.get(&current.package) {
+        Some(previous) => {
+            let changes = history_compare(&previous, &current);
+            findings_for_changes(
+                &previous,
+                &current,
+                &changes,
+                &result.findings,
+                pkgbuild_path,
+            )
+        }
+        None => Vec::new(),
+    };
+    history.put(&current)?;
+    Ok(findings)
 }
 
 /// Run the pre-install check.
@@ -181,6 +241,20 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     //
     // The official-repo name list is the trusted corpus for name-impersonation
     // comparison. Read it once for the whole tree rather than per package.
+    // Scan history: how this package looked last time. Opening it is
+    // best-effort -- if the cache directory is unusable we simply do not do
+    // change detection, rather than refusing to scan.
+    let history = match History::open(History::default_dir()) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            eprintln!(
+                "{} scan history unavailable ({e}); change detection is off for this run",
+                "note:".yellow()
+            );
+            None
+        }
+    };
+
     let official_names = registry::load_official_names().await;
     if official_names.is_empty() {
         eprintln!(
@@ -264,21 +338,39 @@ pub async fn run(args: CheckArgs) -> Result<()> {
             None => None,
         };
 
+        let maintainer = node_info.get(&node.name).and_then(|i| i.maintainer.clone());
+
         let result = match &local_pkgbuild {
             Some(p) => scanner
                 .scan_pkgbuild_with_registry(p, registry_ctx)
                 .await
+                .map(|r| (r, p.clone()))
                 .map_err(|e| format!("scan error: {e}")),
             None => match client.fetch_pkgbuild(&node.name).await {
                 Ok(fetched) => scanner
                     .scan_pkgbuild_with_registry(&fetched.pkgbuild_path, registry_ctx)
                     .await
+                    .map(|r| (r, fetched.pkgbuild_path.clone()))
                     .map_err(|e| format!("scan error: {e}")),
                 Err(e) => Err(format!("fetch error: {e}")),
             },
         };
         match result {
-            Ok(result) => {
+            Ok((mut result, scanned_path)) => {
+                // Compare against the last time we saw this package and record
+                // what it looks like now. A first scan is silent -- there is
+                // nothing to compare against, and complaining about a cold
+                // cache is noise. Any failure here is logged and ignored: the
+                // history is an enhancement, never a reason to fail a scan.
+                if let Some(h) = history.as_ref() {
+                    match diff_against_history(h, &result, &scanned_path, maintainer) {
+                        Ok(diff_findings) => result.findings.extend(diff_findings),
+                        Err(e) => {
+                            tracing::debug!("history comparison for {} failed: {e}", node.name)
+                        }
+                    }
+                }
+                result.findings.sort_by_key(|f| f.severity);
                 let scan = ComponentScan::from_findings(&result.findings);
                 total_critical += scan.critical;
                 total_high += scan.high;

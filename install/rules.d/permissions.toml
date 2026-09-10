@@ -1,0 +1,75 @@
+# World-writable permission rules.
+#
+# Shipped as a community rule rather than a built-in on purpose: it is written
+# entirely in the TOML rule format, so it doubles as a worked example of a
+# precise rule for anyone writing their own (issue #8).
+#
+# The hard part of this rule is NOT matching `chmod 777` -- it is *not* matching
+# the ordinary modes every package uses. `chmod 755`, `chmod 644`, `chmod 700`,
+# and `install -Dm644` appear in almost every PKGBUILD ever written, so a rule
+# that catches them is worse than no rule: it trains people to ignore the tool.
+#
+# Benign forms verified NOT to match (see the tests in
+# crates/aur-scanner-core/src/rules/mod.rs):
+#   chmod 755 / 0755 / 644 / 0644 / 700 / 600 / 111 / 1777 on /tmp-like dirs
+#   install -Dm644 / -Dm755 / -m 644
+#   chmod u+x, chmod +x, chmod a+r, chmod g+w, chmod u+rw
+#   chmod -R 755 "$pkgdir/usr/share/foo"
+#
+# PERM-001 covers the octal forms, PERM-002 the symbolic ones. They are separate
+# codes because the symbolic form (`o+w`) is meaningfully weaker evidence than a
+# literal `777` and a reader should be able to tell them apart.
+
+[[rule]]
+id = "PERM-001"
+name = "World-writable octal mode"
+description = """
+A file or directory is given a world-writable octal mode (the last digit is 2, 3, 6, or 7). \
+Any local user can then modify that path. When the path is a program, a library, or anything \
+loaded at higher privilege, this is a straightforward local privilege-escalation primitive. \
+Ordinary modes (755, 644, 700, 600) and the sticky-bit temp-dir idiom (1777) do not match."""
+severity = "medium"
+category = "privilege_escalation"
+recommendation = """
+Use 755 for directories and executables, 644 for data files. If a path genuinely must be \
+writable by more than its owner, prefer a dedicated group with 775 over world-writable."""
+cwe_id = "CWE-732"
+file_types = ["pkgbuild", "install_script"]
+
+# chmod [-R|-v|...] [0]NNW  where W (the "other" digit) has the write bit.
+# The mode is anchored with \b on both sides so `chmod 7777777` or a longer
+# token cannot slip through, and an optional single leading 0 covers `0777`.
+# A 4-digit mode whose leading digit is 1 (sticky) is handled by listing the
+# 3-digit and 4-digit forms separately rather than allowing any leading digit --
+# `1777` on a shared temp dir is the correct, intended idiom.
+[[rule.patterns]]
+type = "regex"
+pattern = "chmod\\s+(?:-[A-Za-z-]+\\s+)*0?[0-7][0-7][2367]\\b"
+
+# install -m/-Dm with a world-writable mode.
+[[rule.patterns]]
+type = "regex"
+pattern = "install\\s[^\\n]*-[A-Za-z]*m\\s?=?\\s?0?[0-7][0-7][2367]\\b"
+
+[[rule]]
+id = "PERM-002"
+name = "World-writable symbolic mode"
+description = """
+A symbolic chmod grants write permission to "other" (`o+w`, `a+w`, `ugo+w`, or an `o=`/`a=` \
+assignment that includes w). Same consequence as the octal form: any local user can modify \
+the path. Modes that only ADD execute or read (`u+x`, `a+r`, `g+w`) do not match, and neither \
+does anything that REMOVES the bit (`o-w`)."""
+severity = "medium"
+category = "privilege_escalation"
+recommendation = """
+Drop the world-writable bit. If broader access is needed, use a group and `g+w` rather than \
+granting every local account write access."""
+cwe_id = "CWE-732"
+file_types = ["pkgbuild", "install_script"]
+
+# `o+w` / `a+w` / `ugo+w` / `o=rw` -- the "who" field must include o or a, and
+# the operator must be + or = (never -, which removes the bit and is the safe
+# direction). The permission list is scanned for a literal w.
+[[rule.patterns]]
+type = "regex"
+pattern = "chmod\\s+(?:-[A-Za-z-]+\\s+)*(?:[ug]*[oa][ug]*)[+=][rwxXst]*w"

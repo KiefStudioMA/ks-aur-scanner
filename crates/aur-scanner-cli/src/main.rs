@@ -203,6 +203,56 @@ enum Commands {
 
     /// Check scanner version and configuration
     Version,
+
+    /// Compare two versions of a package and report what changed
+    ///
+    /// Scans both sides and reports findings that appeared, findings that were
+    /// resolved, and structural changes (upstream, install scripts, functions)
+    /// that a severity count alone would hide. Keeps no state, so it is safe in
+    /// CI; `check` and `install` do this automatically against your scan history.
+    Diff {
+        /// The older package directory (or PKGBUILD)
+        old: PathBuf,
+
+        /// The newer package directory (or PKGBUILD)
+        new: PathBuf,
+
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "text")]
+        format: DiffFormatArg,
+
+        /// Exit non-zero if a NEWLY ADDED finding is at or above this severity.
+        /// Pre-existing findings never trip this gate.
+        #[arg(long, value_enum)]
+        fail_on: Option<SeverityArg>,
+    },
+
+    /// Generate a shell completion script for aur-scan
+    ///
+    /// Write it to the standard location for your shell, e.g.
+    ///   aur-scan completions bash > /usr/share/bash-completion/completions/aur-scan
+    ///   aur-scan completions zsh  > /usr/share/zsh/site-functions/_aur-scan
+    ///   aur-scan completions fish > /usr/share/fish/vendor_completions.d/aur-scan.fish
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum DiffFormatArg {
+    Text,
+    Json,
+}
+
+impl From<DiffFormatArg> for commands::diff::DiffFormat {
+    fn from(f: DiffFormatArg) -> Self {
+        match f {
+            DiffFormatArg::Text => commands::diff::DiffFormat::Text,
+            DiffFormatArg::Json => commands::diff::DiffFormat::Json,
+        }
+    }
 }
 
 #[derive(Clone, ValueEnum)]
@@ -240,6 +290,18 @@ async fn main() -> Result<()> {
         .with_target(false)
         .without_time()
         .init();
+
+    // Completions are generated from the clap command tree alone. Handle this
+    // BEFORE config resolution: a malformed config file is deliberately a hard
+    // error for every scanning path, but it must not stop a user from
+    // installing their shell completions — that would turn a typo in
+    // config.toml into a broken shell setup.
+    if let Commands::Completions { shell } = cli.command {
+        let mut cmd = <Cli as clap::CommandFactory>::command();
+        let name = cmd.get_name().to_string();
+        clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+        return Ok(());
+    }
 
     // Resolve config: explicit -c/--config wins, else the first existing
     // default path ($XDG_CONFIG_HOME/aur-scanner/config.toml, then
@@ -341,10 +403,27 @@ async fn main() -> Result<()> {
             let extra_dirs: Vec<PathBuf> = file_config.rules_path.clone().into_iter().collect();
             commands::codes::run(category.as_deref(), &format, &extra_dirs)
         }
+        Commands::Diff {
+            old,
+            new,
+            format,
+            fail_on,
+        } => {
+            commands::diff::run(
+                old,
+                new,
+                format.into(),
+                fail_on.map(Into::into),
+                file_config.clone(),
+            )
+            .await
+        }
         Commands::Ioc { check } => commands::ioc::run(check.as_deref()),
         Commands::Version => {
             commands::version::run();
             Ok(())
         }
+        // Handled before config resolution above; unreachable here.
+        Commands::Completions { .. } => unreachable!("completions handled before config load"),
     }
 }

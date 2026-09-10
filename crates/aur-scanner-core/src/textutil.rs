@@ -368,6 +368,22 @@ pub const SHELL_PATH: &str = r"(?:/\S+/)?";
 /// the nested `*` is ReDoS-free.
 pub const SHELL_LAUNCHER: &str = r"(?:(?:/\S+/)?(?:busybox|toybox|env|command|exec|setsid|stdbuf|nice)\s+(?:-\S+\s+|\w+=\S*\s+)*)*";
 
+/// Anchor a command NAME to a position where a command can actually start:
+/// the beginning of a logical line, after a shell separator (`;`, `&&`, `||`,
+/// `|`), inside a subshell or command substitution, or after whitespace.
+///
+/// A bare command name in a regex is a substring match, and command names are
+/// short. `nc\s+.*-c\s+` (the old SHELL-002 netcat rule) matched the `nc` at the
+/// *end of the word* `MEGAsync` in
+/// `git -C MEGAsync -c protocol.file.allow='always' submodule update`, reporting
+/// a routine submodule checkout as a Critical reverse shell (issue #32).
+/// Requiring a separator before the name makes `MEGAsync` unmatchable, because
+/// the character before `nc` there is `y`.
+///
+/// An optional path prefix is included so `/usr/bin/nc` still matches. Rules
+/// should follow this with the command name and a `\b`.
+pub const CMD_START: &str = r"(?:^|[\s;&|(){}`])(?:/\S+/)?";
+
 #[cfg(test)]
 mod tests {
     use super::*;

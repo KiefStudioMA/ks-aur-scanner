@@ -256,6 +256,15 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
           "The name differs by a single visually-similar or keyboard-adjacent character from a high-value package, and the package has no age or community standing of its own.", "Confirm which package you actually meant to install."),
         e("SQUAT-003", "Build variant is in different hands from its base", Low, SuspiciousMetadata, "squat", None,
           "The package is the -bin/-git build of another AUR package but is published by a different account. Informational only: measured against the live AUR, 42.5% of build variants are in different hands and are legitimate, so this is context for a human, never evidence on its own.", "If you expected the base project to publish this build, confirm that they do; declare names you own under [[owned_namespaces]] to make this decisive."),
+        // -- change detection (requires a previous scan of the same package) --
+        e("DIFF-001", "New findings since the last scan", High, SuspiciousMetadata, "diff", None,
+          "The package raised findings it did not raise when it was last scanned. Reported at the severity of the worst NEW finding: a long-standing SKIP checksum is not news, a newly-appeared curl|sh is. Silent on a first scan.", "Review the new findings specifically -- they are what changed since you approved this package."),
+        e("DIFF-002", "Package ownership changed", High, SuspiciousMetadata, "diff", None,
+          "The maintainer changed since the last scan. Adoption of a previously orphaned package is High and is the documented mechanism of both the 2018 xeactor hijack and the 2026 Atomic Arch campaign; an ordinary handover, or a package becoming orphaned, is Medium.", "Confirm the handover is legitimate before installing an update."),
+        e("DIFF-003", "Package fetches from a new upstream", High, NetworkSecurity, "diff", Some("CWE-494"),
+          "A source now points at a host/owner/repo it did not use at the last scan. Compared at owner/repo depth, so routine version bumps and new release tarballs do not fire -- upstream itself moved.", "Verify the new upstream is the project's real home and not a fork impersonating it."),
+        e("DIFF-004", "Install script added or changed", High, Persistence, "diff", Some("CWE-506"),
+          "The package gained an install scriptlet or ALPM hook (High), or an existing one changed (Medium). This code runs as root at install time, so acquiring one changes what the package can do to the system regardless of its current contents.", "Read the new or changed install script in full before installing."),
         e("SQUAT-004", "Package occupies an owned namespace under an unauthorised account", Critical, MaliciousCode, "squat", Some("CWE-1007"),
           "A package matching a name prefix the operator declared they publish is maintained by an account they did not authorise. The AUR reserves no variant namespace, so owning 'foo' does not reserve 'foo-bin'.", "Do not install it; report it to the AUR maintainers as an impersonation."),
         // -- source analyzer (host-aware metadata) --
@@ -332,6 +341,10 @@ mod tests {
             "SQUAT-002",
             "SQUAT-003",
             "SQUAT-004",
+            "DIFF-001",
+            "DIFF-002",
+            "DIFF-003",
+            "DIFF-004",
             "DEP-001",
         ];
         let catalog = Catalog::load();

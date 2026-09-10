@@ -111,7 +111,14 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
             .filter(|s| !s.is_vcs())
             .count();
         let vcs_count = source_count - non_vcs_count;
-        let non_vcs_skip_count = self.count_unverified_non_vcs(checksums, &context.pkgbuild.source);
+        // Name the offending sources, not just count them. A bare "3 of 7
+        // sources use SKIP" tells a maintainer that something is wrong but not
+        // *what*, so it cannot be acted on or triaged -- and a reader who
+        // cannot see which entry is unverified cannot tell a detached signature
+        // (legitimately unhashable) from a tarball (not) (issue #31).
+        let unverified = self.unverified_non_vcs(checksums, &context.pkgbuild.source);
+        let non_vcs_skip_count = unverified.len();
+        let names: Vec<String> = unverified.iter().map(|(_, name)| name.clone()).collect();
 
         if non_vcs_skip_count > 0 && non_vcs_skip_count < non_vcs_count {
             // Some non-VCS sources have SKIP - this is concerning
@@ -121,14 +128,16 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
                 category: Category::Cryptography,
                 title: "Some sources have SKIP checksum".to_string(),
                 description: format!(
-                    "{} of {} non-VCS sources use SKIP instead of real checksums",
-                    non_vcs_skip_count, non_vcs_count
+                    "{} of {} non-VCS sources use SKIP instead of real checksums: {}",
+                    non_vcs_skip_count,
+                    non_vcs_count,
+                    names.join(", ")
                 ),
                 location: Location {
                     file: context.file_path.clone(),
                     line: None,
                     column: None,
-                    snippet: None,
+                    snippet: Some(format!("source: {}", names.join(", "))),
                 },
                 recommendation: "Provide real checksums for all non-VCS sources".to_string(),
                 cwe_id: Some("CWE-354".to_string()),
@@ -136,6 +145,10 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
                     "skip_count": non_vcs_skip_count,
                     "total_non_vcs_sources": non_vcs_count,
                     "vcs_sources": vcs_count,
+                    // Machine-readable, so a caller can filter on exactly which
+                    // entries are unverified rather than re-parsing the prose.
+                    "unverified_sources": names,
+                    "unverified_indices": unverified.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
                 }),
             });
         } else if non_vcs_skip_count == non_vcs_count && non_vcs_count > 0 {
@@ -146,20 +159,23 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
                 category: Category::Cryptography,
                 title: "All non-VCS sources use SKIP checksum".to_string(),
                 description: format!(
-                    "No integrity verification is performed on {} non-VCS source(s)",
-                    non_vcs_count
+                    "No integrity verification is performed on {} non-VCS source(s): {}",
+                    non_vcs_count,
+                    names.join(", ")
                 ),
                 location: Location {
                     file: context.file_path.clone(),
                     line: None,
                     column: None,
-                    snippet: None,
+                    snippet: Some(format!("source: {}", names.join(", "))),
                 },
                 recommendation: "Provide real checksums for non-VCS sources".to_string(),
                 cwe_id: Some("CWE-354".to_string()),
                 metadata: serde_json::json!({
                     "non_vcs_source_count": non_vcs_count,
                     "vcs_source_count": vcs_count,
+                    "unverified_sources": names,
+                    "unverified_indices": unverified.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
                 }),
             });
         }
@@ -269,15 +285,21 @@ impl ChecksumAnalyzer {
         .collect()
     }
 
-    /// Number of non-VCS sources that have NO real (non-SKIP) hash in ANY
-    /// present checksum array. Checking every array -- not just the first
-    /// non-empty one -- is what prevents SKIP-laundering: a strong-array SKIP
-    /// hidden behind a populated weak array is still counted as unverified.
-    fn count_unverified_non_vcs(
+    /// The non-VCS sources that have NO real (non-SKIP) hash in ANY present
+    /// checksum array, as `(source index, display name)`.
+    ///
+    /// Checking every array -- not just the first non-empty one -- is what
+    /// prevents SKIP-laundering: a strong-array SKIP hidden behind a populated
+    /// weak array is still counted as unverified.
+    ///
+    /// The index is reported alongside the name because `source=()` entries are
+    /// positional: "entry 3" is what a maintainer edits, and two entries can
+    /// share a display name.
+    fn unverified_non_vcs(
         &self,
         checksums: &crate::parser::Checksums,
         sources: &[crate::parser::SourceEntry],
-    ) -> usize {
+    ) -> Vec<(usize, String)> {
         let present = Self::present_arrays(checksums);
         sources
             .iter()
@@ -288,7 +310,15 @@ impl ChecksumAnalyzer {
                         .iter()
                         .any(|arr| matches!(arr.get(*i), Some(Some(_))))
             })
-            .count()
+            .map(|(i, s)| (i, Self::display_name(s)))
+            .collect()
+    }
+
+    /// How a source entry should be named in a finding: the `::` rename when
+    /// there is one (that is the local filename makepkg uses), otherwise the
+    /// URL as written.
+    fn display_name(entry: &crate::parser::SourceEntry) -> String {
+        entry.filename.clone().unwrap_or_else(|| entry.url.clone())
     }
 
     /// Get the number of checksums defined: the maximum length across all
@@ -321,6 +351,115 @@ mod tests {
             file_path: PathBuf::from("PKGBUILD"),
             registry: None,
         }
+    }
+
+    #[tokio::test]
+    async fn chk004_names_the_unverified_sources() {
+        // Issue #31: a bare count is unactionable. The reporter's actual case
+        // was wanting to tell a detached signature (which cannot carry a
+        // meaningful hash) from a tarball (which must), and the finding gave
+        // them nothing to filter on.
+        let analyzer = ChecksumAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+source=("https://example.com/app-1.0.tar.gz"
+        "https://example.com/app-1.0.tar.gz.sig"
+        "local-fix.patch")
+sha256sums=('abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234'
+            'SKIP'
+            'SKIP')
+"#,
+        );
+
+        let findings = analyzer.analyze(&context).await.unwrap();
+        let f = findings
+            .iter()
+            .find(|f| f.id == "CHK-004")
+            .expect("two of three sources are unverified");
+
+        // Named in the prose...
+        assert!(
+            f.description.contains("app-1.0.tar.gz.sig"),
+            "description must name the signature file: {}",
+            f.description
+        );
+        assert!(
+            f.description.contains("local-fix.patch"),
+            "description must name the patch: {}",
+            f.description
+        );
+        // ...and available structurally, so a caller can filter on `\.sig$`
+        // without scraping English.
+        let names: Vec<&str> = f.metadata["unverified_sources"]
+            .as_array()
+            .expect("unverified_sources must be an array")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["https://example.com/app-1.0.tar.gz.sig", "local-fix.patch"]
+        );
+        // Positional indices, because that is what a maintainer edits.
+        let idx: Vec<u64> = f.metadata["unverified_indices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .collect();
+        assert_eq!(idx, vec![1, 2]);
+        // The verified tarball must NOT be listed.
+        assert!(!names.iter().any(|n| n.ends_with("app-1.0.tar.gz")));
+    }
+
+    #[tokio::test]
+    async fn chk004_uses_the_rename_when_a_source_declares_one() {
+        // `name::url` sources are fetched as `name`, which is what the
+        // maintainer sees on disk and in the checksum array position.
+        let analyzer = ChecksumAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+source=("app.tar.gz::https://example.com/download?id=42"
+        "https://example.com/other.tar.gz")
+sha256sums=('SKIP'
+            'abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234')
+"#,
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        let f = findings.iter().find(|f| f.id == "CHK-004").unwrap();
+        assert!(
+            f.description.contains("app.tar.gz"),
+            "the local filename is the useful name: {}",
+            f.description
+        );
+    }
+
+    #[tokio::test]
+    async fn chk005_also_names_the_sources() {
+        let analyzer = ChecksumAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+source=("https://example.com/a.tar.gz" "https://example.com/b.tar.gz")
+sha256sums=('SKIP' 'SKIP')
+"#,
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        let f = findings.iter().find(|f| f.id == "CHK-005").unwrap();
+        assert!(f.description.contains("a.tar.gz"));
+        assert!(f.description.contains("b.tar.gz"));
+        assert_eq!(
+            f.metadata["unverified_sources"].as_array().unwrap().len(),
+            2
+        );
     }
 
     #[tokio::test]

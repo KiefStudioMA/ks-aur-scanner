@@ -191,8 +191,16 @@ impl ScanResult {
     }
 }
 
-/// Configuration for the scanner
+/// Configuration for the scanner.
+///
+/// `deny_unknown_fields`, for the same reason the `[output]` table has it: a
+/// mistyped key that silently does nothing is worse than an error, because the
+/// operator believes a setting is in force when it is not. That failure mode is
+/// exactly issue #25 -- threat-intel keys that were never read, so threat intel
+/// looked enabled and was not. A security tool must not have settings that
+/// quietly evaporate.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScanConfig {
     /// Path to custom rules directory
     pub rules_path: Option<PathBuf>,

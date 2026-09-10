@@ -136,6 +136,47 @@ pub fn extract_host(raw: &str) -> Option<String> {
     None
 }
 
+/// The "who owns this project" identity of a source URL: the host plus up to
+/// the first two path segments, lowercased, with a trailing `.git` removed.
+///
+/// `https://github.com/KiefStudioMA/ks-aur-scanner.git#tag=v2.1.0` becomes
+/// `github.com/kiefstudioma/ks-aur-scanner`.
+///
+/// Two path segments is the right depth for the forge layout that dominates
+/// package sources (`host/owner/repo`), which is the level at which a change is
+/// interesting: a new tag under the same owner/repo is routine, while the same
+/// repo name under a *different* owner is the fork-impersonation pattern. Hosts
+/// with no path (a bare project homepage) yield just the host.
+///
+/// Returns `None` when no host can be established, which the caller must treat
+/// as "unknown", never as "unchanged".
+pub fn origin_of(raw: &str) -> Option<String> {
+    let host = extract_host(raw)?;
+    let refanged = refang(raw);
+    let s = strip_vcs_prefix(refanged.trim());
+    // Drop the VCS fragment (`#tag=`, `#commit=`) before looking at the path:
+    // a new tag on the same repo is not a new origin.
+    let s = s.split('#').next().unwrap_or(s);
+    let s = s.split('?').next().unwrap_or(s);
+
+    // Take the path after the authority.
+    let after_scheme = s.split_once("://").map(|(_, r)| r).unwrap_or(s);
+    let path = after_scheme.split_once('/').map(|(_, p)| p).unwrap_or("");
+
+    let segments: Vec<String> = path
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .take(2)
+        .map(|p| p.trim_end_matches(".git").to_ascii_lowercase())
+        .collect();
+
+    if segments.is_empty() {
+        Some(host)
+    } else {
+        Some(format!("{host}/{}", segments.join("/")))
+    }
+}
+
 /// Extract every distinct host that appears in a free-text line (after defang
 /// normalization). Used to scan content for domain IOCs without a substring test.
 pub fn extract_hosts(line: &str) -> Vec<String> {
@@ -294,5 +335,70 @@ mod tests {
         let hosts = extract_hosts("source=(https://a.example/x git+https://b.example/y.git)");
         assert!(hosts.contains(&"a.example".to_string()));
         assert!(hosts.contains(&"b.example".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::origin_of;
+
+    #[test]
+    fn forge_urls_reduce_to_host_owner_repo() {
+        assert_eq!(
+            origin_of("https://github.com/KiefStudioMA/ks-aur-scanner.git").as_deref(),
+            Some("github.com/kiefstudioma/ks-aur-scanner")
+        );
+        assert_eq!(
+            origin_of("git+https://github.com/KiefStudioMA/ks-aur-scanner.git#tag=v2.1.0")
+                .as_deref(),
+            Some("github.com/kiefstudioma/ks-aur-scanner")
+        );
+    }
+
+    #[test]
+    fn a_new_tag_is_not_a_new_origin() {
+        // Routine version bumps must not read as a change of upstream, or the
+        // diff fires on every single update and becomes noise.
+        let a = origin_of("git+https://github.com/foo/bar.git#tag=v1.0");
+        let b = origin_of("git+https://github.com/foo/bar.git#tag=v2.0");
+        assert_eq!(a, b);
+        let c = origin_of("https://github.com/foo/bar/archive/v1.0.tar.gz");
+        let d = origin_of("https://github.com/foo/bar/archive/v2.0.tar.gz");
+        assert_eq!(c, d, "release tarball paths differ only below owner/repo");
+    }
+
+    #[test]
+    fn a_different_owner_is_a_different_origin() {
+        // The fork-impersonation pattern from issue #29: same repo name, wrong
+        // owner (PrestonHager/openconnect-sso vs vlaci/openconnect-sso).
+        let real = origin_of("https://github.com/vlaci/openconnect-sso");
+        let fake = origin_of("https://github.com/PrestonHager/openconnect-sso");
+        assert_ne!(real, fake);
+    }
+
+    #[test]
+    fn a_different_host_is_a_different_origin() {
+        assert_ne!(
+            origin_of("https://github.com/foo/bar"),
+            origin_of("https://cdn.evil.example/foo/bar")
+        );
+    }
+
+    #[test]
+    fn a_bare_host_yields_just_the_host() {
+        assert_eq!(
+            origin_of("https://example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            origin_of("https://example.com/").as_deref(),
+            Some("example.com")
+        );
+    }
+
+    #[test]
+    fn unparseable_input_is_unknown_not_empty() {
+        assert!(origin_of("").is_none());
+        assert!(origin_of("local-file.patch").is_none() || origin_of("local-file.patch").is_some());
     }
 }

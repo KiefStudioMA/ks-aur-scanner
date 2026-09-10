@@ -3,6 +3,7 @@
 pub mod banner;
 pub mod check;
 pub mod codes;
+pub mod diff;
 pub mod explain;
 pub mod install;
 pub mod ioc;

@@ -191,3 +191,74 @@ fn fail_on_sets_exit_code() {
         "clean must exit 0 under --fail-on critical"
     );
 }
+
+/// Run `aur-scan` with arbitrary args and return (stdout, stderr, code).
+fn run(args: &[&str]) -> (String, String, i32) {
+    let out = Command::new(bin())
+        .args(args)
+        .output()
+        .expect("failed to run aur-scan");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+#[test]
+fn completions_generate_for_every_documented_shell() {
+    // Issue #7 acceptance: bash, zsh, and fish all emit a script.
+    for shell in ["bash", "zsh", "fish"] {
+        let (stdout, stderr, code) = run(&["completions", shell]);
+        assert_eq!(code, 0, "completions {shell} exited {code}: {stderr}");
+        assert!(
+            stdout.len() > 500,
+            "completions {shell} produced {} bytes, which is not a real script",
+            stdout.len()
+        );
+        // The script must actually know about this binary's commands, or it is
+        // a well-formed but useless file.
+        assert!(
+            stdout.contains("aur-scan"),
+            "completions {shell} does not mention the binary name"
+        );
+        for sub in ["scan", "check", "install", "system", "explain", "codes"] {
+            assert!(
+                stdout.contains(sub),
+                "completions {shell} is missing subcommand {sub:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn completions_do_not_require_a_readable_config() {
+    // A typo in config.toml is a hard error for scanning, deliberately. It must
+    // NOT stop someone installing shell completions, or one bad character in a
+    // config file breaks their shell setup at package-install time.
+    let dir = std::env::temp_dir().join("aur-scan-bad-config-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("broken.toml");
+    std::fs::write(&bad, "this is not = = valid toml [[[").unwrap();
+
+    let (stdout, _, code) = run(&["-c", bad.to_str().unwrap(), "completions", "bash"]);
+    assert_eq!(code, 0, "completions must not depend on config validity");
+    assert!(stdout.contains("aur-scan"));
+
+    // Sanity: that same config really is rejected on a scanning path, so this
+    // test is proving an exemption rather than that the config is fine.
+    let (_, _, scan_code) = run(&["-c", bad.to_str().unwrap(), "codes"]);
+    assert_ne!(scan_code, 0, "a malformed config must still fail elsewhere");
+
+    std::fs::remove_file(&bad).ok();
+}
+
+#[test]
+fn completions_rejects_an_unknown_shell() {
+    let (_, stderr, code) = run(&["completions", "smoothshell"]);
+    assert_ne!(code, 0);
+    assert!(
+        stderr.contains("invalid value") || stderr.contains("possible values"),
+        "expected a clap value error, got: {stderr}"
+    );
+}
