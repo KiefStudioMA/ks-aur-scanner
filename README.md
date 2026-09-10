@@ -108,7 +108,7 @@ This scanner implements detection rules based on real-world attacks and security
 
 | Feature | Description |
 |---------|-------------|
-| **Static Analysis** | 110+ detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
+| **Static Analysis** | 130 detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
 | **Install Script Scanning** | Analyzes `.install` scripts for persistence mechanisms |
 | **Source Verification** | Validates URLs, checksums, and download sources |
 | **AUR Integration** | Fetch and scan packages directly from AUR before installation |
@@ -632,7 +632,7 @@ NeedsTargets
 
 ## Detection Rules Reference
 
-> The **117 built-in detection codes**, generated from the catalog
+> The **130 built-in detection codes**, generated from the catalog
 > (`aur-scan codes --format markdown`) — every ID is unique and audit-enforced.
 > (`EXAMPLE-001` is the shipped community-rule sample, not a built-in.) Extend the
 > catalog with your own TOML rules (see [Custom & Community Rules](#custom--community-rules)).
@@ -822,8 +822,10 @@ Atomic Arch wave both adopted abandoned packages and then modified them. The
 change is the signal.
 
 `check` and `install` record a small fingerprint of every package they scan
-(under `$XDG_CACHE_HOME/aur-scan/history`, owner-readable only) and compare the
-next scan against it:
+(under `$XDG_CACHE_HOME/aur-scan/history`, owner-readable only, mode 0700) and
+compare the next scan against it. A `--local` directory claiming a package name
+you did not explicitly request is scanned but **not** recorded, so it cannot
+overwrite a real package's baseline:
 
 | Code | Fires when | Severity |
 |------|-----------|----------|
@@ -912,9 +914,15 @@ Critical. The prefix matches the exact name or a `-`-separated suffix, so
 
 Empty by default. No namespaces are assumed on your behalf.
 
-> Name analysis needs registry context (who maintains what, and the official
-> package list). A bare `aur-scan scan ./dir` has neither, so it emits no
-> `SQUAT-*` findings at all rather than guessing.
+> Name and ownership analysis need registry context — who maintains what, plus
+> the official package list. `check`, `install`, `aur-scan-wrap`, and
+> `system --rescan` all supply it. Three paths deliberately do not, and emit no
+> `SQUAT-*` or `OWN-*` findings at all rather than guessing:
+> `aur-scan scan ./dir` (no package identity to look up), `aur-scan diff`
+> (compares two directories, and stays stateless for CI), and the **pacman
+> hook** (offline by design — it must not make network calls inside a
+> transaction). On those paths these codes are *not evaluated*, which is not the
+> same as clean.
 
 ---
 

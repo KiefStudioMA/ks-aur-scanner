@@ -149,7 +149,12 @@ function _aur_scan_gate
     # Race-free mode applies to a NAMED install that is NOT also a system upgrade
     # (a `-Syu pkg` must still let the helper do the upgrade).
     if test "$_AUR_SCAN_IS_INSTALL" = "1" -a "$_AUR_SCAN_IS_UPGRADE" = "0" -a "$AUR_SCAN_MODE" = "install"
-        aur-scan install $_AUR_SCAN_PKGS
+    # Pass the SAME threshold the gate path uses. `aur-scan install`
+    # defaults its own gate to `critical`, so without this, switching to
+    # the mode documented as stronger silently RAISED the bar that blocks a
+    # build (High findings stopped blocking). The user's configured
+    # severity must govern both modes.
+        aur-scan install --gate "$AUR_SCAN_SEVERITY" $_AUR_SCAN_PKGS
         return $status
     end
 

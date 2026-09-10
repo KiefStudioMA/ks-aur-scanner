@@ -2,7 +2,7 @@
 //!
 //! Provides integration capabilities for AUR helpers like yay and paru.
 
-use aur_scanner_core::{ScanConfig, ScanResult, Scanner, Severity};
+use aur_scanner_core::{Registry, ScanConfig, ScanResult, Scanner, Severity};
 use colored::Colorize;
 use std::io::{self, Write};
 use std::path::Path;
@@ -46,12 +46,21 @@ impl AurScannerPlugin {
         self.interactive = interactive;
     }
 
-    /// Scan a package directory before building
+    /// Scan a package directory before building.
+    ///
+    /// `registry` is required rather than defaulted: it selects between the
+    /// full analyzer set and a strictly smaller one. An embedder that has
+    /// already resolved the package through the AUR should pass
+    /// [`Registry::From`] so ownership (`OWN-*`) and name-impersonation
+    /// (`SQUAT-*`) analysis runs; one scanning an arbitrary directory should
+    /// pass [`Registry::None`] and know that those codes are *not evaluated*
+    /// rather than clean.
     pub async fn pre_build_scan(
         &self,
         package_dir: &Path,
+        registry: Registry,
     ) -> Result<ScanResult, aur_scanner_core::ScanError> {
-        self.scanner.scan_directory(package_dir).await
+        self.scanner.scan_directory(package_dir, registry).await
     }
 
     /// Display scan results and optionally prompt user

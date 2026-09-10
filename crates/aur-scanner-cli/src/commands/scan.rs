@@ -2,7 +2,7 @@
 
 use crate::output::{self, OutputFormat};
 use anyhow::{Context, Result};
-use aur_scanner_core::{ScanConfig, ScanResult, Scanner, Severity};
+use aur_scanner_core::{Registry, ScanConfig, ScanResult, Scanner, Severity};
 use colored::Colorize;
 use std::path::PathBuf;
 
@@ -48,7 +48,10 @@ pub async fn run(
     // Run scan
     tracing::info!("Scanning: {}", scan_path.display());
     let result = scanner
-        .scan_pkgbuild(&scan_path)
+        // Deliberate: `scan <path>` is a local file scan with no package
+        // identity to look up, so ownership and name-impersonation analysis
+        // cannot run and must not guess.
+        .scan_pkgbuild(&scan_path, Registry::None)
         .await
         .context("Scan failed")?;
 

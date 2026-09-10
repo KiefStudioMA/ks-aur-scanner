@@ -17,7 +17,7 @@ use aur_scanner_core::parser::{PkgbuildParser, StaticParser};
 use aur_scanner_core::registry;
 use aur_scanner_core::sbom::{self, ComponentScan};
 use aur_scanner_core::validate::{is_valid_package_name, validate_package_name};
-use aur_scanner_core::{Finding, OutputConfig, ScanConfig, Scanner, Severity};
+use aur_scanner_core::{Finding, OutputConfig, Registry, ScanConfig, Scanner, Severity};
 
 use super::banner;
 
@@ -80,7 +80,7 @@ fn classify_local_dir(
 /// Returns an empty vector on a first scan. Every failure path is an `Err` the
 /// caller logs and discards: change detection is an enhancement layered on top
 /// of the scan, and a broken cache must never turn a good scan into a bad one.
-fn diff_against_history(
+pub(crate) fn diff_against_history(
     history: &History,
     result: &aur_scanner_core::ScanResult,
     pkgbuild_path: &std::path::Path,
@@ -305,13 +305,23 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         let local_pkgbuild = local_dir_by_name
             .get(&node.name)
             .map(|d| d.join("PKGBUILD"));
-        if local_pkgbuild.is_some()
+        // A local dir claiming a name the user did not ask for must never be
+        // written to the scan history. The history is keyed on the name the
+        // PKGBUILD declares about ITSELF, so a directory declaring
+        // `pkgname=firefox` would otherwise overwrite the real firefox record.
+        // Because DIFF-* are pure deltas against the stored record, a poisoned
+        // baseline SILENCES the next real change: pre-listing an origin kills
+        // DIFF-003, and shipping any .install file makes the real package's
+        // first-ever scriptlet look like a mere edit (High -> Medium). That can
+        // drop a tree under the `--fail-on high` the shell integration uses.
+        let shadowing = local_pkgbuild.is_some()
             && classify_local_dir(&node.name, &requested_roots)
-                == LocalDirBinding::UnrequestedShadow
-        {
+                == LocalDirBinding::UnrequestedShadow;
+        if shadowing {
             eprintln!(
                 "{} a --local dir is providing {:?}, which you did not explicitly request; \
-                 its real AUR source is NOT being checked",
+                 its real AUR source is NOT being checked, and it will NOT be recorded \
+                 in the scan history",
                 "note:".yellow(),
                 node.name
             );
@@ -334,21 +344,23 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         // who maintains the package it is a variant of. Absent for a node the
         // RPC did not return, in which case the name analyzers stay silent.
         let registry_ctx = match node_info.get(&node.name) {
-            Some(info) => Some(registry::context_for(info, official_names.clone(), source).await),
-            None => None,
+            Some(info) => {
+                Registry::From(registry::context_for(info, official_names.clone(), source).await)
+            }
+            None => Registry::None,
         };
 
         let maintainer = node_info.get(&node.name).and_then(|i| i.maintainer.clone());
 
         let result = match &local_pkgbuild {
             Some(p) => scanner
-                .scan_pkgbuild_with_registry(p, registry_ctx)
+                .scan_pkgbuild(p, registry_ctx)
                 .await
                 .map(|r| (r, p.clone()))
                 .map_err(|e| format!("scan error: {e}")),
             None => match client.fetch_pkgbuild(&node.name).await {
                 Ok(fetched) => scanner
-                    .scan_pkgbuild_with_registry(&fetched.pkgbuild_path, registry_ctx)
+                    .scan_pkgbuild(&fetched.pkgbuild_path, registry_ctx)
                     .await
                     .map(|r| (r, fetched.pkgbuild_path.clone()))
                     .map_err(|e| format!("scan error: {e}")),
@@ -362,7 +374,7 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                 // nothing to compare against, and complaining about a cold
                 // cache is noise. Any failure here is logged and ignored: the
                 // history is an enhancement, never a reason to fail a scan.
-                if let Some(h) = history.as_ref() {
+                if let Some(h) = history.as_ref().filter(|_| !shadowing) {
                     match diff_against_history(h, &result, &scanned_path, maintainer) {
                         Ok(diff_findings) => result.findings.extend(diff_findings),
                         Err(e) => {

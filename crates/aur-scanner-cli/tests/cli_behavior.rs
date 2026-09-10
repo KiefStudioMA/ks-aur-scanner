@@ -262,3 +262,153 @@ fn completions_rejects_an_unknown_shell() {
         "expected a clap value error, got: {stderr}"
     );
 }
+
+/// Every call site of `Scanner::scan_pkgbuild` / `scan_directory` must state
+/// which scan it wants, and a `Registry::None` must be a deliberate, commented
+/// choice rather than an omission.
+///
+/// This is a source-level test because the defect it guards against is not
+/// observable at runtime: a reduced scan is not an error, it is just quieter.
+/// Seven of eight callers silently ran the reduced analyzer set -- including
+/// `install`, the AUR-helper wrapper, and the pacman hook, the three paths that
+/// actually gate an installation -- and 383 passing tests did not notice.
+#[test]
+fn every_registry_none_call_site_is_deliberate() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    // Paths where a registry-less scan is CORRECT, with the reason. Anything
+    // not on this list that passes Registry::None is a regression.
+    let sanctioned: &[(&str, &str)] = &[
+        (
+            "crates/aur-scanner-cli/src/commands/scan.rs",
+            "a bare path scan has no package identity to look up",
+        ),
+        (
+            "crates/aur-scanner-cli/src/commands/diff.rs",
+            "diff compares two directories and must stay stateless for CI",
+        ),
+        (
+            "crates/aur-scanner-hook/src/main.rs",
+            "the pacman hook is offline by design inside a transaction",
+        ),
+        (
+            "crates/aur-scanner-cli/src/commands/system.rs",
+            "a cached scan without --rescan has no live AUR record",
+        ),
+        (
+            "crates/aur-scanner-core/src/lib.rs",
+            "the enum's own definition, plus a test fixture",
+        ),
+        (
+            "crates/aur-scanner-cli/src/commands/check.rs",
+            "fallback arm only: used when the AUR RPC returned no record for a \
+             node, where there is genuinely nothing to supply. The paired \
+             `Registry::From` arm is asserted by \
+             installation_gating_paths_build_registry_context",
+        ),
+        (
+            "crates/aur-scanner-cli/src/commands/install.rs",
+            "fallback arm only, same as check.rs",
+        ),
+        (
+            "crates/aur-scanner-plugin/src/lib.rs",
+            "doc comment on the embedder API explaining when each variant applies",
+        ),
+    ];
+
+    let mut offenders = Vec::new();
+    let mut walk = vec![root.join("crates")];
+    while let Some(dir) = walk.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == "target") {
+                    continue;
+                }
+                walk.push(p);
+            } else if p.extension().and_then(|x| x.to_str()) == Some("rs") {
+                // Skip this test file: it necessarily names the thing it guards.
+                if p.file_name().is_some_and(|n| n == "cli_behavior.rs") {
+                    continue;
+                }
+                let Ok(src) = std::fs::read_to_string(&p) else {
+                    continue;
+                };
+                if !src.contains("Registry::None") {
+                    continue;
+                }
+                let rel = p
+                    .strip_prefix(&root)
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if !sanctioned.iter().any(|(s, _)| rel.ends_with(s)) {
+                    offenders.push(rel);
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "these files pass Registry::None but are not on the sanctioned list. \
+         If the reduced analyzer set is genuinely correct there, add the file \
+         and the reason to `sanctioned` in this test -- note that sanctioning \
+         exempts the WHOLE file, so prefer keeping registry-less scans in files \
+         that do nothing else. If it is not correct, wire real registry context \
+         instead: {offenders:?}"
+    );
+}
+
+/// The paths that gate an installation must build real registry context, or the
+/// operator's `[[owned_namespaces]]` declarations and every OWN-*/SQUAT-* code
+/// are silently inert exactly where they matter most.
+#[test]
+fn installation_gating_paths_build_registry_context() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (rel, why) in [
+        (
+            "crates/aur-scanner-cli/src/commands/check.rs",
+            "pre-install check",
+        ),
+        (
+            "crates/aur-scanner-cli/src/commands/install.rs",
+            "the race-free path that actually builds",
+        ),
+        (
+            "crates/aur-scanner-plugin/src/bin/wrapper.rs",
+            "the AUR-helper wrapper every paru/yay/nushell user goes through",
+        ),
+    ] {
+        let src = std::fs::read_to_string(root.join(rel))
+            .unwrap_or_else(|e| panic!("reading {rel}: {e}"));
+        assert!(
+            src.contains("Registry::From"),
+            "{rel} ({why}) must supply registry context; without it \
+             SQUAT-*, OWN-* and [[owned_namespaces]] cannot fire on this path"
+        );
+    }
+}
+
+/// `check` and `install` must both record scan history, or a package installed
+/// through one is invisible to change detection in the other.
+#[test]
+fn both_installing_paths_record_scan_history() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for rel in [
+        "crates/aur-scanner-cli/src/commands/check.rs",
+        "crates/aur-scanner-cli/src/commands/install.rs",
+    ] {
+        let src = std::fs::read_to_string(root.join(rel))
+            .unwrap_or_else(|e| panic!("reading {rel}: {e}"));
+        assert!(
+            src.contains("diff_against_history"),
+            "{rel} must compare against and record scan history; otherwise it \
+             lays no baseline and the NEXT scan takes the silent first-scan \
+             branch while recording post-compromise state as normal"
+        );
+    }
+}

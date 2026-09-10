@@ -8,6 +8,10 @@
 //! change-detection that `check` and `install` perform against the scan
 //! history. Same comparison engine; this one takes both sides explicitly and
 //! keeps no state, so it is safe to run in a pipeline.
+//!
+//! Because it compares two directories rather than a resolved package, it scans
+//! with [`Registry::None`]: there is no single package identity to look up, so
+//! `SQUAT-*` and `OWN-*` are not evaluated here.
 
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
@@ -15,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use aur_scanner_core::history::{compare, PackageRecord};
 use aur_scanner_core::parser::{PkgbuildParser, StaticParser};
-use aur_scanner_core::{Finding, ScanConfig, Scanner, Severity};
+use aur_scanner_core::{Finding, Registry, ScanConfig, Scanner, Severity};
 
 /// Output format for the diff.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,7 +50,10 @@ async fn scan_side(
         .parse(&content)
         .with_context(|| format!("parsing {}", pkgbuild_path.display()))?;
     let result = scanner
-        .scan_pkgbuild(&pkgbuild_path)
+        // Deliberate: `diff` compares two directories on disk. There is no
+        // single package identity to look up, and the whole point is that the
+        // comparison is stateless and reproducible in CI.
+        .scan_pkgbuild(&pkgbuild_path, Registry::None)
         .await
         .with_context(|| format!("scanning {}", pkgbuild_path.display()))?;
     Ok((result, parsed))

@@ -187,6 +187,31 @@ pub enum Protocol {
 }
 
 impl Protocol {
+    /// Whether this source is fetched from somewhere else, as opposed to being
+    /// a file shipped alongside the PKGBUILD.
+    ///
+    /// A `source=()` entry like `0001-fix-build.patch` or `foo.service` lives in
+    /// the package directory and has no upstream at all. Treating one as a
+    /// remote origin is not just imprecise, it inverts the meaning of a finding:
+    /// "now fetches from 0001-fix-build.patch" is both false and alarming.
+    pub fn is_remote(&self) -> bool {
+        match self {
+            Protocol::Https
+            | Protocol::Http
+            | Protocol::Ftps
+            | Protocol::Ftp
+            | Protocol::Git
+            | Protocol::Svn
+            | Protocol::Hg
+            | Protocol::Bzr => true,
+            // A local file has no upstream. `Unknown` is deliberately NOT
+            // treated as remote: if we cannot tell what a source is, claiming
+            // the package "fetches from" it is a guess, and this feeds a High
+            // finding.
+            Protocol::File | Protocol::Unknown(_) => false,
+        }
+    }
+
     /// Determine protocol from URL
     pub fn from_url(url: &str) -> Self {
         let url_lower = url.to_lowercase();

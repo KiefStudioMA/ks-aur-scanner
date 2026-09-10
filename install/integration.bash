@@ -118,7 +118,12 @@ _aur_scan_gate() {
     # bytes and build them in dependency order via `aur-scan install`.
     if [[ "$_AUR_SCAN_IS_INSTALL" == "1" && "$_AUR_SCAN_IS_UPGRADE" == "0" \
        && "${AUR_SCAN_MODE:-gate}" == "install" ]]; then
-        aur-scan install "${_AUR_SCAN_PKGS[@]}"
+        # Pass the SAME threshold the gate path uses. `aur-scan install`
+        # defaults its own gate to `critical`, so without this, switching to
+        # the mode documented as stronger silently RAISED the bar that blocks a
+        # build (High findings stopped blocking). The user's configured
+        # severity must govern both modes.
+        aur-scan install --gate "$AUR_SCAN_SEVERITY" "${_AUR_SCAN_PKGS[@]}"
         return $?
     fi
 

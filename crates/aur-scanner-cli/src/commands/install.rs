@@ -10,15 +10,17 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
-use aur_scanner_core::aur::AurClient;
+use aur_scanner_core::aur::{AurClient, PackageInfoSource};
 use aur_scanner_core::depgraph::{self, ResolveOptions};
+use aur_scanner_core::history::History;
+use aur_scanner_core::registry;
 use aur_scanner_core::sbom::{self, ComponentScan};
 use aur_scanner_core::validate::validate_package_name;
-use aur_scanner_core::{Scanner, Severity};
+use aur_scanner_core::{Registry, Scanner, Severity};
 
 use super::banner;
 
@@ -212,6 +214,40 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     // had findings at/above the threshold -- a deliberate --force can override
     // this. `unscannable`: a package could not be fetched or scanned at all, so
     // it was never reviewed -- --force must NOT build these blind.
+    // Registry inputs, loaded once for the whole tree rather than per package.
+    let official_names = registry::load_official_names().await;
+    let aur_base_names: Vec<String> = graph
+        .aur_packages()
+        .iter()
+        .map(|n| n.package_base.clone().unwrap_or_else(|| n.name.clone()))
+        .collect();
+    let node_info: HashMap<String, aur_scanner_core::aur::AurPackageInfo> = {
+        let refs: Vec<&str> = aur_base_names.iter().map(|s| s.as_str()).collect();
+        match client.info_batch(&refs).await {
+            Ok(infos) => infos.into_iter().map(|i| (i.name.clone(), i)).collect(),
+            Err(e) => {
+                eprintln!(
+                    "{} could not load AUR package metadata ({e}); ownership and \
+                     name-impersonation checks are disabled for this run",
+                    "note:".yellow()
+                );
+                HashMap::new()
+            }
+        }
+    };
+    // Scan history, best-effort: an unusable cache disables change detection
+    // rather than refusing to install.
+    let history = match History::open(History::default_dir()) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            eprintln!(
+                "{} scan history unavailable ({e}); change detection is off for this run",
+                "note:".yellow()
+            );
+            None
+        }
+    };
+
     let mut gate_tripped = false;
     let mut unscannable: Vec<String> = Vec::new();
     for base in base_dirs.keys().cloned().collect::<Vec<_>>() {
@@ -237,7 +273,18 @@ pub async fn run(args: InstallArgs) -> Result<()> {
             unscannable.push(base.clone()); // cannot fetch -> never reviewed
             continue;
         }
-        let result = match scanner.scan_pkgbuild(&dir.join("PKGBUILD")).await {
+        // Registry context for this package base. `install` is the path that
+        // actually BUILDS, so running it with a smaller analyzer set than
+        // `check` -- as this did until the wiring was audited -- inverted the
+        // security posture: the mode documented as stronger was the weaker one.
+        let registry_ctx = match node_info.get(base.as_str()) {
+            Some(info) => {
+                Registry::From(registry::context_for(info, official_names.clone(), &client).await)
+            }
+            None => Registry::None,
+        };
+        let pkgbuild_path = dir.join("PKGBUILD");
+        let mut result = match scanner.scan_pkgbuild(&pkgbuild_path, registry_ctx).await {
             Ok(r) => r,
             Err(e) => {
                 println!("{}", format!("scan failed: {e}").red());
@@ -245,6 +292,22 @@ pub async fn run(args: InstallArgs) -> Result<()> {
                 continue;
             }
         };
+
+        // Compare against the last time this package was seen and record the
+        // new state, exactly as `check` does. Without this, installing laid no
+        // baseline, so a later `check` took the first-scan branch and was
+        // silent for a cycle -- while quietly recording the post-hijack state
+        // as normal.
+        if let Some(h) = history.as_ref() {
+            let maintainer = node_info
+                .get(base.as_str())
+                .and_then(|i| i.maintainer.clone());
+            match super::check::diff_against_history(h, &result, &pkgbuild_path, maintainer) {
+                Ok(diff_findings) => result.findings.extend(diff_findings),
+                Err(e) => tracing::debug!("history comparison for {base} failed: {e}"),
+            }
+            result.findings.sort_by_key(|f| f.severity);
+        }
         let scan = ComponentScan::from_findings(&result.findings);
         let trips = result
             .findings

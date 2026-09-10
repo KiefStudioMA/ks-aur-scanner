@@ -143,23 +143,23 @@ impl Scanner {
         Ok(())
     }
 
-    /// Scan a PKGBUILD file with no registry context.
+    /// Scan a PKGBUILD file.
     ///
-    /// Ownership and typo-squat analysis stays silent on this path: without a
-    /// registry lookup there is no maintainer, no vote count, and no name list
-    /// to compare against, and guessing at them would be worse than saying
-    /// nothing. Use [`Self::scan_pkgbuild_with_registry`] from `check`/`install`
-    /// where the AUR RPC result is already in hand.
-    pub async fn scan_pkgbuild(&self, path: &Path) -> Result<ScanResult> {
-        self.scan_pkgbuild_with_registry(path, None).await
-    }
-
-    /// Scan a PKGBUILD file, supplying what the registry says about it.
-    pub async fn scan_pkgbuild_with_registry(
-        &self,
-        path: &Path,
-        registry: Option<RegistryContext>,
-    ) -> Result<ScanResult> {
+    /// `registry` is required and has no default **on purpose**. It selects
+    /// between the full analyzer set and a strictly smaller one, and an earlier
+    /// version of this API offered a convenient `scan_pkgbuild(path)` that
+    /// passed `None` for you. Every new call site took it: seven of the eight
+    /// callers in this workspace silently ran the reduced set, including
+    /// `install`, the AUR-helper wrapper, and the pacman hook — the three paths
+    /// that actually gate an installation. Nothing in the type system or the
+    /// test suite noticed, because a reduced scan is not an error, it is just
+    /// quieter.
+    ///
+    /// Naming the choice fixes that: a caller must write [`Registry::None`] to
+    /// get the reduced set, which is greppable, reviewable, and impossible to
+    /// reach by omission.
+    pub async fn scan_pkgbuild(&self, path: &Path, registry: Registry) -> Result<ScanResult> {
+        let registry = registry.into_context();
         let start = std::time::Instant::now();
         info!("Scanning PKGBUILD: {}", path.display());
 
@@ -263,17 +263,10 @@ impl Scanner {
         })
     }
 
-    /// Scan a directory containing a PKGBUILD
-    pub async fn scan_directory(&self, dir: &Path) -> Result<ScanResult> {
-        self.scan_directory_with_registry(dir, None).await
-    }
-
-    /// Scan a directory containing a PKGBUILD, supplying registry context.
-    pub async fn scan_directory_with_registry(
-        &self,
-        dir: &Path,
-        registry: Option<RegistryContext>,
-    ) -> Result<ScanResult> {
+    /// Scan a directory containing a PKGBUILD.
+    ///
+    /// `registry` is required for the same reason as on [`Self::scan_pkgbuild`].
+    pub async fn scan_directory(&self, dir: &Path, registry: Registry) -> Result<ScanResult> {
         let pkgbuild_path = dir.join("PKGBUILD");
         if !pkgbuild_path.exists() {
             return Err(ScanError::Io(std::io::Error::new(
@@ -281,8 +274,41 @@ impl Scanner {
                 format!("PKGBUILD not found in {}", dir.display()),
             )));
         }
-        self.scan_pkgbuild_with_registry(&pkgbuild_path, registry)
-            .await
+        self.scan_pkgbuild(&pkgbuild_path, registry).await
+    }
+}
+
+/// Whether a scan is performed with knowledge of what the package registry says.
+///
+/// Deliberately not an `Option<RegistryContext>`. This is the switch between the
+/// full analyzer set and a strictly reduced one, and an `Option` makes the
+/// reduced path the ergonomic default that every new call site falls into by
+/// accident — which is exactly what happened: seven of eight callers passed
+/// `None` without anyone choosing to.
+#[derive(Debug, Clone)]
+pub enum Registry {
+    /// The caller looked the package up and is supplying what it found.
+    ///
+    /// Enables the ownership analyzer (`OWN-*`), name-impersonation analysis
+    /// (`SQUAT-*`), and the operator's `[[owned_namespaces]]` declarations.
+    From(RegistryContext),
+
+    /// No registry lookup was performed, and the scan is knowingly reduced.
+    ///
+    /// `OWN-*` and `SQUAT-*` emit **nothing** on this path — not "no findings",
+    /// but "not evaluated". Correct for a bare `scan <path>`, for `diff` (which
+    /// compares two directories with no package identity), and for the pacman
+    /// hook (offline by design). Wrong anywhere the package name was resolved
+    /// through the AUR, because there the information was already in hand.
+    None,
+}
+
+impl Registry {
+    fn into_context(self) -> Option<RegistryContext> {
+        match self {
+            Registry::From(ctx) => Some(ctx),
+            Registry::None => None,
+        }
     }
 }
 
@@ -531,7 +557,10 @@ mod tests {
         if !fixture.join("PKGBUILD").exists() {
             return; // fixture not present in this checkout
         }
-        let result = scanner.scan_directory(&fixture).await.unwrap();
+        let result = scanner
+            .scan_directory(&fixture, Registry::None)
+            .await
+            .unwrap();
         assert!(
             result.findings.iter().any(|f| f.id == "ATOMIC-001"),
             "expected ATOMIC-001 from the install hook; got: {:?}",

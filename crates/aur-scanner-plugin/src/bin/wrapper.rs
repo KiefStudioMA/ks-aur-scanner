@@ -12,7 +12,7 @@
 use anyhow::{Context, Result};
 use aur_scanner_core::aur::{is_aur_package, AurClient};
 use aur_scanner_core::validate::is_valid_package_name;
-use aur_scanner_core::{Scanner, Severity};
+use aur_scanner_core::{Registry, Scanner, Severity};
 use colored::Colorize;
 use std::env;
 use std::io::{self, IsTerminal, Write};
@@ -200,6 +200,10 @@ async fn run() -> Result<ExitCode> {
     // file settings (issue #25 / wrap path gap).
     let scanner = Scanner::with_system_config().context("Failed to create scanner")?;
 
+    // Official-repo name corpus for name-impersonation comparison, read once
+    // for the whole invocation.
+    let official_names = aur_scanner_core::registry::load_official_names().await;
+
     let mut high_found = false;
     let mut critical_found = false;
     // Packages we could not fetch or scan. These are UNREVIEWED -- a security
@@ -221,8 +225,19 @@ async fn run() -> Result<ExitCode> {
             }
         };
 
-        // Scan
-        let result = match scanner.scan_pkgbuild(&fetched.pkgbuild_path).await {
+        // Scan WITH registry context. `fetch_pkgbuild` already returned the
+        // package's AUR record in `fetched.info`, so this costs no extra RPC
+        // call -- the wrapper was previously running a strictly smaller
+        // analyzer set than `aur-scan check` for no reason, on the path every
+        // AUR-helper and Nushell user actually goes through.
+        let registry_ctx = Registry::From(
+            aur_scanner_core::registry::context_for(&fetched.info, official_names.clone(), &client)
+                .await,
+        );
+        let result = match scanner
+            .scan_pkgbuild(&fetched.pkgbuild_path, registry_ctx)
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 println!("{}", format!("scan failed: {}", e).red());

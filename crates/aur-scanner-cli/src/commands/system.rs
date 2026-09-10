@@ -4,8 +4,10 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::PathBuf;
 
-use aur_scanner_core::aur::{get_installed_aur_packages, AurClient};
-use aur_scanner_core::{ScanConfig, Scanner, Severity};
+use aur_scanner_core::aur::{get_installed_aur_packages, AurClient, PackageInfoSource};
+use aur_scanner_core::registry;
+use aur_scanner_core::{Registry, ScanConfig, Scanner, Severity};
+use std::collections::HashMap;
 
 use super::banner;
 
@@ -100,6 +102,29 @@ pub async fn run(
     let mut total_high = 0;
     let mut not_found = Vec::new();
 
+    // Registry inputs for the whole installed set, in one batch. `system`
+    // audits what is already on the machine, so ownership signals (an installed
+    // package that has since been orphaned or adopted) are exactly what this
+    // command is for -- it previously could not emit any of them.
+    let official_names = registry::load_official_names().await;
+    let node_info: HashMap<String, aur_scanner_core::aur::AurPackageInfo> = match &client {
+        Some(c) => {
+            let refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
+            match c.info_batch(&refs).await {
+                Ok(infos) => infos.into_iter().map(|i| (i.name.clone(), i)).collect(),
+                Err(e) => {
+                    eprintln!(
+                        "{} could not load AUR metadata ({e}); ownership and \
+                         name-impersonation checks are disabled for this run",
+                        "note:".yellow()
+                    );
+                    HashMap::new()
+                }
+            }
+        }
+        None => HashMap::new(),
+    };
+
     for package in &packages {
         // Try to find cached PKGBUILD
         let pkgbuild_path = if rescan {
@@ -113,7 +138,14 @@ pub async fn run(
             // Scan from cache
             print!("{} {} ", "Scanning:".dimmed(), package.white());
 
-            match scanner.scan_pkgbuild(&path).await {
+            let reg = match node_info.get(package.as_str()) {
+                Some(info) if client.is_some() => Registry::From(
+                    registry::context_for(info, official_names.clone(), client.as_ref().unwrap())
+                        .await,
+                ),
+                _ => Registry::None,
+            };
+            match scanner.scan_pkgbuild(&path, reg).await {
                 Ok(result) => Some(result),
                 Err(e) => {
                     println!("{}", format!("error: {}", e).red());
@@ -125,13 +157,19 @@ pub async fn run(
             print!("{} {} ", "Fetching:".dimmed(), package.white());
 
             match aur_client.fetch_pkgbuild(package).await {
-                Ok(fetched) => match scanner.scan_pkgbuild(&fetched.pkgbuild_path).await {
-                    Ok(result) => Some(result),
-                    Err(e) => {
-                        println!("{}", format!("scan error: {}", e).red());
-                        None
+                Ok(fetched) => {
+                    let reg = Registry::From(
+                        registry::context_for(&fetched.info, official_names.clone(), aur_client)
+                            .await,
+                    );
+                    match scanner.scan_pkgbuild(&fetched.pkgbuild_path, reg).await {
+                        Ok(result) => Some(result),
+                        Err(e) => {
+                            println!("{}", format!("scan error: {}", e).red());
+                            None
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     println!("{}", format!("fetch error: {}", e).red());
                     None

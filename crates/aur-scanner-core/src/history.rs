@@ -69,9 +69,18 @@ impl PackageRecord {
             maintainer,
             pkgbuild_hash,
             scripts_hash: None,
+            // ONLY remote sources. A local `source=()` entry (a patch file, a
+            // .service unit) is shipped in the package directory and has no
+            // upstream, but `origin_of` will happily parse `0001-fix.patch` as
+            // a scheme-less host because it contains dots. Recording those made
+            // adding a patch file -- the most routine change an AUR maintainer
+            // makes -- emit `DIFF-003 High: now fetches from 0001-fix.patch`,
+            // which is false, unreadable, and enough to trip the `--fail-on
+            // high` the shell integration uses.
             source_origins: pkgbuild
                 .source
                 .iter()
+                .filter(|s| s.protocol.is_remote())
                 .filter_map(|s| crate::neturl::origin_of(&s.url))
                 .collect(),
             finding_ids: result.findings.iter().map(|f| f.id.clone()).collect(),
@@ -677,6 +686,78 @@ mod tests {
         for want in ["DIFF-001", "DIFF-002", "DIFF-003", "DIFF-004"] {
             assert!(ids.contains(&want), "missing {want}: {ids:?}");
         }
+    }
+
+    /// Build a record the way a real scan does, from parsed PKGBUILD text.
+    fn record_from_source(pkgbuild_src: &str) -> PackageRecord {
+        use crate::parser::{PkgbuildParser, StaticParser};
+        let parsed = StaticParser::new().parse(pkgbuild_src).unwrap();
+        let result = ScanResult {
+            package_name: "tool".into(),
+            package_version: parsed.pkgver.clone(),
+            findings: vec![],
+            scanned_files: vec![],
+            timestamp: chrono::Utc::now(),
+            scan_duration_ms: 0,
+        };
+        PackageRecord::from_scan(&result, &parsed, Some("alice".into()))
+    }
+
+    #[test]
+    fn local_source_files_are_not_upstream_origins() {
+        // Regression: adding a patch file or a .service unit to source=() is
+        // the most routine change an AUR maintainer makes. `origin_of` parses
+        // `0001-fix-build.patch` as a scheme-less host because it has dots, so
+        // recording every source made this emit
+        //   DIFF-003 High: 'tool' now fetches from 0001-fix-build.patch
+        // -- false, unreadable, and enough to trip the `--fail-on high` the
+        // shell integration uses. Only remote protocols are origins.
+        let before = record_from_source(
+            "pkgname=tool\npkgver=1.0\npkgrel=1\nsource=(\"https://github.com/alice/tool/archive/v1.0.tar.gz\")\n",
+        );
+        let after = record_from_source(
+            "pkgname=tool\npkgver=1.1\npkgrel=1\nsource=(\"https://github.com/alice/tool/archive/v1.1.tar.gz\"\n        \"0001-fix-build.patch\"\n        \"tool.service\")\n",
+        );
+
+        assert_eq!(
+            before.source_origins,
+            ["github.com/alice/tool".to_string()].into_iter().collect(),
+            "only the remote source is an origin"
+        );
+        assert_eq!(
+            after.source_origins,
+            ["github.com/alice/tool".to_string()].into_iter().collect(),
+            "local files must not appear as origins: {:?}",
+            after.source_origins
+        );
+
+        let changes = compare(&before, &after);
+        assert!(
+            changes.origins_added.is_empty(),
+            "adding local files must not read as a new upstream: {:?}",
+            changes.origins_added
+        );
+        let findings = findings_for_changes(&before, &after, &changes, &[], Path::new("PKGBUILD"));
+        assert!(
+            !findings.iter().any(|f| f.id == "DIFF-003"),
+            "adding a patch file must not fire DIFF-003: {:?}",
+            findings.iter().map(|f| &f.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_genuinely_new_remote_source_is_still_an_origin() {
+        // The guard above must not silence the real signal.
+        let before = record_from_source(
+            "pkgname=tool\npkgver=1.0\npkgrel=1\nsource=(\"https://github.com/alice/tool/archive/v1.0.tar.gz\")\n",
+        );
+        let after = record_from_source(
+            "pkgname=tool\npkgver=1.1\npkgrel=1\nsource=(\"https://github.com/alice/tool/archive/v1.1.tar.gz\"\n        \"https://cdn.evil.example/payload.bin\")\n",
+        );
+        let changes = compare(&before, &after);
+        assert_eq!(changes.origins_added, vec!["cdn.evil.example/payload.bin"]);
+        let findings = findings_for_changes(&before, &after, &changes, &[], Path::new("PKGBUILD"));
+        assert!(findings.iter().any(|f| f.id == "DIFF-003"));
     }
 
     #[test]

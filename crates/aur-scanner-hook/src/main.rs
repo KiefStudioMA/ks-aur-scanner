@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use aur_scanner_core::validate::is_valid_package_name;
-use aur_scanner_core::{ScanConfig, Scanner, Severity};
+use aur_scanner_core::{Registry, ScanConfig, Scanner, Severity};
 use colored::Colorize;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
@@ -80,7 +80,12 @@ async fn main() -> Result<()> {
             PkgbuildLookup::NotFound => continue,
         };
         {
-            match scanner.scan_pkgbuild(&pkgbuild_path).await {
+            // Deliberate: the hook runs inside a pacman transaction and is
+            // offline by design -- it must not make network calls mid-install.
+            // Ownership and name-impersonation analysis therefore cannot run
+            // here. This is a documented limitation, not an oversight; the
+            // content-based rule engine and every static analyzer still run.
+            match scanner.scan_pkgbuild(&pkgbuild_path, Registry::None).await {
                 Ok(result) => {
                     if !result.findings.is_empty() {
                         eprintln!();
