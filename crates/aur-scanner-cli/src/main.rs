@@ -390,6 +390,7 @@ async fn main() -> Result<()> {
                 workspace,
                 sbom_path: sbom,
                 keep_build,
+                config: file_config.clone(),
             })
             .await
         }

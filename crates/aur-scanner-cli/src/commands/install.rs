@@ -20,7 +20,7 @@ use aur_scanner_core::history::{History, Scope};
 use aur_scanner_core::registry;
 use aur_scanner_core::sbom::{self, ComponentScan};
 use aur_scanner_core::validate::validate_package_name;
-use aur_scanner_core::{Registry, Scanner, Severity};
+use aur_scanner_core::{Registry, ScanConfig, Scanner, Severity};
 
 use super::banner;
 
@@ -44,6 +44,8 @@ pub struct InstallArgs {
     /// Keep the per-package build directories after a successful install.
     /// Default is to clean them up (the install tidies after itself).
     pub keep_build: bool,
+    /// The resolved scan configuration (honours `-c`).
+    pub config: ScanConfig,
 }
 
 /// Decision for the pre-build confirmation, computed before any answer is read.
@@ -163,7 +165,7 @@ pub async fn run(args: InstallArgs) -> Result<()> {
     }
     let client = AurClient::new().context("Failed to create AUR client")?;
     // Same config discovery as `scan` / `check` / hook / wrap (XDG then /etc).
-    let scanner = Scanner::with_system_config().context("Failed to create scanner")?;
+    let scanner = Scanner::new(args.config.clone()).context("Failed to create scanner")?;
 
     banner::print_header("Race-Free Install");
     println!();
@@ -299,15 +301,17 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         // silent for a cycle -- while quietly recording the post-hijack state
         // as normal.
         if let Some(h) = history.as_ref() {
-            let maintainer = node_info
-                .get(base.as_str())
-                .and_then(|i| i.maintainer.clone());
+            let maintainer = match node_info.get(base.as_str()) {
+                Some(i) => super::check::MaintainerLookup::Known(i.maintainer.clone()),
+                None => super::check::MaintainerLookup::NotLookedUp,
+            };
             match super::check::diff_against_history(
                 h,
                 &result,
                 &pkgbuild_path,
                 maintainer,
                 Scope::Aur,
+                aur_scanner_core::history::analysis_fingerprint(scanner.min_severity()),
             ) {
                 Ok(diff_findings) => result.findings.extend(
                     diff_findings

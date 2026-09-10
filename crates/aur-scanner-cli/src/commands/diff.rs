@@ -44,7 +44,7 @@ async fn scan_side(
     if !pkgbuild_path.is_file() {
         bail!("no PKGBUILD at {}", pkgbuild_path.display());
     }
-    let content = std::fs::read_to_string(&pkgbuild_path)
+    let content = aur_scanner_core::read_text_capped(&pkgbuild_path)
         .with_context(|| format!("reading {}", pkgbuild_path.display()))?;
     let parsed = StaticParser::new()
         .parse(&content)
@@ -82,9 +82,11 @@ fn side_scripts(dir: &Path) -> Vec<String> {
         })
         .collect();
     paths.sort();
+    // Capped: `diff` is pointed at arbitrary directories, including ones a
+    // reviewer just cloned from the AUR.
     paths
         .iter()
-        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .filter_map(|p| aur_scanner_core::read_text_capped(p).ok())
         .collect()
 }
 

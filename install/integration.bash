@@ -150,7 +150,12 @@ _aur_scan_gate() {
             [[ -n "$_p" && -z "${_seen[$_p]:-}" ]] && { _uniq+=("$_p"); _seen[$_p]=1; }
         done
         echo "AUR Security Scanner: pre-checking ${#_uniq[@]} package(s)..."
-        local scan_args=("--severity" "$AUR_SCAN_SEVERITY")
+        # Pass a BLOCKING threshold, not just a display floor. `--severity` sets
+        # which findings are PRINTED; it never made `check` exit non-zero. With
+        # AUR_SCAN_INTERACTIVE=0 there is no prompt either, so this gate printed
+        # "3 CRITICAL" and returned 0, and the `if !` below handed straight off
+        # to the helper.
+        local scan_args=("--severity" "$AUR_SCAN_SEVERITY" "--fail-on" "$AUR_SCAN_SEVERITY")
         [[ "$AUR_SCAN_INTERACTIVE" != "1" ]] && scan_args+=("--no-confirm")
         if ! aur-scan check "${scan_args[@]}" "${_uniq[@]}"; then
             echo "Scan failed or user aborted. Not proceeding with $helper."

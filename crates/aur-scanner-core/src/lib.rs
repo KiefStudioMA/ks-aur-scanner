@@ -383,7 +383,11 @@ fn build_threat_intel_analyzer(config: &ScanConfig) -> Option<analyzer::ThreatIn
 const MAX_SCAN_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// Read a text file, refusing files larger than [`MAX_SCAN_FILE_BYTES`].
-fn read_text_capped(path: &Path) -> Result<String> {
+///
+/// Public so every caller that touches package-controlled files -- including the
+/// CLI's history and diff paths -- shares one cap rather than each reaching for
+/// `std::fs::read_to_string`.
+pub fn read_text_capped(path: &Path) -> Result<String> {
     let len = std::fs::metadata(path)?.len();
     if len > MAX_SCAN_FILE_BYTES {
         warn!(

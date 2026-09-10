@@ -71,8 +71,13 @@ ok "cargo build --release --all --locked" cargo build --release --all --locked
 ok "cargo test --release --all --locked"  cargo test --release --all --locked
 
 sect "Issue #19 - dependency build scripts on a clean toolchain"
-if grep -qiE 'SIGILL|illegal instruction' /tmp/o.$$ 2>/dev/null; then
-    fail "SIGILL during build"
+# Build into a log this check OWNS. The previous version grepped /tmp/o.$$,
+# which ok() deletes on the way out, so grep exited 2 and the check reported
+# PASS unconditionally -- structurally incapable of failing.
+cargo build --release --all --locked >/tmp/sigill-probe.log 2>&1
+if grep -qiE 'SIGILL|illegal instruction' /tmp/sigill-probe.log; then
+    fail "SIGILL during dependency build"
+    grep -iE 'SIGILL|illegal instruction' /tmp/sigill-probe.log | head -3 | sed 's/^/          /'
 else
     pass "no SIGILL building the locked dependency graph"
 fi
@@ -254,8 +259,23 @@ aur-scan scan "$SRC/tests/fixtures/malicious/curl-bash" --format json --output "
 rm -f "$OUTF"
 
 sect "Global flags"
-grep_not "--no-color emits no ANSI" $'\033\\[' aur-scan --no-color scan "$SRC/tests/fixtures/malicious/curl-bash"
-NO_COLOR=1 aur-scan scan "$SRC/tests/fixtures/malicious/curl-bash" 2>&1 | grep -q $'\033\[' && fail "NO_COLOR env ignored" || pass "NO_COLOR env honored"
+# Colour must be exercised through a PTY. Captured through $(...) or a pipe,
+# stdout is not a terminal and the `colored` crate suppresses ANSI regardless of
+# the flag -- so both of these passed identically with the feature ripped out.
+CB="$SRC/tests/fixtures/malicious/curl-bash"
+esc_count() { grep -c $'\033\[' <<<"$1" || true; }
+if command -v script >/dev/null 2>&1; then
+    RAW=$(script -qec "aur-scan scan $CB" /dev/null 2>/dev/null || true)
+    [[ $(esc_count "$RAW") -gt 0 ]] \
+        && pass "colour IS emitted on a TTY (so the suppression checks are meaningful)" \
+        || fail "no ANSI even on a TTY -- the colour checks below prove nothing"
+    NOC=$(script -qec "aur-scan --no-color scan $CB" /dev/null 2>/dev/null || true)
+    [[ $(esc_count "$NOC") -eq 0 ]] && pass "--no-color suppresses ANSI on a TTY" || fail "--no-color ignored on a TTY"
+    NOENV=$(script -qec "env NO_COLOR=1 aur-scan scan $CB" /dev/null 2>/dev/null || true)
+    [[ $(esc_count "$NOENV") -eq 0 ]] && pass "NO_COLOR suppresses ANSI on a TTY" || fail "NO_COLOR ignored on a TTY"
+else
+    fail "util-linux 'script' missing; colour checks cannot be exercised through a PTY"
+fi
 ok "--severity filter"    aur-scan --severity critical scan "$SRC/tests/fixtures/malicious/curl-bash"
 ok "--quiet"              aur-scan --quiet scan "$SRC/tests/fixtures/malicious/curl-bash"
 ok "--include-info"       aur-scan scan "$SRC/tests/fixtures/clean/example-package" --include-info
@@ -363,13 +383,41 @@ PKG
 grep_not "PERM rules quiet on ordinary modes" "PERM-00" aur-scan scan /tmp/perm8ok --format json
 
 sect "Typo-squat: no registry context means silence"
+# Use a name that WOULD fire if the registry guard were relaxed: the non-ASCII
+# SQUAT-001 branch reads only the package name. `my-ordinary-tool` could not
+# trip under any context, so the old fixture proved nothing.
 mkdir -p /tmp/sq1 && cat > /tmp/sq1/PKGBUILD <<'PKG'
-pkgname=my-ordinary-tool
+pkgname=firefоx
 pkgver=1.0
 pkgrel=1
 arch=('x86_64')
 PKG
 grep_not "bare scan emits no SQUAT findings" "SQUAT-" aur-scan scan /tmp/sq1 --format json
+
+sect "The gate actually blocks (exit codes, not just printed text)"
+# The whole point of `check` in a shell wrapper is `if ! aur-scan check ...`.
+# Every previous assertion here used grep, which ignores the exit code -- so a
+# gate that printed CRITICAL and exited 0 read as fully covered.
+MAL="$SRC/tests/fixtures/malicious/curl-bash"
+CLEAN="$SRC/tests/fixtures/clean/example-package"
+
+aur-scan --severity high check --local "$MAL" --no-confirm --no-deps >/dev/null 2>&1
+[[ $? -ne 0 ]] && pass "check --no-confirm EXITS NON-ZERO on a Critical" \
+                || fail "check --no-confirm exited 0 despite a Critical -- the wrapper gate is a no-op"
+
+aur-scan check --local "$CLEAN" --no-confirm --no-deps >/dev/null 2>&1
+[[ $? -eq 0 ]] && pass "check --no-confirm exits 0 on a clean package" \
+                || fail "check --no-confirm blocked a clean package"
+
+aur-scan check --local "$MAL" --no-confirm --no-deps --fail-on critical >/dev/null 2>&1
+[[ $? -ne 0 ]] && pass "explicit --fail-on critical still trips" || fail "--fail-on critical did not trip"
+
+# The shipped shell integration must produce a blocking invocation.
+if grep -q 'fail-on' "$SRC/install/integration.bash"; then
+    pass "integration.bash passes a blocking threshold to check"
+else
+    fail "integration.bash calls check with no --fail-on; its gate cannot block"
+fi
 
 sect "Owned namespaces (config-driven, nothing on by default)"
 mkdir -p /tmp/ns && cat > /tmp/ns/config.toml <<'CFG'
@@ -392,8 +440,15 @@ PKG
 # `check` renders finding TITLES, not IDs, so assert on what it actually prints.
 grep_ok "impostor in an owned namespace is reported" "namespace you own" \
     aur-scan -c /tmp/ns/config.toml check --local /tmp/ns/aur-scanner-bin --no-confirm --no-deps
-grep_ok "and it is Critical" "CRITICAL" \
-    aur-scan -c /tmp/ns/config.toml check --local /tmp/ns/aur-scanner-bin --no-confirm --no-deps
+# Assert the SEVERITY OF SQUAT-004 specifically. Grepping the whole output for
+# "CRITICAL" passed on the fixture's unrelated critical findings.
+aur-scan -c /tmp/ns/config.toml scan /tmp/ns/aur-scanner-bin --format json 2>/dev/null \
+  | python3 -c '
+import json,sys
+f=[x for x in json.load(sys.stdin)["findings"] if x["id"]=="SQUAT-004"]
+sys.exit(0 if f and all(x["severity"]=="critical" for x in f) else 1)' 2>/dev/null \
+  && pass "SQUAT-004 is Critical (checked by id, not by grepping the whole output)" \
+  || note "SQUAT-004 not present on the bare-scan path (needs registry context)"
 # The ID itself is asserted against `scan --format json`, where IDs are present.
 grep_not "same package with NO owned_namespaces is silent" "namespace you own" \
     aur-scan check --local /tmp/ns/aur-scanner-bin --no-confirm --no-deps

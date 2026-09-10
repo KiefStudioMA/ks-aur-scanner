@@ -49,6 +49,26 @@ pub struct PackageRecord {
     /// PKGBUILD function names present (`build`, `package`, `prepare`, ...).
     #[serde(default)]
     pub functions: BTreeSet<String>,
+    /// What produced `finding_ids`: scanner version plus the reporting
+    /// threshold.
+    ///
+    /// `finding_ids` is not a property of the package alone -- the engine
+    /// filters by `min_severity` and by whichever rules are loaded. Without
+    /// this, raising the threshold, dropping in a rules.d file, or simply
+    /// UPGRADING the scanner makes previously-absent IDs look like new risk,
+    /// and DIFF-001 announces "N new finding(s) since <date>" about a package
+    /// whose bytes never changed. After a 2.1 -> 2.2 upgrade that fires for
+    /// every package in the store at once.
+    ///
+    /// `None` on records written before this field existed, which is treated
+    /// the same as a mismatch.
+    #[serde(default)]
+    pub analysis_fingerprint: Option<String>,
+}
+
+/// Identify the analysis inputs that determine which findings a scan produces.
+pub fn analysis_fingerprint(min_severity: crate::types::Severity) -> String {
+    format!("v{}/{:?}", crate::VERSION, min_severity)
 }
 
 impl PackageRecord {
@@ -85,7 +105,14 @@ impl PackageRecord {
                 .collect(),
             finding_ids: result.findings.iter().map(|f| f.id.clone()).collect(),
             functions: pkgbuild.functions.keys().cloned().collect(),
+            analysis_fingerprint: None,
         }
+    }
+
+    /// Record which analysis inputs produced `finding_ids`.
+    pub fn with_fingerprint(mut self, fingerprint: String) -> Self {
+        self.analysis_fingerprint = Some(fingerprint);
+        self
     }
 
     /// Attach the hash of every package-side script (install scriptlet, ALPM
@@ -102,6 +129,24 @@ impl PackageRecord {
         }
         self
     }
+}
+
+/// The effective user id, for building a per-user fallback path.
+#[cfg(unix)]
+fn users_uid() -> u32 {
+    // SAFETY: geteuid() is always successful and has no preconditions.
+    unsafe { libc_geteuid() }
+}
+
+#[cfg(unix)]
+extern "C" {
+    #[link_name = "geteuid"]
+    fn libc_geteuid() -> u32;
+}
+
+#[cfg(not(unix))]
+fn users_uid() -> u32 {
+    0
 }
 
 /// Which namespace a record belongs to.
@@ -168,7 +213,16 @@ impl History {
         let base = std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-            .unwrap_or_else(std::env::temp_dir);
+            // Last resort: a PER-USER subdirectory of the temp dir, never the
+            // shared temp dir itself. /tmp is world-writable, so a fixed path
+            // there can be pre-created (or symlinked) by another local user,
+            // who then controls the baseline this scanner diffs against -- and
+            // a poisoned baseline silences the next real change rather than
+            // raising a false alarm.
+            .unwrap_or_else(|| {
+                let uid = users_uid();
+                std::env::temp_dir().join(format!("aur-scan-{uid}"))
+            });
         base.join("aur-scan").join("history")
     }
 
@@ -422,6 +476,16 @@ pub fn compare(before: &PackageRecord, after: &PackageRecord) -> Changes {
         b.difference(a).cloned().collect()
     };
 
+    // Only diff FINDINGS when both sides were produced by the same analysis
+    // inputs. A scanner upgrade or a threshold change alters which IDs appear
+    // without the package changing at all, and reporting that as "new risk"
+    // would be a false statement of fact in the one output users act on.
+    //
+    // The structural signals below (ownership, upstream, scripts) are
+    // properties of the PACKAGE, not of the ruleset, so they stay comparable.
+    let comparable_findings = before.analysis_fingerprint.is_some()
+        && before.analysis_fingerprint == after.analysis_fingerprint;
+
     Changes {
         version: (before.version != after.version)
             .then(|| (before.version.clone(), after.version.clone())),
@@ -432,14 +496,33 @@ pub fn compare(before: &PackageRecord, after: &PackageRecord) -> Changes {
         scripts_added: before.scripts_hash.is_none() && after.scripts_hash.is_some(),
         origins_added: diff(&before.source_origins, &after.source_origins),
         origins_removed: diff(&after.source_origins, &before.source_origins),
-        findings_added: diff(&before.finding_ids, &after.finding_ids),
-        findings_removed: diff(&after.finding_ids, &before.finding_ids),
+        findings_added: if comparable_findings {
+            diff(&before.finding_ids, &after.finding_ids)
+        } else {
+            Vec::new()
+        },
+        findings_removed: if comparable_findings {
+            diff(&after.finding_ids, &before.finding_ids)
+        } else {
+            Vec::new()
+        },
         functions_added: diff(&before.functions, &after.functions),
     }
 }
 
 /// Split a set of findings into those newly raised since `before` and the rest.
-pub fn newly_raised<'a>(before: &PackageRecord, findings: &'a [Finding]) -> Vec<&'a Finding> {
+pub fn newly_raised<'a>(
+    before: &PackageRecord,
+    after: &PackageRecord,
+    findings: &'a [Finding],
+) -> Vec<&'a Finding> {
+    // Same rule as `compare`: without matching analysis inputs there is no
+    // meaningful "new since last time".
+    if before.analysis_fingerprint.is_none()
+        || before.analysis_fingerprint != after.analysis_fingerprint
+    {
+        return Vec::new();
+    }
     findings
         .iter()
         .filter(|f| !before.finding_ids.contains(&f.id))
@@ -477,7 +560,7 @@ pub fn findings_for_changes(
     // DIFF-001 -- risk that is new since the last time this package was
     // approved. Severity tracks the worst new finding: a package that has
     // always had a SKIP checksum is not news, one that just grew a curl|sh is.
-    let new_findings = newly_raised(before, current_findings);
+    let new_findings = newly_raised(before, after, current_findings);
     if let Some(peak) = peak_severity(&new_findings) {
         let ids: Vec<String> = new_findings.iter().map(|f| f.id.clone()).collect();
         let titles: Vec<String> = new_findings
@@ -630,6 +713,26 @@ pub fn findings_for_changes(
             cwe_id: Some("CWE-506".to_string()),
             metadata: serde_json::json!({ "previously_scanned": before.scanned_at }),
         });
+    } else if changes.scripts_changed && after.scripts_hash.is_none() {
+        // Removed, not changed. Saying "runs as root" about a script that no
+        // longer exists is simply wrong, and this is the safe direction of
+        // travel -- worth noting, not worth alarming about.
+        out.push(Finding {
+            id: "DIFF-004".to_string(),
+            severity: Severity::Low,
+            category: Category::Persistence,
+            title: "Install script removed".to_string(),
+            description: format!(
+                "'{}' had an install scriptlet or ALPM hook on {since} and no longer does. \
+                 Losing an install-time execution path is the safe direction; noted because it \
+                 is a change to what the package can do.",
+                after.package
+            ),
+            location: loc(file),
+            recommendation: "No action needed; noted for completeness.".to_string(),
+            cwe_id: None,
+            metadata: serde_json::json!({ "previously_scanned": before.scanned_at }),
+        });
     } else if changes.scripts_changed {
         out.push(Finding {
             id: "DIFF-004".to_string(),
@@ -666,6 +769,9 @@ mod tests {
             source_origins: ["github.com/alice/tool".to_string()].into_iter().collect(),
             finding_ids: ["CHK-004".to_string()].into_iter().collect(),
             functions: ["build".to_string()].into_iter().collect(),
+            // Same inputs on both sides, so findings are comparable by default
+            // in these tests; the mismatch case is covered explicitly below.
+            analysis_fingerprint: Some("test-fp".to_string()),
         }
     }
 
@@ -924,6 +1030,74 @@ mod tests {
     }
 
     #[test]
+    fn a_scanner_upgrade_does_not_fabricate_new_findings() {
+        // finding_ids depends on the ruleset and the reporting threshold, not
+        // just on the package. Upgrading the scanner (which adds codes) or
+        // changing min_severity must not make a byte-identical package report
+        // "N new finding(s) since <date>" -- that would fire for every recorded
+        // package at once on the first run after an upgrade.
+        let mut before = rec("tool");
+        before.analysis_fingerprint = Some("v2.1.0/Low".into());
+        let mut after = before.clone();
+        after.analysis_fingerprint = Some("v2.2.0/Low".into());
+        after.finding_ids.insert("SQUAT-001".into());
+
+        let c = compare(&before, &after);
+        assert!(
+            c.findings_added.is_empty(),
+            "a different ruleset makes the findings delta meaningless: {:?}",
+            c.findings_added
+        );
+        assert!(c.findings_removed.is_empty());
+
+        // But structural signals are properties of the PACKAGE, so they survive.
+        let mut moved = after.clone();
+        moved.maintainer = Some("mallory".into());
+        moved.source_origins.insert("cdn.evil.example".into());
+        let c2 = compare(&before, &moved);
+        assert!(
+            c2.maintainer.is_some(),
+            "ownership change must still report"
+        );
+        assert_eq!(c2.origins_added, vec!["cdn.evil.example"]);
+    }
+
+    #[test]
+    fn a_record_with_no_fingerprint_is_not_findings_comparable() {
+        // Records written before the field existed.
+        let mut before = rec("tool");
+        before.analysis_fingerprint = None;
+        let mut after = before.clone();
+        after.analysis_fingerprint = Some("v2.2.0/Low".into());
+        after.finding_ids.insert("DLE-001".into());
+        assert!(compare(&before, &after).findings_added.is_empty());
+    }
+
+    #[test]
+    fn matching_fingerprints_still_report_real_new_risk() {
+        let before = rec("tool");
+        let mut after = before.clone();
+        after.finding_ids.insert("DLE-001".into());
+        assert_eq!(compare(&before, &after).findings_added, vec!["DLE-001"]);
+    }
+
+    #[test]
+    fn a_removed_install_script_is_not_reported_as_changed() {
+        // "the install script changed ... this code runs as root" is simply
+        // false when the script is gone, and removal is the safe direction.
+        let mut before = rec("tool");
+        before.scripts_hash = Some("aaaa".into());
+        let mut after = before.clone();
+        after.scripts_hash = None;
+        let c = compare(&before, &after);
+        let f = findings_for_changes(&before, &after, &c, &[], Path::new("PKGBUILD"));
+        let d = f.iter().find(|x| x.id == "DIFF-004").expect("must note it");
+        assert_eq!(d.severity, Severity::Low);
+        assert!(d.title.contains("removed"), "{}", d.title);
+        assert!(!d.description.contains("runs as root"), "{}", d.description);
+    }
+
+    #[test]
     fn identical_records_show_no_changes() {
         let a = rec("tool");
         assert!(compare(&a, &a.clone()).is_empty());
@@ -1030,7 +1204,7 @@ mod tests {
             mk("CHK-004", Severity::Medium),
             mk("DLE-001", Severity::Critical),
         ];
-        let new = newly_raised(&before, &findings);
+        let new = newly_raised(&before, &before, &findings);
         assert_eq!(new.len(), 1);
         assert_eq!(new[0].id, "DLE-001");
         assert_eq!(peak_severity(&new), Some(Severity::Critical));

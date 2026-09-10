@@ -2057,6 +2057,47 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             enabled: true,
             case_sensitive: false,
         },
+        // ============================================================
+        // CRITICAL: escaping the build root
+        // ============================================================
+        Rule {
+            id: "ESCAPE-001".to_string(),
+            name: "Extraction or copy outside the build root".to_string(),
+            description: "An archive is extracted, or files are copied, to an absolute system path instead of $srcdir/$pkgdir. A build runs as your user and must only ever write inside its own directories; writing to / or /usr or /etc during build() installs files that no package owns and that pacman will never remove.".to_string(),
+            severity: Severity::Critical,
+            category: Category::PrivilegeEscalation,
+            patterns: vec![
+                // tar/unzip/cpio extracting to an absolute system root. `-C /`
+                // and `-C /usr` are the shapes that matter; `-C "$srcdir"` and
+                // `-C "$pkgdir/..."` are the normal forms and are excluded by
+                // requiring a literal leading slash NOT followed by a variable.
+                Pattern::Regex {
+                    pattern: format!(
+                        r"{CMD_START}(?:tar|bsdtar)\b[^\n;&|]*\s-C\s+/(?:usr|etc|opt|var|bin|sbin|lib|boot|root|srv)?(?:/|\s|$)"
+                    ),
+                },
+                Pattern::Regex {
+                    pattern: format!(
+                        r"{CMD_START}unzip\b[^\n;&|]*\s-d\s+/(?:usr|etc|opt|var|bin|sbin|lib|boot|root|srv)?(?:/|\s|$)"
+                    ),
+                },
+                // install/cp/mv writing to an absolute system path. The
+                // destination must start with a literal `/` and a known system
+                // directory -- `"$pkgdir/usr/bin"` starts with `$`, so it does
+                // not match.
+                Pattern::Regex {
+                    pattern: format!(
+                        r"{CMD_START}(?:install|cp|mv)\b[^\n;&|]*\s/(?:usr|etc|opt|boot|srv)/[^\s]*\s*$"
+                    ),
+                },
+            ],
+            file_types: vec![FileType::Pkgbuild],
+            recommendation: "Extract and install into $srcdir and $pkgdir only. makepkg copies $pkgdir into the package; anything written elsewhere during a build is invisible to pacman.".to_string(),
+            cwe_id: Some("CWE-22".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+
         Rule {
             id: "TAMPER-001".to_string(),
             name: "Auth database write".to_string(),
@@ -3168,6 +3209,57 @@ mod tests {
             assert!(
                 hits.is_empty(),
                 "ordinary mode must not fire a PERM rule: {src} -> {hits:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn escape001_catches_writes_outside_the_build_root() {
+        let engine = RuleEngine::default();
+        for src in [
+            r#"tar xf payload.tar.gz -C /"#,
+            r#"tar -xzf blob.tar.gz -C /usr"#,
+            r#"bsdtar xf x.tar -C /etc/"#,
+            r#"unzip -q payload.zip -d /opt"#,
+            r#"install -Dm755 helper /usr/bin/helper"#,
+        ] {
+            let m = engine.match_content(src, FileType::Pkgbuild);
+            assert!(
+                m.iter().any(|x| x.rule_id == "ESCAPE-001"),
+                "ESCAPE-001 missed a write outside the build root: {src} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn escape001_is_quiet_on_normal_packaging() {
+        // These are what essentially every PKGBUILD does. A rule that fires on
+        // them is worse than no rule.
+        let engine = RuleEngine::default();
+        for src in [
+            r#"tar xf source.tar.gz -C "$srcdir""#,
+            r#"tar -xzf x.tar.gz -C "$pkgdir/usr/share""#,
+            r#"unzip -q app.zip -d "$srcdir/app""#,
+            r#"install -Dm755 tool "$pkgdir/usr/bin/tool""#,
+            r#"install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE""#,
+            r#"cp -a build/. "$pkgdir/usr/lib/foo/""#,
+            r#"mv "$srcdir/x" "$pkgdir/opt/x""#,
+            r#"install -d "$pkgdir/etc/foo""#,
+            r#"make DESTDIR="$pkgdir" install"#,
+            r#"cp config.example "$pkgdir/etc/foo/config""#,
+            // Reading FROM an absolute path is fine; only writing TO one is not.
+            r#"install -Dm644 /usr/share/foo/template "$pkgdir/etc/foo.conf""#,
+            r#"cp /etc/ssl/certs/ca-bundle.crt "$srcdir/""#,
+        ] {
+            let m = engine.match_content(src, FileType::Pkgbuild);
+            let hits: Vec<&str> = m
+                .iter()
+                .map(|x| x.rule_id.as_str())
+                .filter(|id| id.starts_with("ESCAPE-"))
+                .collect();
+            assert!(
+                hits.is_empty(),
+                "ESCAPE-001 false positive on ordinary packaging: {src} -> {hits:?}"
             );
         }
     }

@@ -84,10 +84,14 @@ pub(crate) fn diff_against_history(
     history: &History,
     result: &aur_scanner_core::ScanResult,
     pkgbuild_path: &std::path::Path,
-    maintainer: Option<String>,
+    maintainer: MaintainerLookup,
     scope: Scope,
+    fingerprint: String,
 ) -> anyhow::Result<Vec<Finding>> {
-    let content = std::fs::read_to_string(pkgbuild_path)?;
+    // Capped, like every other read the scanner does. An uncapped
+    // read_to_string here bypasses MAX_SCAN_FILE_BYTES and lets a hostile repo
+    // hand the history layer a multi-gigabyte "PKGBUILD".
+    let content = aur_scanner_core::read_text_capped(pkgbuild_path)?;
     let parsed = StaticParser::new().parse(&content)?;
 
     // Hash the package-side scripts separately from the PKGBUILD so "gained an
@@ -108,18 +112,41 @@ pub(crate) fn diff_against_history(
             .collect();
         paths.sort();
         for path in paths {
-            if let Ok(c) = std::fs::read_to_string(&path) {
+            if let Ok(c) = aur_scanner_core::read_text_capped(&path) {
                 scripts.push(c);
             }
         }
     }
 
-    let current = PackageRecord::from_scan(result, &parsed, maintainer).with_scripts(&scripts);
-    let findings = match history.get(&current.package, scope) {
+    let previous = history.get(&current_key(result), scope);
+
+    // A lookup that FAILED is not a package that is orphaned.
+    //
+    // `PackageRecord.maintainer` is `Option<String>` where `None` documents
+    // "orphaned". Both writers derived it from an AUR lookup that also yields
+    // `None` when the RPC call errored, so one transient failure rewrote every
+    // record's maintainer to None -- and `compare` then read that as
+    // `Some("alice") -> None` and emitted DIFF-002 "Package has been orphaned"
+    // for the whole tree. The next successful run emitted the mirror image at
+    // HIGH: "Orphaned package has been adopted", naming maintainers who never
+    // changed. That is the code meant to catch the xeactor pattern, firing
+    // dozens of times about nothing, which teaches people to ignore it.
+    //
+    // When we did not look, carry the previous value forward instead of
+    // asserting anything.
+    let maintainer = match maintainer {
+        MaintainerLookup::Known(m) => m,
+        MaintainerLookup::NotLookedUp => previous.as_ref().and_then(|p| p.maintainer.clone()),
+    };
+
+    let current = PackageRecord::from_scan(result, &parsed, maintainer)
+        .with_scripts(&scripts)
+        .with_fingerprint(fingerprint);
+    let findings = match &previous {
         Some(previous) => {
-            let changes = history_compare(&previous, &current);
+            let changes = history_compare(previous, &current);
             findings_for_changes(
-                &previous,
+                previous,
                 &current,
                 &changes,
                 &result.findings,
@@ -128,8 +155,34 @@ pub(crate) fn diff_against_history(
         }
         None => Vec::new(),
     };
-    history.put(&current, scope)?;
+
+    // Return the findings even if the store cannot be updated. Computing a real
+    // delta and then discarding it because the cache is full or read-only is a
+    // fail-OPEN: the tool has a baseline, has detected a hijack-shaped change
+    // against it, and says nothing. Report first, persist second.
+    if let Err(e) = history.put(&current, scope) {
+        tracing::warn!(
+            "could not update scan history for {}: {e}; change detection will \
+             re-report this next run",
+            current.package
+        );
+    }
     Ok(findings)
+}
+
+/// The history key for a completed scan.
+fn current_key(result: &aur_scanner_core::ScanResult) -> String {
+    result.package_name.clone()
+}
+
+/// What we know about a package's maintainer, distinguishing "the registry says
+/// nobody" from "we never asked".
+#[derive(Debug, Clone)]
+pub(crate) enum MaintainerLookup {
+    /// The registry answered. `None` inside means genuinely orphaned.
+    Known(Option<String>),
+    /// No lookup happened, or it failed. Asserts nothing.
+    NotLookedUp,
 }
 
 /// Run the pre-install check.
@@ -290,6 +343,28 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         }
     };
 
+    // The threshold that actually blocks.
+    //
+    // `--fail-on` when given. Otherwise: a NON-INTERACTIVE run has no prompt to
+    // fall back on, so it must fail closed on Critical rather than exit 0.
+    //
+    // It did not. `gate_tripped` was only ever written inside
+    // `if let Some(threshold) = args.fail_on`, and the shell integrations invoke
+    // `aur-scan check --severity <sev> --no-confirm <pkgs>` with no `--fail-on`
+    // at all -- `--severity` is a DISPLAY floor, not a gate. So a user with
+    // AUR_SCAN_INTERACTIVE=0 got "Tree totals: 3 CRITICAL", exit 0, and
+    // `if ! aur-scan check ...` handed straight off to paru. The primary
+    // documented protection was a no-op in exactly the mode people script.
+    //
+    // An interactive run keeps its previous behaviour: the prompt is the gate,
+    // and the user may knowingly accept the risk.
+    let effective_gate = match (args.fail_on, args.interactive) {
+        (Some(t), _) => t,
+        (None, false) => Severity::Critical,
+        // Interactive with no explicit threshold: the prompt below decides.
+        (None, true) => Severity::Critical,
+    };
+
     let mut scans: BTreeMap<String, ComponentScan> = BTreeMap::new();
     let mut total_critical = 0usize;
     let mut total_high = 0usize;
@@ -355,7 +430,13 @@ pub async fn run(args: CheckArgs) -> Result<()> {
             None => Registry::None,
         };
 
-        let maintainer = node_info.get(&node.name).and_then(|i| i.maintainer.clone());
+        // Distinguish "the registry says nobody" from "we never asked" -- see
+        // MaintainerLookup. Conflating them made one RPC blip rewrite every
+        // record to orphaned and emit a false DIFF-002 pair across the tree.
+        let maintainer = match node_info.get(&node.name) {
+            Some(i) => MaintainerLookup::Known(i.maintainer.clone()),
+            None => MaintainerLookup::NotLookedUp,
+        };
 
         let result = match &local_pkgbuild {
             Some(p) => scanner
@@ -380,7 +461,14 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                 // cache is noise. Any failure here is logged and ignored: the
                 // history is an enhancement, never a reason to fail a scan.
                 if let Some(h) = history.as_ref() {
-                    match diff_against_history(h, &result, &scanned_path, maintainer, scope) {
+                    match diff_against_history(
+                        h,
+                        &result,
+                        &scanned_path,
+                        maintainer,
+                        scope,
+                        aur_scanner_core::history::analysis_fingerprint(scanner.min_severity()),
+                    ) {
                         // Honour the configured threshold. These are produced
                         // after the scan returns, so they miss the filter the
                         // engine applies to everything else.
@@ -398,14 +486,12 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                 let scan = ComponentScan::from_findings(&result.findings);
                 total_critical += scan.critical;
                 total_high += scan.high;
-                if let Some(threshold) = args.fail_on {
-                    if result
-                        .findings
-                        .iter()
-                        .any(|f| f.severity.is_at_least(threshold))
-                    {
-                        gate_tripped = true;
-                    }
+                if result
+                    .findings
+                    .iter()
+                    .any(|f| f.severity.is_at_least(effective_gate))
+                {
+                    gate_tripped = true;
                 }
                 if scan.critical > 0 || scan.high > 0 {
                     println!("{}", format!("{}C/{}H", scan.critical, scan.high).red());
@@ -509,10 +595,15 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     // 6. Decide pass/fail. The gate trips if any finding was at or above the
     // requested threshold (computed per-finding via `is_at_least` during the
     // scan, so it honors any threshold -- not just critical/high).
-    let mut failed = gate_tripped;
-    // A package we could not fetch/scan is unreviewed; treat that as a failure
-    // when a gate threshold was requested rather than silently passing.
-    if args.fail_on.is_some() && !fetch_failures.is_empty() {
+    // An interactive run defers to the prompt; a non-interactive one cannot,
+    // so the computed gate is what decides.
+    let mut failed = gate_tripped && !args.interactive;
+    // A package we could not fetch/scan is unreviewed. Treat that as a failure
+    // rather than silently passing -- "could not analyze" is not "clean".
+    // "Could not analyze" is not "clean". Block on an unreviewed package whenever
+    // there is a gate to trip: a non-interactive run always has one now, and an
+    // interactive run has one only if a threshold was asked for explicitly.
+    if !fetch_failures.is_empty() && (!args.interactive || args.fail_on.is_some()) {
         failed = true;
     }
 

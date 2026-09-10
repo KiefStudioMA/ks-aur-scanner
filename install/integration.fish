@@ -181,7 +181,8 @@ function _aur_scan_gate
         # De-duplicate, preserving order.
         set to_scan (printf '%s\n' $to_scan | awk 'NF && !seen[$0]++')
         echo "AUR Security Scanner: pre-checking "(count $to_scan)" package(s)..."
-        set -l scan_args --severity $AUR_SCAN_SEVERITY
+        # Blocking threshold, not just a display floor -- see integration.bash.
+        set -l scan_args --severity $AUR_SCAN_SEVERITY --fail-on $AUR_SCAN_SEVERITY
         if test "$AUR_SCAN_INTERACTIVE" != "1"
             set -a scan_args --no-confirm
         end
