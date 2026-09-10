@@ -150,8 +150,8 @@ impl Default for RemoteExecAnalyzer {
 impl SecurityAnalyzer for RemoteExecAnalyzer {
     async fn analyze(&self, context: &AnalysisContext) -> Result<Vec<Finding>> {
         let mut findings = self.scan(&context.pkgbuild.raw_content, &context.file_path, false);
-        if let Some(install) = &context.install_script {
-            findings.extend(self.scan(&install.content, &install.path, true));
+        for script in context.all_scripts() {
+            findings.extend(self.scan(&script.content, &script.path, true));
         }
         Ok(findings)
     }

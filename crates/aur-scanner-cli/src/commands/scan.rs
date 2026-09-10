@@ -38,6 +38,10 @@ pub async fn run(
         config.min_severity = Severity::Info;
     }
 
+    // Snapshot the display config before `config` is consumed by the scanner;
+    // it controls only how the text output is rendered, not what is scanned.
+    let display = config.output.clone();
+
     // Create scanner
     let scanner = Scanner::new(config).context("Failed to create scanner")?;
 
@@ -55,7 +59,7 @@ pub async fn run(
         crate::OutputFormat::Sarif => OutputFormat::Sarif,
     };
 
-    let output_str = output::format_result(&result, format)?;
+    let output_str = output::format_result(&result, format, &display)?;
 
     // Write output
     let wrote_to_file = output_path.is_some();

@@ -30,7 +30,7 @@ pub use types::*;
 use analyzer::SecurityAnalyzer;
 use parser::PkgbuildParser;
 use rules::RuleEngine;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use threat_intel::IocDatabase;
 use tracing::{debug, info, warn};
@@ -105,9 +105,29 @@ impl Scanner {
         self.ioc_db.clone()
     }
 
-    /// Create a scanner with default configuration
+    /// Create a scanner with **built-in** configuration only (no config file).
+    ///
+    /// Prefer [`Self::with_system_config`] for user-facing gates (CLI install,
+    /// `aur-scan-wrap`, hook already resolves explicitly) so XDG/`/etc` settings
+    /// such as threat-intel are honored. This method stays pure for unit tests
+    /// and callers that must not touch the filesystem.
     pub fn with_defaults() -> Result<Self> {
         Self::new(ScanConfig::default())
+    }
+
+    /// Create a scanner using the same config discovery as the CLI without
+    /// `-c` and the pacman hook: first existing path among
+    /// `$XDG_CONFIG_HOME/aur-scanner/config.toml` (or `~/.config/...`) and
+    /// `/etc/aur-scanner/config.toml`, else built-in defaults.
+    ///
+    /// A present-but-malformed file is a hard error (fail closed) — the same
+    /// contract as [`ScanConfig::resolve`].
+    pub fn with_system_config() -> Result<Self> {
+        let (config, path) = ScanConfig::resolve(None)?;
+        if let Some(p) = &path {
+            debug!("loaded scanner config from {}", p.display());
+        }
+        Self::new(config)
     }
 
     /// Load rules from a directory
@@ -161,12 +181,17 @@ impl Scanner {
         } else {
             None
         };
+        // ALPM .hook files ship next to the PKGBUILD in some attack waves and
+        // are installed into /usr/share/libalpm/hooks/ — scan them as side
+        // scriptlets. Never execute; text only.
+        let side_scripts = discover_alpm_hooks(dir);
         let scanned_install = install_script.as_ref().map(|s| s.path.clone());
 
         // Create analysis context
         let context = AnalysisContext {
             pkgbuild: pkgbuild.clone(),
             install_script,
+            side_scripts,
             config: self.config.clone(),
             file_path: path.to_path_buf(),
         };
@@ -366,6 +391,48 @@ fn resolve_install_path(
     }
 }
 
+/// Discover ALPM hook files (`*.hook`) beside the PKGBUILD.
+///
+/// Atomic Arch wave 4 delivered payload via `.hook` files installed into
+/// `/usr/share/libalpm/hooks/`. These are not referenced by `install=`, so a
+/// scanner that only reads the install scriptlet misses them. Each discovered
+/// file is read as text (capped) and returned for static analysis — never
+/// executed. Path components are the directory listing only (no attacker-
+/// controlled name expansion).
+fn discover_alpm_hooks(dir: &Path) -> Vec<parser::ParsedInstallScript> {
+    let mut hooks: Vec<parser::ParsedInstallScript> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return hooks;
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension().and_then(|e| e.to_str()) == Some("hook")
+                // Refuse odd names that look like traversal even though
+                // read_dir only yields direct children.
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| !n.is_empty() && !n.starts_with('.') && !n.contains(".."))
+        })
+        .collect();
+    paths.sort();
+    for path in paths {
+        match read_text_capped(&path) {
+            Ok(content) => hooks.push(parser::ParsedInstallScript {
+                content: content.clone(),
+                path,
+                hooks: parser::parse_install_hooks(&content),
+            }),
+            Err(e) => {
+                warn!("Failed to read ALPM hook {}: {}", path.display(), e);
+            }
+        }
+    }
+    hooks
+}
+
 /// Expand the small set of PKGBUILD variables that legitimately appear in an
 /// `install=` value: `$pkgname`/`${pkgname}` and `$pkgbase`/`${pkgbase}`.
 fn expand_pkg_vars(value: &str, pkgname: &str) -> String {
@@ -386,6 +453,15 @@ mod tests {
     async fn test_scanner_creation() {
         let scanner = Scanner::with_defaults();
         assert!(scanner.is_ok());
+    }
+
+    #[test]
+    fn with_system_config_matches_resolve() {
+        // Same discovery path as ScanConfig::resolve(None): built-in defaults
+        // when no file exists, hard error only when a present file is bad.
+        let a = Scanner::with_system_config();
+        let b = ScanConfig::resolve(None).and_then(|(c, _)| Scanner::new(c));
+        assert_eq!(a.is_ok(), b.is_ok());
     }
 
     #[test]

@@ -38,13 +38,27 @@ pkgver() {
 
 prepare() {
     cd ks-aur-scanner
-    # Verify the checked-out commit is signed by our key before building any of
-    # its code. The branch ruleset requires signed commits; a failure here means
-    # an unsigned/untrusted commit reached HEAD -- abort rather than build it.
-    if ! git verify-commit HEAD; then
-        echo "ERROR: HEAD commit is not signed by a trusted key (validpgpkeys)." >&2
-        echo "       Import it:  gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51" >&2
-        return 1
+    # Verify provenance before building any of its code.
+    #
+    # Prefer a direct signature on HEAD (our key). GitHub "Merge pull request"
+    # commits are signed by *GitHub's* key, not the maintainer — so when HEAD is
+    # a merge commit that fails verify-commit against validpgpkeys, fall back to
+    # verifying the first parent (the previous mainline tip). Branch protection
+    # still requires signed commits on the first-parent line; this only bridges
+    # the GitHub-merge signature gap (issue #20). Prefer tagged packages on
+    # production systems — they pin a signed release tag, not a moving HEAD.
+    if ! git verify-commit HEAD 2>/dev/null; then
+        local parent_count
+        parent_count=$(git rev-list --parents -n 1 HEAD | awk '{print NF-1}')
+        if [[ "$parent_count" -ge 2 ]] && git verify-commit HEAD^1 2>/dev/null; then
+            echo "NOTE: HEAD is a merge commit not signed by validpgpkeys;" >&2
+            echo "      verified first parent $(git rev-parse --short HEAD^1) instead." >&2
+        else
+            echo "ERROR: HEAD commit is not signed by a trusted key (validpgpkeys)," >&2
+            echo "       and no signed first-parent fallback was available." >&2
+            echo "       Import the key:  gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51" >&2
+            return 1
+        fi
     fi
     export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"

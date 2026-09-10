@@ -208,6 +208,9 @@ pub struct ScanConfig {
     /// Cache configuration
     #[serde(default)]
     pub cache: CacheConfig,
+    /// Human-readable output display configuration
+    #[serde(default)]
+    pub output: OutputConfig,
     /// Scan timeout in seconds
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
@@ -225,7 +228,46 @@ impl Default for ScanConfig {
             enable_threat_intel: false,
             threat_intel: ThreatIntelConfig::default(),
             cache: CacheConfig::default(),
+            output: OutputConfig::default(),
             timeout_seconds: default_timeout(),
+        }
+    }
+}
+
+/// Which fields the human-readable text output includes for each finding.
+///
+/// **Display-only.** These toggles change *what is printed*, never which
+/// findings exist, the process exit code, or whether a security gate trips. A
+/// field hidden here is still present in the [`ScanResult`] and in the
+/// machine-readable JSON/SARIF output — those always emit the complete record so
+/// CI and tooling are never blinded by a display preference. There is
+/// deliberately **no** key to suppress a finding itself: verbosity is
+/// configurable, a finding's existence is not.
+///
+/// Rich by default — every field is shown unless explicitly disabled, so a
+/// config can only ever make the output terser, never silently drop detail the
+/// reader did not ask to drop. `deny_unknown_fields` turns a mistyped key
+/// (`line_numbers = true`) into a hard error rather than a silent no-op.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OutputConfig {
+    /// Append the `file:line` location to each finding.
+    pub line: bool,
+    /// Show the matched code snippet.
+    pub snippet: bool,
+    /// Show the remediation recommendation.
+    pub recommendation: bool,
+    /// Show the CWE reference.
+    pub cwe: bool,
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            line: true,
+            snippet: true,
+            recommendation: true,
+            cwe: true,
         }
     }
 }
@@ -249,6 +291,49 @@ impl ScanConfig {
         } else {
             Ok(Self::default())
         }
+    }
+
+    /// Default config search paths, highest priority first.
+    ///
+    /// 1. `$XDG_CONFIG_HOME/aur-scanner/config.toml` (or `~/.config/...`)
+    /// 2. `/etc/aur-scanner/config.toml`
+    ///
+    /// An explicit `-c/--config` path is handled by the CLI and is never in this
+    /// list. The first path that exists wins; a present-but-malformed file is a
+    /// hard error (never silently skipped in favor of a lower-priority path).
+    pub fn default_config_paths() -> Vec<PathBuf> {
+        let mut paths = Vec::with_capacity(2);
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            let p = PathBuf::from(xdg);
+            if !p.as_os_str().is_empty() {
+                paths.push(p.join("aur-scanner").join("config.toml"));
+            }
+        } else if let Some(home) = dirs::home_dir() {
+            paths.push(home.join(".config").join("aur-scanner").join("config.toml"));
+        }
+        paths.push(PathBuf::from("/etc/aur-scanner/config.toml"));
+        paths
+    }
+
+    /// Load the effective config: `cli_path` if given, otherwise the first
+    /// existing default path, otherwise built-in defaults.
+    ///
+    /// Returns `(config, path_loaded)` where `path_loaded` is `None` only when
+    /// no file was found and defaults were used. A present-but-unreadable or
+    /// malformed file is always an error — a security config must never look
+    /// like it is in effect while being silently ignored (issue #25).
+    pub fn resolve(cli_path: Option<&std::path::Path>) -> crate::Result<(Self, Option<PathBuf>)> {
+        if let Some(path) = cli_path {
+            let cfg = Self::from_toml_file(path)?;
+            return Ok((cfg, Some(path.to_path_buf())));
+        }
+        for path in Self::default_config_paths() {
+            if path.exists() {
+                let cfg = Self::from_toml_file(&path)?;
+                return Ok((cfg, Some(path)));
+            }
+        }
+        Ok((Self::default(), None))
     }
 }
 
@@ -324,12 +409,26 @@ impl Default for CacheConfig {
 pub struct AnalysisContext {
     /// Parsed PKGBUILD
     pub pkgbuild: crate::parser::ParsedPkgbuild,
-    /// Parsed install script if present
+    /// Parsed install script if present (`install=` / `*.install`)
     pub install_script: Option<crate::parser::ParsedInstallScript>,
+    /// Additional package-side scripts discovered next to the PKGBUILD
+    /// (notably ALPM `*.hook` files used in later Atomic Arch waves).
+    /// Analyzed with the same install-script rule surface; never executed.
+    pub side_scripts: Vec<crate::parser::ParsedInstallScript>,
     /// Scanner configuration
     pub config: ScanConfig,
     /// Path to the PKGBUILD file
     pub file_path: PathBuf,
+}
+
+impl AnalysisContext {
+    /// Every package-side scriptlet (primary `.install` plus side scripts such
+    /// as ALPM hooks). Analyzers that scan install-time content should iterate
+    /// this rather than only `install_script`, so a payload moved into a `.hook`
+    /// file cannot escape analysis.
+    pub fn all_scripts(&self) -> impl Iterator<Item = &crate::parser::ParsedInstallScript> {
+        self.install_script.iter().chain(self.side_scripts.iter())
+    }
 }
 
 /// File type for rule matching
@@ -365,5 +464,78 @@ mod tests {
         assert!(!Severity::High.is_at_least(Severity::Critical));
         assert!(Severity::High.is_at_least(Severity::High));
         assert!(!Severity::Info.is_at_least(Severity::Low));
+    }
+
+    #[test]
+    fn resolve_prefers_explicit_path_and_errors_on_malformed() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good.toml");
+        std::fs::write(&good, "enable_threat_intel = true\n").unwrap();
+        let (cfg, path) = ScanConfig::resolve(Some(&good)).unwrap();
+        assert!(cfg.enable_threat_intel);
+        assert_eq!(path.as_deref(), Some(good.as_path()));
+
+        let bad = dir.path().join("bad.toml");
+        std::fs::write(&bad, "enable_threat_intel = [not valid\n").unwrap();
+        assert!(
+            ScanConfig::resolve(Some(&bad)).is_err(),
+            "malformed config must be a hard error"
+        );
+    }
+
+    #[test]
+    fn default_config_paths_put_user_before_system() {
+        let paths = ScanConfig::default_config_paths();
+        assert!(
+            !paths.is_empty(),
+            "must always include at least the system path"
+        );
+        assert_eq!(
+            paths.last().map(|p| p.as_os_str()),
+            Some(std::ffi::OsStr::new("/etc/aur-scanner/config.toml"))
+        );
+        if paths.len() > 1 {
+            assert!(
+                paths[0].ends_with("aur-scanner/config.toml"),
+                "user path should be first when present: {:?}",
+                paths[0]
+            );
+        }
+    }
+
+    #[test]
+    fn output_config_is_rich_by_default() {
+        // The default must show everything: a config can make output terser, but
+        // the absence of an [output] table never silently hides detail.
+        let cfg = OutputConfig::default();
+        assert!(cfg.line && cfg.snippet && cfg.recommendation && cfg.cwe);
+        // And the default ScanConfig carries that rich OutputConfig.
+        assert!(ScanConfig::default().output.line);
+    }
+
+    #[test]
+    fn output_config_partial_table_keeps_other_fields_default() {
+        // Setting one field must not reset the others to false (serde container
+        // default fills the omitted fields from OutputConfig::default()).
+        let cfg: ScanConfig = toml::from_str("[output]\nline = false\n").unwrap();
+        assert!(!cfg.output.line, "explicitly disabled");
+        assert!(cfg.output.snippet, "omitted field stays rich-default");
+        assert!(cfg.output.recommendation);
+        assert!(cfg.output.cwe);
+    }
+
+    #[test]
+    fn output_config_missing_table_is_rich() {
+        // No [output] table at all => every field on.
+        let cfg: ScanConfig = toml::from_str("min_severity = \"low\"\n").unwrap();
+        assert!(cfg.output.line && cfg.output.snippet);
+    }
+
+    #[test]
+    fn output_config_rejects_unknown_key() {
+        // A mistyped key must be a hard error, not a silent no-op that leaves the
+        // user thinking they disabled something they did not.
+        let err = toml::from_str::<ScanConfig>("[output]\nline_numbers = true\n");
+        assert!(err.is_err(), "unknown [output] key should be rejected");
     }
 }

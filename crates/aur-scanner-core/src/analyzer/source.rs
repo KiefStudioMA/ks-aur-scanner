@@ -13,6 +13,35 @@ lazy_static! {
     static ref IP_REGEX: Regex = Regex::new(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}").unwrap();
 }
 
+/// Known URL-shortener hosts. Compared with label-boundary equality against the
+/// URL's authority host (not a substring of the full URL string).
+const URL_SHORTENERS: &[&str] = &[
+    "bit.ly",
+    "t.co",
+    "goo.gl",
+    "tinyurl.com",
+    "is.gd",
+    "cli.gs",
+    "ow.ly",
+    "rebrand.ly",
+    "cutt.ly",
+    "tiny.cc",
+];
+
+/// If `url`'s host is a known shortener (exact host or subdomain of one), return
+/// that shortener's registrable name. Uses the shared [`crate::neturl`] host
+/// primitive so label-boundary matching stays consistent with SRC-006/IOC.
+fn url_shortener_host(url: &str) -> Option<&'static str> {
+    // Strip a leading `name::` source rename (`pkg::https://...`) before host
+    // extraction — neturl does not know about makepkg rename syntax.
+    let bare = url.find("::").map(|i| &url[i + 2..]).unwrap_or(url).trim();
+    let host = crate::neturl::extract_host(bare)?;
+    URL_SHORTENERS
+        .iter()
+        .copied()
+        .find(|s| crate::neturl::host_matches(&host, s))
+}
+
 /// Map a host to its forge "identity" (so `github.com` and
 /// `raw.githubusercontent.com` are the same forge, but `gitlab.com` is a
 /// different one). Returns `None` for hosts that are not a recognized code
@@ -154,42 +183,33 @@ impl SecurityAnalyzer for SourceAnalyzer {
                 });
             }
 
-            // Check for URL shorteners
-            let shorteners = [
-                "bit.ly",
-                "t.co",
-                "goo.gl",
-                "tinyurl.com",
-                "is.gd",
-                "cli.gs",
-                "ow.ly",
-            ];
-
-            for shortener in &shorteners {
-                if source.url.to_lowercase().contains(shortener) {
-                    findings.push(Finding {
-                        id: "SRC-004".to_string(),
-                        severity: Severity::High,
-                        category: Category::NetworkSecurity,
-                        title: "URL shortener in source".to_string(),
-                        description: format!(
-                            "Source uses URL shortener which hides the real destination: {}",
-                            source.url
-                        ),
-                        location: Location {
-                            file: context.file_path.clone(),
-                            line: None,
-                            column: None,
-                            snippet: Some(format!("source=(\"{}\")", source.url)),
-                        },
-                        recommendation: "Use full URLs to official sources".to_string(),
-                        cwe_id: None,
-                        metadata: serde_json::json!({
-                            "url": source.url,
-                            "shortener": shortener,
-                        }),
-                    });
-                }
+            // URL shorteners hide the real destination. Match on the *host*
+            // with label boundaries — never a raw substring of the full URL.
+            // Substring matching falsely hits `t.co` inside
+            // `raw.githubusercontent.com` (issue #22).
+            if let Some(shortener) = url_shortener_host(&source.url) {
+                findings.push(Finding {
+                    id: "SRC-004".to_string(),
+                    severity: Severity::High,
+                    category: Category::NetworkSecurity,
+                    title: "URL shortener in source".to_string(),
+                    description: format!(
+                        "Source uses URL shortener which hides the real destination: {}",
+                        source.url
+                    ),
+                    location: Location {
+                        file: context.file_path.clone(),
+                        line: None,
+                        column: None,
+                        snippet: Some(format!("source=(\"{}\")", source.url)),
+                    },
+                    recommendation: "Use full URLs to official sources".to_string(),
+                    cwe_id: None,
+                    metadata: serde_json::json!({
+                        "url": source.url,
+                        "shortener": shortener,
+                    }),
+                });
             }
 
             // A VCS source on a movable ref (branch/tag, or no fragment) is not
@@ -392,6 +412,7 @@ mod tests {
         AnalysisContext {
             pkgbuild,
             install_script: None,
+            side_scripts: vec![],
             config: ScanConfig::default(),
             file_path: PathBuf::from("PKGBUILD"),
         }
@@ -412,6 +433,59 @@ source=("http://example.com/file.tar.gz")
 
         let findings = analyzer.analyze(&context).await.unwrap();
         assert!(findings.iter().any(|f| f.id == "SRC-001"));
+    }
+
+    #[tokio::test]
+    async fn raw_githubusercontent_is_not_a_url_shortener() {
+        // Issue #22: substring match for `t.co` hit inside
+        // `raw.githubusercontent.com`. Host-boundary matching must not.
+        let analyzer = SourceAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=xremap
+pkgver=1.0
+pkgrel=1
+source=("LICENSE::https://raw.githubusercontent.com/xremap/xremap/v1.0/LICENSE")
+sha256sums=('SKIP')
+"#,
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(
+            !findings.iter().any(|f| f.id == "SRC-004"),
+            "raw.githubusercontent.com must not trip SRC-004, got: {:?}",
+            findings.iter().map(|f| &f.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn real_shortener_still_trips_src004() {
+        let analyzer = SourceAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=evil
+pkgver=1.0
+pkgrel=1
+source=("https://bit.ly/totally-legit")
+sha256sums=('SKIP')
+"#,
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(
+            findings.iter().any(|f| f.id == "SRC-004"),
+            "bit.ly must still trip SRC-004"
+        );
+    }
+
+    #[test]
+    fn shortener_host_match_is_label_boundary() {
+        assert_eq!(url_shortener_host("https://t.co/abc"), Some("t.co"));
+        assert_eq!(url_shortener_host("https://bit.ly/x"), Some("bit.ly"));
+        assert_eq!(
+            url_shortener_host("LICENSE::https://raw.githubusercontent.com/x/y"),
+            None,
+            "t.co must not match inside githubusercontent.com"
+        );
+        assert_eq!(url_shortener_host("git+https://github.com/u/r.git"), None);
     }
 
     #[tokio::test]
