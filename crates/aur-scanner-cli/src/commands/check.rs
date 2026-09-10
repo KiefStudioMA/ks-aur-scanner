@@ -422,6 +422,12 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         }
     }
 
+    // Housekeeping, once per run and after every record for this scan is
+    // written. Failures are ignored: pruning must never affect a scan's outcome.
+    if let Some(h) = history.as_ref() {
+        h.prune(History::DEFAULT_MAX_AGE_DAYS, History::DEFAULT_MAX_RECORDS);
+    }
+
     // 3. Render the reviewable tree.
     println!();
     println!(

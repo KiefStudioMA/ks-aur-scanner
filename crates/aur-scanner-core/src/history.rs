@@ -273,6 +273,76 @@ impl History {
         Ok(())
     }
 
+    /// Drop records that are old enough to be useless, and cap the total count.
+    ///
+    /// A record is a few hundred bytes, so this is not about disk. It is about
+    /// the store being a permanent, ever-growing list of every AUR package this
+    /// user has ever looked at, kept indefinitely with no way to age out. That
+    /// is a privacy liability that grows on its own, and nothing was ever
+    /// removing anything.
+    ///
+    /// Two bounds, both generous, because deleting a baseline costs real
+    /// security value -- the next scan of that package silently becomes a first
+    /// scan:
+    ///
+    /// * **Age.** A record older than `max_age_days` describes a package the
+    ///   user has not touched in a long time; diffing against it would mostly
+    ///   report the intervening year of ordinary updates.
+    /// * **Count.** Past `max_records`, the oldest are dropped first, so an
+    ///   unbounded dependency closure cannot grow the store forever.
+    ///
+    /// Returns how many records were removed. Every failure is ignored: pruning
+    /// is housekeeping and must never interfere with a scan.
+    pub fn prune(&self, max_age_days: u64, max_records: usize) -> usize {
+        let mut entries: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+        for dir in [self.dir.clone(), self.dir.join("local")] {
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                    continue;
+                }
+                let modified = e
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                entries.push((modified, p));
+            }
+        }
+
+        let mut removed = 0usize;
+        let cutoff = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(
+            max_age_days.saturating_mul(86_400),
+        ));
+
+        // Oldest first, so the count cap drops the least useful records.
+        entries.sort_by_key(|(t, _)| *t);
+
+        let over_by = entries.len().saturating_sub(max_records);
+        for (i, (modified, path)) in entries.iter().enumerate() {
+            let too_old = cutoff.is_some_and(|c| *modified < c);
+            let over_cap = i < over_by;
+            if (too_old || over_cap) && std::fs::remove_file(path).is_ok() {
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            debug!("pruned {removed} history record(s)");
+        }
+        removed
+    }
+
+    /// Default bounds: a year of history, and 5,000 records.
+    ///
+    /// 5,000 is far above any real dependency closure -- the whole AUR is
+    /// ~119,000 packages and a heavy user installs a few hundred -- so the count
+    /// cap is a runaway backstop, not a working limit. The age cap is what
+    /// actually keeps the store from being a permanent record.
+    pub const DEFAULT_MAX_AGE_DAYS: u64 = 365;
+    pub const DEFAULT_MAX_RECORDS: usize = 5_000;
+
     /// Every package we have a record for.
     pub fn packages(&self) -> Vec<String> {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
@@ -1036,6 +1106,103 @@ mod tests {
             got == small || got == big,
             "published record is neither writer's input -- torn write"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_enforces_the_count_cap_oldest_first() {
+        let dir = std::env::temp_dir().join(format!("aur-scan-hist-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = History::open(dir.clone()).unwrap();
+
+        // Write 10 records with increasing mtimes.
+        for i in 0..10 {
+            let mut r = rec(&format!("pkg{i:02}"));
+            r.version = format!("{i}.0-1");
+            h.put(&r, Scope::Aur).unwrap();
+            // Force a distinguishable mtime ordering without sleeping.
+            let path = dir.join(format!("pkg{i:02}.json"));
+            let t = std::time::SystemTime::UNIX_EPOCH
+                + std::time::Duration::from_secs(1_700_000_000 + i * 60);
+            let f = std::fs::File::options().write(true).open(&path).unwrap();
+            f.set_modified(t).unwrap();
+        }
+        assert_eq!(h.packages().len(), 10);
+
+        // Keep 4. The six oldest go.
+        let removed = h.prune(u64::MAX, 4);
+        assert_eq!(removed, 6, "should drop exactly the overage");
+        let left = h.packages();
+        assert_eq!(left.len(), 4);
+        assert!(
+            left.contains(&"pkg09".to_string()) && left.contains(&"pkg06".to_string()),
+            "the NEWEST records must survive, got {left:?}"
+        );
+        assert!(
+            !left.contains(&"pkg00".to_string()),
+            "the oldest must be dropped first"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_drops_records_past_the_age_cap() {
+        let dir =
+            std::env::temp_dir().join(format!("aur-scan-hist-prune-age-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = History::open(dir.clone()).unwrap();
+
+        h.put(&rec("ancient"), Scope::Aur).unwrap();
+        let old_path = dir.join("ancient.json");
+        let f = std::fs::File::options()
+            .write(true)
+            .open(&old_path)
+            .unwrap();
+        f.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+
+        h.put(&rec("fresh"), Scope::Aur).unwrap();
+
+        let removed = h.prune(30, usize::MAX);
+        assert_eq!(removed, 1);
+        assert!(h.get("ancient", Scope::Aur).is_none());
+        assert!(
+            h.get("fresh", Scope::Aur).is_some(),
+            "a recent record must survive"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_covers_the_local_namespace_too() {
+        let dir =
+            std::env::temp_dir().join(format!("aur-scan-hist-prune-loc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = History::open(dir.clone()).unwrap();
+        h.put(&rec("localpkg"), Scope::Local).unwrap();
+        let p = dir.join("local").join("localpkg.json");
+        let f = std::fs::File::options().write(true).open(&p).unwrap();
+        f.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(h.prune(30, usize::MAX), 1, "local records must age out too");
+        assert!(h.get("localpkg", Scope::Local).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_with_default_bounds_keeps_a_normal_working_set() {
+        // The bounds must not delete a baseline anyone is actually using: a
+        // heavy user has a few hundred AUR packages, far under the cap.
+        let dir =
+            std::env::temp_dir().join(format!("aur-scan-hist-prune-def-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = History::open(dir.clone()).unwrap();
+        for i in 0..300 {
+            h.put(&rec(&format!("p{i:04}")), Scope::Aur).unwrap();
+        }
+        let removed = h.prune(History::DEFAULT_MAX_AGE_DAYS, History::DEFAULT_MAX_RECORDS);
+        assert_eq!(removed, 0, "300 fresh records must all survive");
+        assert_eq!(h.packages().len(), 300);
         std::fs::remove_dir_all(&dir).ok();
     }
 

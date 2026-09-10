@@ -101,6 +101,75 @@ impl DeepAnalyzer {
             });
         }
 
+        // DEEP-003 -- Unicode bidirectional control characters (Trojan Source,
+        // CVE-2021-42574).
+        //
+        // These reorder how text DISPLAYS without changing how it executes, so a
+        // reviewer reading the PKGBUILD in a terminal or on the AUR web page can
+        // see something different from what makepkg runs. There is no legitimate
+        // reason for a bidi override in shell source: real right-to-left text in
+        // a comment or a message needs no explicit override, because terminals
+        // and browsers apply the Unicode bidi algorithm on their own.
+        //
+        // Scanned over the RAW text, not the informational-filtered code: the
+        // whole point is that a reviewer cannot trust which lines are comments.
+        let bidi: Vec<char> = text
+            .chars()
+            .filter(|c| {
+                matches!(
+                    c,
+                    // Explicit directional overrides and embeddings.
+                    '\u{202A}' | '\u{202B}' | '\u{202C}' | '\u{202D}' | '\u{202E}'
+                    // Isolates.
+                    | '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'
+                    // Deprecated but still honoured marks.
+                    | '\u{200E}' | '\u{200F}' | '\u{061C}'
+                )
+            })
+            .collect();
+        if !bidi.is_empty() {
+            let names: Vec<String> = {
+                let mut seen: Vec<char> = Vec::new();
+                for c in &bidi {
+                    if !seen.contains(c) {
+                        seen.push(*c);
+                    }
+                }
+                seen.iter()
+                    .map(|c| format!("U+{:04X}", *c as u32))
+                    .collect()
+            };
+            findings.push(Finding {
+                id: "DEEP-003".to_string(),
+                severity: Severity::Critical,
+                category: Category::Obfuscation,
+                title: "Unicode bidirectional control characters".to_string(),
+                description: format!(
+                    "The file contains {} Unicode bidi control character(s) ({}). These change \
+                     how the text is DISPLAYED without changing what is executed, so the code a \
+                     reviewer reads can differ from the code that runs (Trojan Source, \
+                     CVE-2021-42574). Shell source has no legitimate use for an explicit \
+                     directional override.",
+                    bidi.len(),
+                    names.join(", ")
+                ),
+                location: Location {
+                    file: file.to_path_buf(),
+                    line: None,
+                    column: None,
+                    snippet: None,
+                },
+                recommendation: "Strip the bidi characters and re-read the file before trusting \
+                                 any review of it."
+                    .to_string(),
+                cwe_id: Some("CWE-94".to_string()),
+                metadata: serde_json::json!({
+                    "bidi_count": bidi.len(),
+                    "codepoints": names,
+                }),
+            });
+        }
+
         if let Some(m) = LONG_B64.find(&code) {
             findings.push(Finding {
                 id: "DEEP-002".to_string(),
@@ -208,6 +277,49 @@ mod tests {
             findings.iter().any(|f| f.id == "DEEP-001"),
             "case-variant decode->exec must trip DEEP-001: {findings:?}"
         );
+    }
+
+    #[test]
+    fn flags_bidi_control_characters() {
+        // Trojan Source: what a reviewer sees is not what runs.
+        let a = DeepAnalyzer::new();
+        let text = "build() {\n  echo \"\u{202E}hctap ylppa\u{202C}\"\n  make\n}";
+        let findings = a.analyze_text(text, Path::new("PKGBUILD"));
+        let f = findings
+            .iter()
+            .find(|f| f.id == "DEEP-003")
+            .expect("bidi must be flagged");
+        assert_eq!(f.severity, Severity::Critical);
+        assert!(f.description.contains("U+202E"), "{}", f.description);
+    }
+
+    #[test]
+    fn flags_bidi_even_inside_a_comment() {
+        // The attack hides code as a comment (or vice versa), so the
+        // informational-line filter must not be what decides here.
+        let a = DeepAnalyzer::new();
+        let text = "build() {\n  # \u{2066}safe\u{2069}\n  make\n}";
+        let findings = a.analyze_text(text, Path::new("PKGBUILD"));
+        assert!(findings.iter().any(|f| f.id == "DEEP-003"));
+    }
+
+    #[test]
+    fn ordinary_non_ascii_text_is_not_bidi() {
+        // Accented characters, CJK, emoji in a pkgdesc are all fine. Only
+        // explicit DIRECTIONAL CONTROLS are the signal.
+        let a = DeepAnalyzer::new();
+        for text in [
+            "pkgdesc=\"Herramienta de configuración\"",
+            "pkgdesc=\"日本語のツール\"",
+            "# maintainer: Renée Müller <r@example.com>",
+            "pkgdesc=\"مرحبا\"",
+        ] {
+            let findings = a.analyze_text(text, Path::new("PKGBUILD"));
+            assert!(
+                !findings.iter().any(|f| f.id == "DEEP-003"),
+                "false positive on ordinary text: {text}"
+            );
+        }
     }
 
     #[test]

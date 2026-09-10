@@ -312,6 +312,90 @@ impl SecurityAnalyzer for SourceAnalyzer {
             }
         }
 
+        // SRC-010 — same forge, SAME REPOSITORY NAME, DIFFERENT OWNER.
+        //
+        // This is the shape reported in issue #29: url= names
+        // `github.com/vlaci/openconnect-sso` while source= fetches
+        // `github.com/PrestonHager/openconnect-sso`. SRC-008 cannot see it --
+        // it compares forge HOSTS (both github) and skips VCS sources entirely,
+        // and this one is a `git+` source.
+        //
+        // Requiring the repo NAME to match while the owner differs is what makes
+        // this tight. A genuine mirror or vendor fork is normally named for what
+        // it is; an impersonation has to keep the name to be convincing. A
+        // package that merely builds from a different project entirely does not
+        // match, and neither does the common `url=` homepage /
+        // `source=` release-host split, because that has no owner/repo on the
+        // url side.
+        if let Some(url) = &context.pkgbuild.url {
+            if let Some(url_origin) = crate::neturl::origin_of(url) {
+                let url_parts: Vec<&str> = url_origin.split('/').collect();
+                if url_parts.len() == 3 {
+                    let (url_host, url_owner, url_repo) =
+                        (url_parts[0], url_parts[1], url_parts[2]);
+                    // Only on a MULTI-TENANT forge, where `host/owner/repo` is
+                    // genuinely the layout and "a different owner" is a
+                    // meaningful statement about who published something.
+                    //
+                    // Self-hosted git does not work that way. On
+                    // `git.savannah.gnu.org` the first path segment is the
+                    // service (`cgit/bash` is the web UI, `git/bash` is the
+                    // clone path) -- same project, and reading those as two
+                    // owners flags GNU bash as impersonating itself.
+                    let on_multi_tenant_forge = forge_key(url_host).is_some();
+                    for source in &context.pkgbuild.source {
+                        if !on_multi_tenant_forge {
+                            break;
+                        }
+                        let Some(src_origin) = crate::neturl::origin_of(&source.url) else {
+                            continue;
+                        };
+                        let sp: Vec<&str> = src_origin.split('/').collect();
+                        if sp.len() != 3 {
+                            continue;
+                        }
+                        let (src_host, src_owner, src_repo) = (sp[0], sp[1], sp[2]);
+                        if src_host == url_host && src_repo == url_repo && src_owner != url_owner {
+                            findings.push(Finding {
+                                id: "SRC-010".to_string(),
+                                severity: Severity::High,
+                                category: Category::NetworkSecurity,
+                                title: "Source is a different owner's copy of the upstream repo"
+                                    .to_string(),
+                                description: format!(
+                                    "The declared upstream is '{url_owner}/{url_repo}' on \
+                                     {url_host}, but a source fetches '{src_owner}/{url_repo}' \
+                                     from the same forge. Same repository name under a different \
+                                     account is how a fork is substituted for the real project: \
+                                     the PKGBUILD still points reviewers at the genuine upstream \
+                                     while building someone else's code."
+                                ),
+                                location: Location {
+                                    file: context.file_path.clone(),
+                                    line: None,
+                                    column: None,
+                                    snippet: Some(format!("url={url}  source={}", source.url)),
+                                },
+                                recommendation: format!(
+                                    "Confirm '{src_owner}' is an official mirror of \
+                                     '{url_owner}/{url_repo}'. If it is not, this package builds \
+                                     code the upstream project did not publish."
+                                ),
+                                cwe_id: Some("CWE-494".to_string()),
+                                metadata: serde_json::json!({
+                                    "declared_upstream": url_origin,
+                                    "actual_source": src_origin,
+                                    "repo": url_repo,
+                                    "declared_owner": url_owner,
+                                    "actual_owner": src_owner,
+                                }),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         // SRC-008 — the declared upstream url= and a (non-VCS) source= are on two
         // DIFFERENT known forges (a personal-fork-vs-upstream signal). Host-aware
         // via neturl (registrable/forge identity, not substring). Conservative:
@@ -417,6 +501,77 @@ mod tests {
             file_path: PathBuf::from("PKGBUILD"),
             registry: None,
         }
+    }
+
+    #[tokio::test]
+    async fn src010_does_not_fire_on_self_hosted_git_service_paths() {
+        // git.savannah.gnu.org serves the web UI at /cgit/<repo> and the clone
+        // path at /git/<repo>. Those are not two owners, they are two service
+        // prefixes for the same project -- reading them as owners flagged GNU
+        // bash as impersonating itself. "A different owner" is only a
+        // meaningful statement on a multi-tenant forge.
+        let ctx = create_test_context(
+            r#"
+pkgname=bash
+pkgver=5.2
+pkgrel=1
+url="https://git.savannah.gnu.org/cgit/bash.git"
+source=("git+https://git.savannah.gnu.org/git/bash.git#commit=abc1234")
+sha256sums=('SKIP')
+"#,
+        );
+        let findings = SourceAnalyzer::new().analyze(&ctx).await.unwrap();
+        assert!(
+            !findings.iter().any(|f| f.id == "SRC-010"),
+            "self-hosted service paths are not distinct owners: {:?}",
+            findings.iter().map(|f| &f.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn src010_fires_on_a_forge_fork_substituted_for_upstream() {
+        // Issue #29: url= points reviewers at the real project while source=
+        // builds a different account's copy of the same repository.
+        let ctx = create_test_context(
+            r#"
+pkgname=openconnect-sso
+pkgver=0.8.1
+pkgrel=1
+url="https://github.com/vlaci/openconnect-sso"
+source=("git+https://github.com/PrestonHager/openconnect-sso.git")
+sha256sums=('SKIP')
+"#,
+        );
+        let findings = SourceAnalyzer::new().analyze(&ctx).await.unwrap();
+        let f = findings
+            .iter()
+            .find(|f| f.id == "SRC-010")
+            .expect("fork substitution must be flagged");
+        assert_eq!(f.severity, Severity::High);
+        // origin_of normalises case for comparison (forge accounts are
+        // case-insensitive), so match case-insensitively.
+        assert!(
+            f.description.to_lowercase().contains("prestonhager"),
+            "{}",
+            f.description
+        );
+        assert_eq!(f.metadata["actual_owner"], "prestonhager");
+    }
+
+    #[tokio::test]
+    async fn src010_is_quiet_when_owner_matches() {
+        let ctx = create_test_context(
+            r#"
+pkgname=tool
+pkgver=1.0
+pkgrel=1
+url="https://github.com/alice/tool"
+source=("https://github.com/alice/tool/archive/v1.0.tar.gz")
+sha256sums=('SKIP')
+"#,
+        );
+        let findings = SourceAnalyzer::new().analyze(&ctx).await.unwrap();
+        assert!(!findings.iter().any(|f| f.id == "SRC-010"));
     }
 
     #[tokio::test]

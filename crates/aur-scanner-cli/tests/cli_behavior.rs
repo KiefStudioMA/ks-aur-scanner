@@ -482,3 +482,46 @@ fn emitted_severity_matches_the_catalog() {
          exercising the analyzers"
     );
 }
+
+/// `aur-scan version` must report on a BROKEN config, not fail to start because
+/// of it.
+///
+/// Every scanning path treats an invalid config as a hard error, and the pacman
+/// hook exits non-zero on one — which aborts the whole transaction. That is the
+/// right fail-closed posture for a security gate, but it means a stale key in
+/// `/etc/aur-scanner/config.toml` announces itself by breaking `pacman -Syu`.
+/// This command is the way to find out on purpose, so it cannot be a casualty
+/// of the thing it diagnoses.
+#[test]
+fn version_diagnoses_a_broken_config_instead_of_dying_on_it() {
+    let dir = std::env::temp_dir().join("aur-scan-version-cfg-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("stale.toml");
+    // Valid TOML, unknown key — the realistic upgrade case.
+    std::fs::write(&bad, "min_severity = \"high\"\nenable_thret_intel = true\n").unwrap();
+
+    let (stdout, _, code) = run(&["-c", bad.to_str().unwrap(), "version"]);
+    assert!(
+        stdout.contains("Configuration:"),
+        "version must still render its report: {stdout}"
+    );
+    assert!(
+        stdout.contains("INVALID"),
+        "version must say the config is invalid: {stdout}"
+    );
+    assert!(
+        stdout.contains("enable_thret_intel"),
+        "it must name the offending key so it can be fixed: {stdout}"
+    );
+    assert_ne!(code, 0, "usable as a pre-upgrade check in a script");
+
+    // And a valid config reports clean, exit 0.
+    let good = dir.join("ok.toml");
+    std::fs::write(&good, "min_severity = \"high\"\n").unwrap();
+    let (stdout, _, code) = run(&["-c", good.to_str().unwrap(), "version"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("config is valid"), "{stdout}");
+
+    std::fs::remove_file(&bad).ok();
+    std::fs::remove_file(&good).ok();
+}

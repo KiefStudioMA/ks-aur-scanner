@@ -1,0 +1,12 @@
+pkgname=openconnect-sso
+pkgver=0.8.1
+pkgrel=1
+arch=('x86_64')
+url="https://github.com/vlaci/openconnect-sso"
+source=("git+https://github.com/PrestonHager/openconnect-sso.git" "validator")
+sha256sums=('SKIP' 'SKIP')
+build() {
+  cd openconnect-sso
+  sudo ../validator --check
+  python setup.py build
+}

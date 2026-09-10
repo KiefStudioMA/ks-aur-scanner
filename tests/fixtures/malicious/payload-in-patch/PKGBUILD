@@ -1,0 +1,9 @@
+pkgname=patched-tool
+pkgver=1.0
+pkgrel=1
+arch=('x86_64')
+source=("https://github.com/alice/tool/archive/v1.0.tar.gz" "0001-fix.patch")
+sha256sums=('1111111111111111111111111111111111111111111111111111111111111111'
+            '2222222222222222222222222222222222222222222222222222222222222222')
+prepare() { cd tool-1.0 && patch -p1 < ../0001-fix.patch; }
+build() { cd tool-1.0 && make; }

@@ -215,7 +215,14 @@ impl Scanner {
         // ALPM .hook files ship next to the PKGBUILD in some attack waves and
         // are installed into /usr/share/libalpm/hooks/ — scan them as side
         // scriptlets. Never execute; text only.
-        let side_scripts = discover_alpm_hooks(dir);
+        let mut side_scripts = discover_alpm_hooks(dir);
+        // Files the PKGBUILD pulls in from the package directory itself --
+        // patches, sidecar shell scripts, .service units. These were previously
+        // never read at all, so a payload in `0001-fix.patch`, or a
+        // `. ./helper.sh` that moves every interesting line out of the file
+        // under review, was completely invisible. They go through the same rule
+        // surface as an install scriptlet; never executed.
+        side_scripts.extend(discover_local_sources(dir, &pkgbuild));
         let scanned_install = install_script.as_ref().map(|s| s.path.clone());
 
         // Create analysis context
@@ -457,6 +464,77 @@ fn resolve_install_path(
             preferred.or_else(|| Some(install_files.remove(0)))
         }
     }
+}
+
+/// Read the local (non-remote) entries of `source=()` so their contents are
+/// analyzed rather than merely counted.
+///
+/// A `source=()` entry with no scheme is a file shipped in the package
+/// directory. Two well-known techniques live there and were previously
+/// invisible: a build fix `.patch` that quietly adds a command to a Makefile,
+/// and a sidecar script the PKGBUILD `source`s so that the file a reviewer reads
+/// contains almost nothing.
+///
+/// Everything here is read as text and capped; binary blobs are skipped rather
+/// than force-decoded. Path handling refuses anything that is not a plain
+/// relative name inside the package directory, so a hostile
+/// `source=('../../etc/shadow')` cannot make the scanner read outside the tree.
+fn discover_local_sources(
+    dir: &Path,
+    pkgbuild: &parser::ParsedPkgbuild,
+) -> Vec<parser::ParsedInstallScript> {
+    let mut out = Vec::new();
+    let mut seen: Vec<PathBuf> = Vec::new();
+
+    for entry in &pkgbuild.source {
+        if entry.protocol.is_remote() {
+            continue;
+        }
+        // makepkg fetches a renamed source as the rename; otherwise the entry
+        // itself is the filename.
+        let name = entry.filename.clone().unwrap_or_else(|| entry.url.clone());
+        let name = name.trim();
+
+        // Plain relative filename only. No separators, no traversal, no
+        // absolute paths, no shell metacharacters left unexpanded.
+        if name.is_empty()
+            || name.contains('/')
+            || name.contains('\\')
+            || name.contains("..")
+            || name.starts_with('.')
+            || name.contains('$')
+        {
+            if !name.is_empty() {
+                debug!("not reading local source {name:?}: not a plain in-directory filename");
+            }
+            continue;
+        }
+
+        let path = dir.join(name);
+        if !path.is_file() || seen.contains(&path) {
+            continue;
+        }
+        seen.push(path.clone());
+
+        match read_text_capped(&path) {
+            Ok(content) => {
+                // Skip anything that is not text: a NUL byte means a binary
+                // blob, and running text rules over decoded binary produces
+                // noise, not findings.
+                if content.contains('\0') {
+                    debug!("skipping binary local source {}", path.display());
+                    continue;
+                }
+                out.push(parser::ParsedInstallScript {
+                    hooks: parser::parse_install_hooks(&content),
+                    content,
+                    path,
+                });
+            }
+            Err(e) => debug!("could not read local source {}: {e}", path.display()),
+        }
+    }
+    out
 }
 
 /// Discover ALPM hook files (`*.hook`) beside the PKGBUILD.

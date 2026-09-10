@@ -296,6 +296,15 @@ async fn main() -> Result<()> {
     // error for every scanning path, but it must not stop a user from
     // installing their shell completions — that would turn a typo in
     // config.toml into a broken shell setup.
+    // `version` reports on configuration health, so it must run BEFORE config
+    // resolution -- which is a hard error on an invalid file. Otherwise the one
+    // command whose job is to tell you your config is broken is also unable to
+    // start when your config is broken.
+    if matches!(cli.command, Commands::Version) {
+        let code = commands::version::run(cli.config.as_deref());
+        std::process::exit(code);
+    }
+
     if let Commands::Completions { shell } = cli.command {
         let mut cmd = <Cli as clap::CommandFactory>::command();
         let name = cmd.get_name().to_string();
@@ -419,10 +428,8 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::Ioc { check } => commands::ioc::run(check.as_deref()),
-        Commands::Version => {
-            commands::version::run();
-            Ok(())
-        }
+        // Handled before config resolution above; unreachable here.
+        Commands::Version => unreachable!("version handled before config load"),
         // Handled before config resolution above; unreachable here.
         Commands::Completions { .. } => unreachable!("completions handled before config load"),
     }
