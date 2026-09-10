@@ -48,7 +48,9 @@ def --wrapped pakku-unsafe  [...rest] { ^pakku ...$rest }
 def aur-scan-system [...rest] { ^aur-scan system ...$rest }
 
 if (($env.AUR_SCAN_VERBOSE? | default "0") == "1") {
-    print "AUR Security Scanner: Nushell integration loaded."
-    print "  - paru, yay, pikaur, trizen, pakku route installs through aur-scan-wrap"
-    print "  - use '<helper>-unsafe' or set $env.AUR_SCAN_ENABLED = \"0\" to bypass"
+    # `print -e` writes to stderr. Never stdout: this file is sourced from
+    # config.nu, and stdout during shell init breaks scp/rsync/`ssh host cmd`.
+    print -e "AUR Security Scanner: Nushell integration loaded."
+    print -e "  - paru, yay, pikaur, trizen, pakku route installs through aur-scan-wrap"
+    print -e "  - use '<helper>-unsafe' or set $env.AUR_SCAN_ENABLED = \"0\" to bypass"
 }

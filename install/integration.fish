@@ -226,10 +226,12 @@ function aur-scan-system
 end
 
 if test "$AUR_SCAN_VERBOSE" = "1"
-    echo "AUR Security Scanner: Shell integration loaded."
-    echo "  - paru, yay, pikaur, trizen, pakku auto-scan before installing AUR packages"
-    echo "  - AUR_SCAN_MODE=install : race-free (scan the exact bytes, then build)"
-    echo "  - AUR_SCAN_MODE=gate (default) : scan, then hand off to the helper"
-    echo "  - Use 'paru-unsafe' or 'yay-unsafe' to bypass scanning"
-    echo "  - Set AUR_SCAN_ENABLED=0 to disable globally"
+    # stderr, never stdout -- see the note in integration.bash: stdout during
+    # shell init breaks scp/rsync/`ssh host cmd`.
+    echo "AUR Security Scanner: Shell integration loaded." >&2
+    echo "  - paru, yay, pikaur, trizen, pakku auto-scan before installing AUR packages" >&2
+    echo "  - AUR_SCAN_MODE=install : race-free (scan the exact bytes, then build)" >&2
+    echo "  - AUR_SCAN_MODE=gate (default) : scan, then hand off to the helper" >&2
+    echo "  - Use 'paru-unsafe' or 'yay-unsafe' to bypass scanning" >&2
+    echo "  - Set AUR_SCAN_ENABLED=0 to disable globally" >&2
 end

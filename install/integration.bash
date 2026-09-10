@@ -185,10 +185,14 @@ aur-scan-system() {
 }
 
 if [[ "$AUR_SCAN_VERBOSE" == "1" ]]; then
-    echo "AUR Security Scanner: Shell integration loaded."
-    echo "  - paru, yay, pikaur, trizen, pakku auto-scan before installing AUR packages"
-    echo "  - AUR_SCAN_MODE=install : race-free (scan the exact bytes, then build)"
-    echo "  - AUR_SCAN_MODE=gate (default) : scan, then hand off to the helper"
-    echo "  - Use 'paru-unsafe' or 'yay-unsafe' to bypass scanning"
-    echo "  - Set AUR_SCAN_ENABLED=0 to disable globally"
+    # stderr, never stdout. This file is sourced from a shell rc, and anything
+    # written to stdout during shell init corrupts every non-interactive use of
+    # that shell -- `ssh host cmd`, scp, and rsync all read the remote shell's
+    # stdout as protocol data and fail with unhelpful errors.
+    echo "AUR Security Scanner: Shell integration loaded." >&2
+    echo "  - paru, yay, pikaur, trizen, pakku auto-scan before installing AUR packages" >&2
+    echo "  - AUR_SCAN_MODE=install : race-free (scan the exact bytes, then build)" >&2
+    echo "  - AUR_SCAN_MODE=gate (default) : scan, then hand off to the helper" >&2
+    echo "  - Use 'paru-unsafe' or 'yay-unsafe' to bypass scanning" >&2
+    echo "  - Set AUR_SCAN_ENABLED=0 to disable globally" >&2
 fi

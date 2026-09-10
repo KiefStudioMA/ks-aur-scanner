@@ -76,6 +76,7 @@ impl Scanner {
             Arc::new(analyzer::PrivilegeAnalyzer::new()),
             Arc::new(analyzer::MetadataAnalyzer::new()),
             Arc::new(analyzer::SquatAnalyzer::new()),
+            Arc::new(analyzer::OwnershipAnalyzer::new()),
         ];
 
         // Opt-in, networked threat-intel analyzer. Added ONLY when the operator
