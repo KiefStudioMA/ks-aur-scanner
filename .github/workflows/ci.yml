@@ -57,6 +57,22 @@ jobs:
     name: beta (allowed to fail)
     runs-on: ubuntu-latest
     continue-on-error: true
+    # Deliberately NOT `-D warnings`, unlike every other job.
+    #
+    # This job exists to catch REAL breakage on the next toolchain: compile
+    # errors, behaviour changes, test failures. New and tightened lints land in
+    # beta constantly, and they frequently fire on macro-generated code we do
+    # not own -- `clippy::double_must_use` fires inside `async_trait`'s own
+    # expansion, which we cannot fix and should not paper over with an `allow`
+    # on three of our traits.
+    #
+    # Inheriting the workflow-level `-D warnings` turned all of that into a red
+    # X on every run. A job that is permanently red teaches everyone to ignore
+    # it, so the one time beta catches something real, nobody looks. Warnings
+    # still print in the log and are still worth reading; only genuine failures
+    # colour the job.
+    env:
+      RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@beta
