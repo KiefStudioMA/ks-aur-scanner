@@ -31,7 +31,13 @@ pkgver() {
         /^\[workspace\.package\]/ { in_section = 1; next }
         /^\[/                     { in_section = 0 }
         in_section && /^version[[:space:]]*=/ { print $2; exit }
-    ' "$startdir/Cargo.toml"
+    ' "$startdir/Cargo.toml" |
+    # makepkg forbids hyphens in pkgver, so a semver pre-release cannot be used
+    # verbatim: '2.2.0-rc.1' is rejected outright and the build dies before it
+    # starts. Fold it to the same form the aur-scanner-rc package uses --
+    # '2.2.0-rc.1' -> '2.2.0rc1' -- which keeps version ordering sane and leaves
+    # a plain release like '2.1.0' untouched.
+    sed -e 's/-//' -e 's/\([a-z]\)\./\1/'
 }
 
 build() {
