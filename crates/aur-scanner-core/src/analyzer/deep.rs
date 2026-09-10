@@ -210,13 +210,25 @@ impl SecurityAnalyzer for DeepAnalyzer {
         // Analyze PKGBUILD and install script together: a decode in one and an
         // exec in the other is still a single payload.
         let mut combined = context.pkgbuild.raw_content.clone();
+        // One anchor for the combined text, because the analysis is deliberately
+        // cross-file: a decode in the PKGBUILD and the exec in the .install is
+        // one payload, and pinning it to either file alone would misreport it.
+        //
+        // Assigned ONCE. Reassigning inside the loop made every finding point at
+        // the LAST side script, so with several scriptlets the reported file was
+        // whichever one happened to be discovered last -- not where the reader
+        // should start.
         let mut anchor = context.file_path.clone();
+        let pkgbuild_is_empty = context.pkgbuild.raw_content.trim().is_empty();
+        let mut anchored_to_script = false;
         for script in context.all_scripts() {
             combined.push('\n');
             combined.push_str(&script.content);
-            // Prefer a side script as the anchor if the PKGBUILD body is empty.
-            if context.pkgbuild.raw_content.trim().is_empty() {
+            // Only when the PKGBUILD body is empty is a side script the better
+            // starting point, and then it is the FIRST one.
+            if pkgbuild_is_empty && !anchored_to_script {
                 anchor = script.path.clone();
+                anchored_to_script = true;
             }
         }
         Ok(self.analyze_text(&combined, &anchor))

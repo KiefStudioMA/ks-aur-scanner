@@ -312,17 +312,49 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // The read-only reference commands take no configuration at all, so they
+    // run BEFORE config resolution for the same reason `version` does: a
+    // malformed config.toml is deliberately a hard error on every scanning
+    // path, and it must not also disable the commands you would reach for to
+    // work out what is wrong with it.
+    match &cli.command {
+        Commands::Rules { severity, details } => {
+            return commands::rules::run(severity.clone().map(Into::into), *details);
+        }
+        Commands::Explain { code } => return commands::explain::run(code),
+        Commands::Ioc { check } => return commands::ioc::run(check.as_deref()),
+        _ => {}
+    }
+
     // Resolve config: explicit -c/--config wins, else the first existing
     // default path ($XDG_CONFIG_HOME/aur-scanner/config.toml, then
     // /etc/aur-scanner/config.toml), else built-in defaults. A present-but-
     // unreadable or malformed file is a hard error — never silently ignored
     // (issue #25: threat-intel settings in the default path were previously
     // never read unless -c was passed).
-    let (file_config, loaded_config_path) = ScanConfig::resolve(cli.config.as_deref())
-        .with_context(|| match cli.config.as_ref() {
-            Some(p) => format!("failed to load config file {}", p.display()),
-            None => "failed to load aur-scanner config".into(),
-        })?;
+    // `codes` only reads `rules_path`, to list the codes the engine would
+    // actually load. It gates nothing, so a broken config degrades it to the
+    // built-in list with a loud warning instead of killing it -- listing rule
+    // codes is another thing you do while debugging that config. Every scanning
+    // path below still hard-fails.
+    let tolerate_bad_config = matches!(cli.command, Commands::Codes { .. });
+    let resolved = ScanConfig::resolve(cli.config.as_deref());
+    let (file_config, loaded_config_path) = match resolved {
+        Ok(pair) => pair,
+        Err(e) if tolerate_bad_config => {
+            eprintln!(
+                "warning: config could not be loaded ({e}); listing built-in codes only. \
+                 A custom rules_path is NOT reflected below."
+            );
+            (ScanConfig::default(), None)
+        }
+        Err(e) => {
+            return Err(anyhow::Error::new(e)).with_context(|| match cli.config.as_ref() {
+                Some(p) => format!("failed to load config file {}", p.display()),
+                None => "failed to load aur-scanner config".to_string(),
+            });
+        }
+    };
     if let Some(path) = &loaded_config_path {
         tracing::debug!("loaded config from {}", path.display());
     }
@@ -403,10 +435,9 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::Rules { severity, details } => {
-            commands::rules::run(severity.map(Into::into), details)
-        }
-        Commands::Explain { code } => commands::explain::run(&code),
+        // Handled before config resolution above; unreachable here.
+        Commands::Rules { .. } => unreachable!("rules handled before config load"),
+        Commands::Explain { .. } => unreachable!("explain handled before config load"),
         Commands::Codes { category, format } => {
             // Honor a config-supplied custom rules dir so `codes` lists rules the
             // scan engine would actually load.
@@ -428,8 +459,8 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::Ioc { check } => commands::ioc::run(check.as_deref()),
         // Handled before config resolution above; unreachable here.
+        Commands::Ioc { .. } => unreachable!("ioc handled before config load"),
         Commands::Version => unreachable!("version handled before config load"),
         // Handled before config resolution above; unreachable here.
         Commands::Completions { .. } => unreachable!("completions handled before config load"),

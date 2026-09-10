@@ -228,6 +228,14 @@ impl Scanner {
         // Prebuilt executables committed into the package directory. Read as
         // bytes, parsed as structure, never executed.
         let local_binaries = discover_local_binaries(dir);
+        // Record EVERY file that was actually read, not just the PKGBUILD and
+        // the .install. A SARIF consumer reads `scanned_files` as the manifest
+        // of what was examined; omitting the .hook files, the side scripts
+        // pulled in from source=(), and the committed binaries meant a finding
+        // could point at a file the same report said was never scanned.
+        let scanned_side: Vec<PathBuf> = side_scripts.iter().map(|s| s.path.clone()).collect();
+        let scanned_binaries: Vec<PathBuf> =
+            local_binaries.iter().map(|b| b.path.clone()).collect();
         let scanned_install = install_script.as_ref().map(|s| s.path.clone());
 
         // Create analysis context
@@ -276,6 +284,9 @@ impl Scanner {
         if let Some(install_path) = scanned_install {
             scanned_files.push(install_path);
         }
+        scanned_files.extend(scanned_side);
+        scanned_files.extend(scanned_binaries);
+        scanned_files.dedup();
 
         Ok(ScanResult {
             package_name: pkgbuild.pkgname.first().cloned().unwrap_or_default(),

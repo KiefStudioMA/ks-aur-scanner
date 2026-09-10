@@ -247,10 +247,24 @@ fn completions_do_not_require_a_readable_config() {
 
     // Sanity: that same config really is rejected on a scanning path, so this
     // test is proving an exemption rather than that the config is fine.
-    let (_, _, scan_code) = run(&["-c", bad.to_str().unwrap(), "codes"]);
+    //
+    // The control is `scan`, not `codes`: `codes` is itself an exempt
+    // reference command now (see
+    // `a_broken_config_does_not_disable_the_reference_commands`), so using it
+    // here would assert the exemption against another exemption and pass for
+    // the wrong reason. Only a real scanning path proves the hard error.
+    let pkg = dir.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(
+        pkg.join("PKGBUILD"),
+        "pkgname=x\npkgver=1.0\npkgrel=1\narch=('x86_64')\n",
+    )
+    .unwrap();
+    let (_, _, scan_code) = run(&["-c", bad.to_str().unwrap(), "scan", pkg.to_str().unwrap()]);
     assert_ne!(scan_code, 0, "a malformed config must still fail elsewhere");
 
     std::fs::remove_file(&bad).ok();
+    std::fs::remove_dir_all(&pkg).ok();
 }
 
 #[test]
@@ -524,6 +538,68 @@ fn version_diagnoses_a_broken_config_instead_of_dying_on_it() {
 
     std::fs::remove_file(&bad).ok();
     std::fs::remove_file(&good).ok();
+}
+
+/// A broken config must not disable the commands you use to debug a broken
+/// config.
+///
+/// External review, 2.2.0-rc.1: config resolution moved ahead of the command
+/// match, so a malformed file hard-failed `explain`, `codes`, `rules` and `ioc`
+/// too. Those read nothing but the built-in rule table — being unable to run
+/// them is pure collateral damage from the fail-closed posture the scanning
+/// paths need.
+#[test]
+fn a_broken_config_does_not_disable_the_reference_commands() {
+    let dir = std::env::temp_dir().join("aur-scan-broken-cfg-reference-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("broken.toml");
+    // Not even valid TOML — the worst case, and what a hostile or truncated
+    // write leaves behind.
+    std::fs::write(&bad, "min_severity = [unterminated\n").unwrap();
+    let cfg = bad.to_str().unwrap();
+
+    for args in [
+        vec!["-c", cfg, "explain", "SHELL-002"],
+        vec!["-c", cfg, "rules"],
+        vec!["-c", cfg, "ioc"],
+        vec!["-c", cfg, "codes"],
+    ] {
+        let (stdout, stderr, code) = run(&args);
+        assert_eq!(
+            code, 0,
+            "{args:?} must still run with a broken config: {stdout}{stderr}"
+        );
+        assert!(
+            !stdout.trim().is_empty(),
+            "{args:?} must still produce its output: {stderr}"
+        );
+    }
+
+    // `codes` degrades rather than dying, so it must SAY that a custom
+    // rules_path is not reflected — silently listing the wrong set would be
+    // worse than refusing.
+    let (_, stderr, _) = run(&["-c", cfg, "codes"]);
+    assert!(
+        stderr.contains("rules_path"),
+        "codes must warn that a custom rules_path was not honoured: {stderr}"
+    );
+
+    // The scanning paths must NOT have been softened by any of this.
+    let pkg = dir.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(
+        pkg.join("PKGBUILD"),
+        "pkgname=x\npkgver=1.0\npkgrel=1\narch=('x86_64')\n",
+    )
+    .unwrap();
+    let (_, _, code) = run(&["-c", cfg, "scan", pkg.to_str().unwrap()]);
+    assert_ne!(
+        code, 0,
+        "a malformed config must still be a hard error for scan"
+    );
+
+    std::fs::remove_file(&bad).ok();
+    std::fs::remove_dir_all(&pkg).ok();
 }
 
 /// Package-controlled text must never reach the terminal as live escape codes.

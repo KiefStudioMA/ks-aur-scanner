@@ -6,6 +6,71 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+Fixes from an external review of the release candidate. All eight items were
+reproduced against the branch before being changed, and the two regex findings
+were settled with fixture tests rather than by reading.
+
+### Security
+
+- **The pacman hook no longer reads a user-writable config as root.** It
+  resolves its configuration before it can drop privileges — `/etc` may be
+  root-readable only — and it had moved off its hardcoded `/etc` path onto the
+  CLI's search order, which puts `$XDG_CONFIG_HOME`/`~/.config` *first*. A root
+  process was therefore taking its security configuration from a file any
+  unprivileged user can write, about fifteen lines before the drop. The
+  cheapest exploit is not escalation but denial of service: because a malformed
+  security config is deliberately a hard error, a hostile `build()` could drop
+  broken TOML in `~/.config/aur-scanner/` and wedge every subsequent pacman
+  transaction — something that previously required write access to `/etc`.
+  Config lookups are now privilege-aware (`ScanConfig::resolve_for_privilege`):
+  as root, `/etc` and nothing else.
+
+### Fixed
+
+- **`ATOMIC-004` missed the natural form of a sudo shim.** Both patterns
+  required either a literal `~`/`/home/<user>` prefix or the token `sudo`
+  *before* the destination directory. Real commands put the file name last, so
+  `cp payload /usr/local/bin/sudo` and
+  `install -Dm755 stealer "$HOME/.local/bin/sudo"` matched neither — on a
+  Critical rule the hook fails closed on. The rule now anchors on the PATH
+  directory instead of on how the home directory was spelled.
+- **`PERSIST-003` was narrowed past its goal.** Suppressing `rm` (issue #21)
+  left it matching an enumerated verb list, so `echo '...' | crontab -` — the
+  standard non-interactive install — plus `crontab -u root -`, a redirect from
+  anything other than `echo`/`printf`/`cat`, `ln -s`, and `sed -i` insertion
+  all passed clean. Now matched, with every pattern bounded to a single command
+  so cleaning up a stale cron entry still stays silent.
+- **A pre-existing `PERSIST-003` false positive**, found while measuring the
+  above against 503 live AUR PKGBUILDs: `crontab` followed by `\s+` matched
+  across a newline and into prose, firing on `python-python-crontab` twice over
+  (`pkgname=...-crontab` plus the next line, and `pkgdesc="Crontab module
+  for python"`). Arguments now share a line with their command, and a
+  bare-word argument must end it. The rule fires on 1 of 503 — `dcron-git`,
+  which does install cron files.
+- **An empty `XDG_CONFIG_HOME` no longer disables the user config path.**
+  Written as an `else if` against the same `if let`, `XDG_CONFIG_HOME=` counted
+  as set and dropped `~/.config` entirely — the issue #25 symptom that search
+  order exists to prevent.
+- **A malformed config no longer disables the commands that diagnose it.**
+  Config resolution had moved ahead of the command match, so a bad file
+  hard-failed `explain`, `rules`, `ioc` and `codes` as well. Those read nothing
+  but the built-in rule table; they now run first. `codes` reads `rules_path`,
+  so it degrades to the built-in list with a warning that says so. Every
+  scanning path still hard-fails.
+- **`scanned_files` now lists every file that was read** — the `.hook`
+  scriptlets, the side scripts pulled in from `source=()`, and the committed
+  binaries. A SARIF consumer reads it as the manifest of what was examined, and
+  a finding could point at a file the same report said was never scanned.
+- **`DeepAnalyzer` findings anchor to the first file, not the last.** The
+  anchor was reassigned every loop iteration, so with several scriptlets every
+  finding pointed at whichever was discovered last.
+
+### Changed
+
+- The repository accepts **merge commits only**; squash and rebase are
+  disabled. Release tags are signed against a PR head, and a squash or rebase
+  merge would orphan the tag it was verified from.
+
 ## [2.2.0-rc.1] - 2026-09-10
 
 Change detection, name impersonation, ownership signals, and static binary
@@ -185,7 +250,14 @@ Everything under 2.1.0-rc.1 and 2.1.0-rc.2 below is part of this release.
 - `Cargo.lock` carries `anyhow` 1.0.104, which is past **RUSTSEC-2026-0190**
   (unsoundness in `Error::downcast_mut()`, fixed in 1.0.103). `main` still held
   1.0.100 until this release merged, which is why the weekly cargo-deny
-  advisories job had been failing since 2026-08-03.
+  advisories job had been failing.
+
+  The window was longer than first recorded here. The last green *scheduled*
+  run on `main` was **2026-06-29**; it then failed every week from 2026-07-06
+  through 2026-09-07 — ten consecutive weekly failures, about ten weeks. The
+  earlier "failing since 2026-08-03" note read the second visible streak in a
+  truncated run list as the start; the green runs dated 2026-07-28 in between
+  were all `push` events on release branches and tags, never `main`.
 
 ### Changed
 
