@@ -464,6 +464,13 @@ pub struct AnalysisContext {
     /// (notably ALPM `*.hook` files used in later Atomic Arch waves).
     /// Analyzed with the same install-script rule surface; never executed.
     pub side_scripts: Vec<crate::parser::ParsedInstallScript>,
+    /// Prebuilt executables found in the package directory.
+    ///
+    /// Only a bounded PREFIX of each file is held: the ELF header, section
+    /// table and string tables live at the front, and reading a whole
+    /// multi-hundred-megabyte artifact into memory to look at its header would
+    /// be a resource-exhaustion vector from a hostile repository.
+    pub local_binaries: Vec<BinaryArtifact>,
     /// Scanner configuration
     pub config: ScanConfig,
     /// Path to the PKGBUILD file
@@ -479,6 +486,19 @@ pub struct AnalysisContext {
     /// absent rather than guessing: a missing maintainer field means "we did
     /// not look", not "orphaned".
     pub registry: Option<RegistryContext>,
+}
+
+/// A prebuilt executable shipped inside a package directory.
+#[derive(Debug, Clone)]
+pub struct BinaryArtifact {
+    /// Where it is on disk.
+    pub path: PathBuf,
+    /// Detected container format ("ELF", "PE/COFF", ...).
+    pub format: &'static str,
+    /// Full size on disk, even though only `head` was read.
+    pub size: u64,
+    /// A bounded prefix of the file, enough for header and section parsing.
+    pub head: Vec<u8>,
 }
 
 /// What the package registry says about a package, independent of its files.

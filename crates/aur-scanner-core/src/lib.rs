@@ -11,6 +11,7 @@ pub mod aur;
 pub mod cache;
 pub mod catalog;
 pub mod depgraph;
+pub mod elf;
 pub mod error;
 pub mod history;
 pub mod neturl;
@@ -77,6 +78,7 @@ impl Scanner {
             Arc::new(analyzer::MetadataAnalyzer::new()),
             Arc::new(analyzer::SquatAnalyzer::new()),
             Arc::new(analyzer::OwnershipAnalyzer::new()),
+            Arc::new(analyzer::BinaryAnalyzer::new()),
         ];
 
         // Opt-in, networked threat-intel analyzer. Added ONLY when the operator
@@ -223,6 +225,9 @@ impl Scanner {
         // under review, was completely invisible. They go through the same rule
         // surface as an install scriptlet; never executed.
         side_scripts.extend(discover_local_sources(dir, &pkgbuild));
+        // Prebuilt executables committed into the package directory. Read as
+        // bytes, parsed as structure, never executed.
+        let local_binaries = discover_local_binaries(dir);
         let scanned_install = install_script.as_ref().map(|s| s.path.clone());
 
         // Create analysis context
@@ -230,6 +235,7 @@ impl Scanner {
             pkgbuild: pkgbuild.clone(),
             install_script,
             side_scripts,
+            local_binaries,
             config: self.config.clone(),
             file_path: path.to_path_buf(),
             registry,
@@ -537,6 +543,69 @@ fn discover_local_sources(
             }
             Err(e) => debug!("could not read local source {}: {e}", path.display()),
         }
+    }
+    out
+}
+
+/// How much of a binary to read. The ELF header, section header table and
+/// string tables all live near the front, so a bounded prefix answers every
+/// question this scanner asks -- and a package may ship a legitimately huge
+/// artifact that must not be loaded whole.
+const MAX_BINARY_HEAD_BYTES: usize = 4 * 1024 * 1024;
+
+/// Find prebuilt executables committed into the package directory.
+///
+/// Deliberately scoped to the directory itself, not to downloaded sources: a
+/// `-bin` package fetching a prebuilt tarball is doing its job, whereas an
+/// executable committed into the AUR repository is an artifact in a place meant
+/// for a build recipe. That is the shape reported in issue #29.
+///
+/// Files are identified by magic bytes rather than by extension, so renaming a
+/// payload to `.png` does not hide it. Nothing is executed.
+fn discover_local_binaries(dir: &Path) -> Vec<BinaryArtifact> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let Ok(mut f) = std::fs::File::open(&path) else {
+            continue;
+        };
+        let mut head = Vec::new();
+        // Bounded read: never the whole file.
+        if f.by_ref()
+            .take(MAX_BINARY_HEAD_BYTES as u64)
+            .read_to_end(&mut head)
+            .is_err()
+        {
+            continue;
+        }
+        let Some(format) = elf::executable_format(&head) else {
+            continue;
+        };
+        // A shebang script is text and is already covered by the script
+        // analyzers; only compiled artifacts belong here.
+        if format == "script (shebang)" {
+            continue;
+        }
+        debug!("found prebuilt {format} artifact: {}", path.display());
+        out.push(BinaryArtifact {
+            path,
+            format,
+            size: meta.len(),
+            head,
+        });
     }
     out
 }

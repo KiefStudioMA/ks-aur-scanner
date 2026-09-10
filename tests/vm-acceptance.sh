@@ -596,6 +596,67 @@ LEFT=$(find /tmp/acc-cache/aur-scan/history -name '*.tmp*' 2>/dev/null | wc -l)
 [[ ${LEFT:-0} -eq 0 ]] && pass "no temp files left in the history store" || fail "$LEFT temp file(s) left behind"
 unset XDG_CACHE_HOME
 
+sect "Binary / ELF analysis (issue #29) - static, nothing executed"
+# Uses a REAL system binary as the payload, generated at run time rather than
+# committed: a security scanner should not carry an executable in its own repo.
+rm -rf /tmp/bin29 && mkdir -p /tmp/bin29
+cp /usr/bin/curl /tmp/bin29/validator
+cat > /tmp/bin29/PKGBUILD <<'PKG'
+pkgname=openconnect-sso
+pkgver=0.8.1
+pkgrel=1
+arch=('x86_64')
+url="https://github.com/vlaci/openconnect-sso"
+source=("git+https://github.com/PrestonHager/openconnect-sso.git" "validator")
+sha256sums=('SKIP' 'SKIP')
+build() {
+  cd openconnect-sso
+  sudo ../validator --check
+  python setup.py build
+}
+PKG
+OUT=$(aur-scan scan /tmp/bin29 --format json 2>/dev/null)
+# All four red flags from the original report.
+grep -q '"BIN-002"'  <<<"$OUT" && pass "bundled binary executed during build (BIN-002)"     || fail "BIN-002 missing"
+grep -q '"SRC-010"'  <<<"$OUT" && pass "source is a different owner's fork (SRC-010)"       || fail "SRC-010 missing"
+grep -q '"PRIV-001"' <<<"$OUT" && pass "sudo in build (PRIV-001)"                           || fail "PRIV-001 missing"
+grep -q '"CHK-005"'  <<<"$OUT" && pass "no real checksums (CHK-005)"                        || fail "CHK-005 missing"
+# The capability evidence the original report described, read from SYMBOLS.
+python3 -c '
+import json,sys
+f=[x for x in json.load(sys.stdin)["findings"] if x["id"]=="BIN-002"][0]
+assert f["severity"]=="critical", f["severity"]
+assert f["metadata"]["network_symbols"], "should report network capability"
+' <<<"$OUT" && pass "BIN-002 is Critical and reports network capability from symbols"              || fail "BIN-002 severity/metadata wrong"
+
+# An eBPF object -- the Atomic Arch delivery shape.
+rm -rf /tmp/binbpf && mkdir -p /tmp/binbpf
+printf '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\xf7\x00' > /tmp/binbpf/scales.bpf.o
+head -c 48 /dev/zero >> /tmp/binbpf/scales.bpf.o
+cat > /tmp/binbpf/PKGBUILD <<'PKG'
+pkgname=bpf-pkg
+pkgver=1.0
+pkgrel=1
+arch=('x86_64')
+PKG
+grep_ok "prebuilt eBPF object is flagged (BIN-003)" "BIN-003" aur-scan scan /tmp/binbpf --format json
+
+# Static-only invariant: the scanner must never invoke ldd/objdump on package
+# content. ldd is a shell script that eval-executes its target through the
+# loader, so calling it on a hostile -bin payload runs that payload.
+if grep -rnE '"(ldd|objdump|readelf|nm)"' "$SRC/crates" --include='*.rs' | grep -v '^.*tests\?/' | grep -q .; then
+    fail "the scanner shells out to a binutils/ldd helper on package content"
+else
+    pass "no ldd/objdump/readelf/nm invocation anywhere in the crates"
+fi
+
+# False positives: ordinary packages must produce no BIN-* at all.
+for d in "$SRC"/tests/fixtures/clean/*/; do
+    n=$(aur-scan scan "$d" --format json 2>/dev/null | python3 -c '
+import json,sys; print(len([f for f in json.load(sys.stdin)["findings"] if f["id"].startswith("BIN-")]))' 2>/dev/null)
+    [[ ${n:-1} -eq 0 ]] && pass "clean/$(basename "$d") -> no BIN findings" || fail "clean/$(basename "$d") -> $n BIN findings"
+done
+
 sect "Result"
 printf '  %d passed, %d failed\n' "$PASSN" "$FAIL"
 [[ $FAIL -eq 0 ]] && echo "  ALL CHECKS PASSED" || echo "  SOME CHECKS FAILED"

@@ -374,6 +374,7 @@ mod tests {
             pkgbuild: parsed,
             install_script: None,
             side_scripts: vec![],
+            local_binaries: vec![],
             config: ScanConfig::default(),
             file_path: "PKGBUILD".into(),
             registry: None,

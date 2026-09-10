@@ -1,5 +1,6 @@
 //! Security analyzers for PKGBUILD analysis
 
+mod binary;
 mod checksum;
 mod deep;
 mod ioc;
@@ -12,6 +13,7 @@ mod source;
 mod squat;
 mod threat_intel;
 
+pub use binary::BinaryAnalyzer;
 pub use checksum::ChecksumAnalyzer;
 pub use deep::DeepAnalyzer;
 pub use ioc::IocAnalyzer;
