@@ -412,3 +412,73 @@ fn both_installing_paths_record_scan_history() {
         );
     }
 }
+
+/// A finding's severity must match what the catalog declares for its ID.
+///
+/// One ID with two severities is not a cosmetic inconsistency: `aur-scan codes`,
+/// the README tables, every `--fail-on <sev>` gate, and the fail-closed hook and
+/// wrapper all decide from the catalog. `SQUAT-001` shipped with a Critical path
+/// and a High path, so a CI job gating on Critical would have passed an
+/// impersonating package that the docs promised would block it.
+#[test]
+fn emitted_severity_matches_the_catalog() {
+    // Codes whose severity is deliberately variable, each documented as such in
+    // its catalog entry. Anything not on this list must be fixed, not added.
+    const VARIABLE: &[&str] = &[
+        "DIFF-001", // tracks the severity of the worst NEW finding
+        "DIFF-002", // High for adoption of an orphan, Medium for a handover
+        "DIFF-004", // High when a script appears, Medium when one changes
+        // Escalates from Low when combined with provides/replaces of a trusted
+        // name -- stated in its own catalog description.
+        "META-004",
+    ];
+
+    let catalog = Catalog::load();
+    let mut mismatches: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+
+    for kind in ["malicious", "clean"] {
+        for dir in fixture_dirs(kind) {
+            let (stdout, _, _) = scan(&dir, "json");
+            for f in parse_findings(&stdout) {
+                let id = f["id"].as_str().unwrap_or_default();
+                if VARIABLE.contains(&id) {
+                    continue;
+                }
+                let Some(entry) = catalog.get(id) else {
+                    continue; // covered by every_emitted_finding_id_exists_in_the_catalog
+                };
+                // JSON serialises severity lowercase; Debug renders it
+                // capitalised. Compare case-insensitively.
+                let emitted = f["severity"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                let declared = format!("{:?}", entry.severity).to_ascii_lowercase();
+                checked += 1;
+                if emitted != declared {
+                    mismatches.push(format!(
+                        "{id} emitted {emitted} but the catalog declares {declared} \
+                         (fixture {})",
+                        dir.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
+            }
+        }
+    }
+
+    mismatches.sort();
+    mismatches.dedup();
+    assert!(
+        mismatches.is_empty(),
+        "severity drift between the analyzers and the catalog. Every gate and \
+         every doc table reads the catalog, so a mismatch means the tool blocks \
+         differently than it documents:\n  {}",
+        mismatches.join("\n  ")
+    );
+    assert!(
+        checked > 20,
+        "only {checked} findings were severity-checked; the fixtures may not be \
+         exercising the analyzers"
+    );
+}

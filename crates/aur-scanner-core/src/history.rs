@@ -845,7 +845,10 @@ mod tests {
             "pkgname=tool\npkgver=1.1\npkgrel=1\nsource=(\"https://github.com/alice/tool/archive/v1.1.tar.gz\"\n        \"https://cdn.evil.example/payload.bin\")\n",
         );
         let changes = compare(&before, &after);
-        assert_eq!(changes.origins_added, vec!["cdn.evil.example/payload.bin"]);
+        // The identity is the HOST here: `payload.bin` names a release artifact,
+        // not a project, and including it would make every version bump on a
+        // self-hosted tarball look like an upstream move.
+        assert_eq!(changes.origins_added, vec!["cdn.evil.example"]);
         let findings = findings_for_changes(&before, &after, &changes, &[], Path::new("PKGBUILD"));
         assert!(findings.iter().any(|f| f.id == "DIFF-003"));
     }
