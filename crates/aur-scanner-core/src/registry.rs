@@ -10,7 +10,7 @@
 //! network hiccup must never turn into a finding about a maintainer.
 
 use crate::aur::{official_package_names, AurPackageInfo, PackageInfoSource};
-use crate::squat::{strip_variant_suffixes, variant_claim_on};
+use crate::squat::variant_claim_on;
 use crate::types::{RegistryContext, VariantBase};
 use tracing::debug;
 
@@ -57,14 +57,67 @@ async fn resolve_variant_base(
     official_names: &[String],
     source: &dyn PackageInfoSource,
 ) -> Option<VariantBase> {
-    let stem = strip_variant_suffixes(name);
-    if stem == name {
+    // Try the LEAST-stripped base first, not the fully-stripped one.
+    //
+    // `strip_variant_suffixes` loops until nothing is left to remove, and it
+    // also eats component suffixes (`-ng`, `-cli`, `-tools`, `-server`...). So
+    // `aircrack-ng-git` reduced to `aircrack`, we looked up a package that does
+    // not exist, got None, and SQUAT-003 could never fire -- even though the
+    // real base `aircrack-ng` is right there. Measured across the live AUR that
+    // silenced 573 variants whose base genuinely exists.
+    //
+    // Peeling one suffix at a time and taking the first base that EXISTS finds
+    // `aircrack-ng` before falling through to `aircrack`.
+    let mut candidates: Vec<String> = Vec::new();
+    {
+        let mut cur = name.to_string();
+        loop {
+            let stripped = strip_one_variant_suffix(&cur);
+            match stripped {
+                Some(next) if next != cur => {
+                    candidates.push(next.clone());
+                    cur = next;
+                }
+                _ => break,
+            }
+        }
+    }
+    if candidates.is_empty() {
         return None;
     }
-    // Only a *build*-variant suffix carries a reputation claim; `gcc-libs` is a
-    // component of `gcc`, not a claim to be it.
-    variant_claim_on(name, stem)?;
+    // Consider each candidate base, nearest first.
+    for stem in &candidates {
+        // Only a *build*-variant suffix carries a reputation claim; `gcc-libs`
+        // is a component of `gcc`, not a claim to be it.
+        if variant_claim_on(name, stem).is_none() {
+            continue;
+        }
+        if let Some(base) = base_for(name, stem, official_names, source).await {
+            return Some(base);
+        }
+    }
+    None
+}
 
+/// Remove exactly ONE trailing variant suffix, or `None` if there is none.
+fn strip_one_variant_suffix(name: &str) -> Option<String> {
+    crate::squat::variant_suffixes()
+        .filter_map(|suffix| {
+            name.strip_suffix(suffix)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        })
+        // Longest suffix first so `-git-bin` peels predictably.
+        .max_by_key(|s| name.len() - s.len())
+}
+
+/// Resolve one candidate base name to a `VariantBase`, if it exists.
+async fn base_for(
+    name: &str,
+    stem: &str,
+    official_names: &[String],
+    source: &dyn PackageInfoSource,
+) -> Option<VariantBase> {
     // A base package in the official repositories is deliberately NOT treated
     // as a variant base.
     //
@@ -158,19 +211,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finds_the_nearest_existing_base_not_the_fully_stripped_one() {
+        // `strip_variant_suffixes` eats component suffixes too, so
+        // `aircrack-ng-git` reduced all the way to `aircrack`. Looking up only
+        // that missed the real base and silenced SQUAT-003 for 573 live AUR
+        // packages whose base genuinely exists.
+        let src = source(&[info("aircrack-ng", Some("upstream"))]);
+        let base = resolve_variant_base("aircrack-ng-git", &[], &src)
+            .await
+            .expect("the real base aircrack-ng must be found");
+        assert_eq!(base.name, "aircrack-ng");
+        assert_eq!(base.maintainer.as_deref(), Some("upstream"));
+    }
+
+    #[tokio::test]
+    async fn falls_through_to_a_shorter_base_when_the_nearer_one_does_not_exist() {
+        let src = source(&[info("tool", Some("alice"))]);
+        let base = resolve_variant_base("tool-cli-git", &[], &src)
+            .await
+            .expect("should fall through to `tool`");
+        assert_eq!(base.name, "tool");
+    }
+
+    #[tokio::test]
     async fn a_variant_of_an_official_package_is_not_a_reputation_claim() {
         // 4,997 real AUR packages are build variants of an official package.
         // An AUR account is never the same hands as the Arch maintainers, so
         // comparing them would flag every single one of these -- and packaging
         // a git build of a repo package is precisely what the AUR is for.
-        let src = source(&[]);
+        // The base MUST exist in the fake registry, or this test passes for the
+        // wrong reason: with an empty source the lookup returns None whether or
+        // not the official guard is present, and deleting the guard entirely
+        // left the whole suite green.
+        let src = source(&[
+            info("firefox", Some("someone")),
+            info("0ad", Some("someone")),
+        ]);
         let official = vec!["firefox".to_string(), "0ad".to_string()];
-        assert!(resolve_variant_base("firefox-bin", &official, &src)
-            .await
-            .is_none());
+        assert!(
+            resolve_variant_base("firefox-bin", &official, &src)
+                .await
+                .is_none(),
+            "an AUR variant of an OFFICIAL package is not a reputation claim"
+        );
         assert!(resolve_variant_base("0ad-git", &official, &src)
             .await
             .is_none());
+
+        // Same names, NOT official -> the guard is what makes the difference.
+        assert!(
+            resolve_variant_base("firefox-bin", &[], &src)
+                .await
+                .is_some(),
+            "without the official list the same lookup must resolve, proving \
+             the guard is doing the work"
+        );
     }
 
     #[tokio::test]

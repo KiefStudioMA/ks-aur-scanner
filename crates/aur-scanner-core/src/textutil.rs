@@ -602,3 +602,84 @@ mod tests {
         assert_eq!(ll.len(), 2);
     }
 }
+
+/// Make untrusted text safe to print to a terminal.
+///
+/// Findings quote package-controlled data -- a source URL, a pkgname, a
+/// maintainer handle, a matched snippet -- straight into their title and
+/// description. Printed raw, an escape sequence in any of those fields is
+/// executed by the terminal, and the tool whose entire job is showing a human
+/// what is inside an untrusted file becomes the thing that lets the file
+/// control the display. Cursor movement can overwrite the severity that was
+/// just printed; SGR can recolour a Critical to look like the "ok" line above
+/// it.
+///
+/// C0 controls (except tab), DEL, and the C1 range are replaced with a visible
+/// `\xNN` escape, so nothing is silently dropped either -- a reviewer sees that
+/// something odd was there. Newlines are removed rather than escaped in
+/// single-line contexts by the caller; here they are preserved so multi-line
+/// descriptions still wrap.
+///
+/// JSON and SARIF output do NOT need this: `serde_json` already escapes control
+/// characters, and those consumers are programs, not terminals.
+pub fn sanitize_for_terminal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\t' | '\n' => out.push(c),
+            // C0 controls and DEL.
+            c if (c as u32) < 0x20 || c as u32 == 0x7F => {
+                out.push_str(&format!("\\x{:02X}", c as u32));
+            }
+            // C1 controls, which some terminals honour as escape equivalents.
+            c if (0x80..=0x9F).contains(&(c as u32)) => {
+                out.push_str(&format!("\\x{:02X}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_for_terminal;
+
+    #[test]
+    fn strips_escape_sequences_from_untrusted_text() {
+        let hostile = "https://example.com/\u{1b}[31mFAKE-CLEAN\u{1b}[0m/x.tar.gz";
+        let safe = sanitize_for_terminal(hostile);
+        assert!(!safe.contains('\u{1b}'), "ESC must not survive: {safe:?}");
+        assert!(safe.contains("\\x1B"), "and must be visible: {safe:?}");
+        // The readable content is preserved so the finding still makes sense.
+        assert!(safe.contains("FAKE-CLEAN"));
+    }
+
+    #[test]
+    fn neutralises_cursor_movement_and_carriage_return() {
+        // \r alone can rewrite the current line, hiding a severity.
+        let safe = sanitize_for_terminal("CRITICAL\rok      ");
+        assert!(!safe.contains('\r'));
+        assert!(safe.contains("CRITICAL"));
+    }
+
+    #[test]
+    fn leaves_ordinary_text_alone() {
+        for s in [
+            "Curl pipe to shell",
+            "source: https://github.com/alice/tool/archive/v1.0.tar.gz",
+            "maintainer changed: alice -> bob",
+            "pkgdesc with accents: configuración, 日本語",
+            "a\ttabbed\tline",
+            "multi\nline\ndescription",
+        ] {
+            assert_eq!(sanitize_for_terminal(s), s, "must not alter: {s:?}");
+        }
+    }
+
+    #[test]
+    fn neutralises_c1_controls() {
+        let safe = sanitize_for_terminal("before\u{9b}31mafter");
+        assert!(!safe.contains('\u{9b}'));
+    }
+}

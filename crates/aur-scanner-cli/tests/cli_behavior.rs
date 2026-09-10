@@ -525,3 +525,56 @@ fn version_diagnoses_a_broken_config_instead_of_dying_on_it() {
     std::fs::remove_file(&bad).ok();
     std::fs::remove_file(&good).ok();
 }
+
+/// Package-controlled text must never reach the terminal as live escape codes.
+///
+/// Findings quote source URLs, pkgnames, and matched snippets verbatim. Printed
+/// raw, an injected escape sequence lets the scanned file drive the display of
+/// the tool that is scanning it — cursor movement can overwrite the severity
+/// that was just printed, and SGR can recolour a Critical to look benign.
+#[test]
+fn package_controlled_text_cannot_inject_terminal_escapes() {
+    let dir = std::env::temp_dir().join("aur-scan-ansi-injection-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    // ESC in a source URL, plus a bare CR which can rewrite the current line.
+    let pkgbuild = format!(
+        "pkgname=ansi-test\npkgver=1.0\npkgrel=1\narch=('x86_64')\n\
+         source=(\"https://example.com/{esc}[31mFAKE-CLEAN{esc}[0m/x.tar.gz\"\n        \
+         \"payload{cr}ok.tar.gz\")\nsha256sums=('SKIP' 'SKIP')\n",
+        esc = '\u{1b}',
+        cr = '\r'
+    );
+    std::fs::write(dir.join("PKGBUILD"), pkgbuild).unwrap();
+
+    let (stdout, stderr, _) = run(&["scan", dir.to_str().unwrap()]);
+    let combined = format!("{stdout}{stderr}");
+
+    // The tool's OWN colour codes are fine; an ESC that came from the package
+    // is not. Assert on the specific injected sequences.
+    assert!(
+        !combined.contains("\u{1b}[31mFAKE-CLEAN"),
+        "attacker SGR reached the terminal: {combined:?}"
+    );
+    assert!(
+        !combined.contains('\r'),
+        "attacker carriage return reached the terminal (can rewrite a printed severity)"
+    );
+    // Neutralised, not silently dropped — a reviewer should see something odd
+    // was there.
+    assert!(
+        combined.contains("\\x1B"),
+        "the escape should be shown as an escape, not removed: {combined:?}"
+    );
+    assert!(
+        combined.contains("FAKE-CLEAN"),
+        "the readable content must survive so the finding still makes sense"
+    );
+
+    // JSON is consumed by programs, and serde escapes control characters, so it
+    // legitimately carries the raw value — but it must still be valid JSON.
+    let (json, _, _) = run(&["scan", dir.to_str().unwrap(), "--format", "json"]);
+    serde_json::from_str::<serde_json::Value>(&json)
+        .expect("JSON output must stay parseable with hostile input");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

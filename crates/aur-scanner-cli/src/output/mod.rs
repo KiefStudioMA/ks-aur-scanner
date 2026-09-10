@@ -1,6 +1,7 @@
 //! Output formatting for scan results
 
 use anyhow::Result;
+use aur_scanner_core::textutil::sanitize_for_terminal;
 use aur_scanner_core::{Finding, OutputConfig, ScanResult, Severity};
 use colored::Colorize;
 
@@ -64,13 +65,22 @@ fn format_finding(finding: &Finding, display: &OutputConfig) -> String {
         Severity::Info => "[INFO]".dimmed().to_string(),
     };
 
+    // Findings quote package-controlled text (source URLs, pkgnames, matched
+    // snippets) into their title and description. Printed raw, an escape
+    // sequence in any of those lets the scanned file drive the terminal --
+    // cursor movement can overwrite the severity that was just printed. JSON
+    // and SARIF do not need this: serde escapes control characters, and those
+    // consumers are programs.
     output.push_str(&format!(
         "{} {} {}\n",
         severity_badge,
         finding.id.bold(),
-        finding.title
+        sanitize_for_terminal(&finding.title)
     ));
-    output.push_str(&format!("    {}\n", finding.description));
+    output.push_str(&format!(
+        "    {}\n",
+        sanitize_for_terminal(&finding.description)
+    ));
 
     if display.line {
         if let Some(line) = finding.location.line {
@@ -84,7 +94,12 @@ fn format_finding(finding: &Finding, display: &OutputConfig) -> String {
 
     if display.snippet {
         if let Some(ref snippet) = finding.location.snippet {
-            output.push_str(&format!("    Code: {}\n", snippet.dimmed()));
+            // The snippet is verbatim package text -- the single most likely
+            // place for an injected escape sequence.
+            output.push_str(&format!(
+                "    Code: {}\n",
+                sanitize_for_terminal(snippet).dimmed()
+            ));
         }
     }
 

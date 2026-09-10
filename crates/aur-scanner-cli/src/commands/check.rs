@@ -676,7 +676,7 @@ fn format_finding_compact(pkg: &str, f: &Finding, display: &OutputConfig) -> Str
         "·".dimmed(),
         pkg.dimmed(),
         f.severity,
-        f.title,
+        aur_scanner_core::textutil::sanitize_for_terminal(&f.title),
         loc
     )
 }

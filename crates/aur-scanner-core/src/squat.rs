@@ -502,11 +502,23 @@ pub fn compare_high_value(candidate: &str, target: &str) -> Option<SquatMatch> {
     }
 
     // Short names are dense: colliding by accident is the norm below 5 chars.
-    // Measure the *full* name, not the suffix-stripped stem -- `paru-bin` is a
-    // real, widely installed target even though its stem is only four
-    // characters, while `yay` and `gcc` are genuinely too short to reason about.
-    if fold_to_ascii_skeleton(target).chars().count() < 5
-        || fold_to_ascii_skeleton(candidate).chars().count() < 5
+    //
+    // Measure BOTH the full name and the stem that is actually compared. An
+    // earlier version measured only the full names, reasoning that `paru-bin` is
+    // a real target despite a four-character stem -- but the comparison runs on
+    // the STEMS, so any name whose suffix pushes it over five characters was
+    // compared as a three-letter word. `aes-git` (stem `aes`) against target
+    // `aws-cli` (stem `aws`) is a single QWERTY-adjacent swap, and a newly
+    // published `aes-bin` would have drawn a High impersonation accusation.
+    //
+    // Four is the floor for the stem so `paru`/`yay-bin` stay reachable, and
+    // three-letter stems -- where accidental collision is the norm -- do not.
+    const MIN_FULL: usize = 5;
+    const MIN_STEM: usize = 4;
+    if fold_to_ascii_skeleton(target).chars().count() < MIN_FULL
+        || fold_to_ascii_skeleton(candidate).chars().count() < MIN_FULL
+        || targ_skel.chars().count() < MIN_STEM
+        || cand_skel.chars().count() < MIN_STEM
     {
         return None;
     }
@@ -685,6 +697,24 @@ mod tests {
         // capability is intentionally absent, not merely tuned down.
         assert!(compare("pythn3-requests", "python3-requests").is_none());
         assert!(compare_high_value("pythn3-requests", "python3-requests").is_none());
+    }
+
+    #[test]
+    fn a_short_stem_is_not_compared_even_when_the_full_name_is_long() {
+        // The guard measured only the full names, so a suffix could smuggle a
+        // three-letter stem into the comparison. `aes-git` vs `aws-cli` folds to
+        // stems `aes`/`aws` -- one QWERTY-adjacent swap -- and both full names
+        // clear five characters.
+        assert!(
+            compare_high_value("aes-git", "aws-cli").is_none(),
+            "three-letter stems are too dense to compare"
+        );
+        assert!(compare_high_value("aes-bin", "aws-cli").is_none());
+        // Four-letter stems stay reachable, which is why the floor is 4 not 5.
+        assert!(
+            compare_high_value("psru-bin", "paru-bin").is_some(),
+            "paru must remain protected"
+        );
     }
 
     #[test]

@@ -280,8 +280,8 @@ async fn run() -> Result<ExitCode> {
                 println!(
                     "  {} {} - {}",
                     finding.id.red(),
-                    finding.title,
-                    finding.description
+                    aur_scanner_core::textutil::sanitize_for_terminal(&finding.title),
+                    aur_scanner_core::textutil::sanitize_for_terminal(&finding.description)
                 );
             }
         }

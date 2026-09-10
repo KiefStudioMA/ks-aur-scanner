@@ -69,7 +69,7 @@ aur-scan system
   - [Critical Severity](#critical-severity)
   - [High Severity](#high-severity)
   - [Medium Severity](#medium-severity)
-  - [Low/Informational](#lowinformational)
+  - [Low Severity](#low-severity)
 - [Change Detection](#change-detection)
 - [Name Impersonation](#name-impersonation)
 - [Output Formats](#output-formats)
@@ -393,7 +393,7 @@ aur-scan diff ./old ./new --format json
 ```
 Comparing 1.0-1 -> 1.1-1 (mytool)
 
-ADDED (5)
+ADDED (4)
   + CRITICAL  DLE-001  Curl pipe to shell
   + CRITICAL  PERSIST-002  Systemd timer creation (install script)
   + CRITICAL  EXEC-REMOTE  Fetches and runs code from https://cdn.evil.example/x.sh
@@ -634,7 +634,8 @@ NeedsTargets
 
 > The **130 built-in detection codes**, generated from the catalog
 > (`aur-scan codes --format markdown`) — every ID is unique and audit-enforced.
-> (`EXAMPLE-001` is the shipped community-rule sample, not a built-in.) Extend the
+> (`EXAMPLE-001` is the community-rule sample; `PERM-001`/`PERM-002` are real
+> shipped community rules in the same directory, not built-ins.) Extend the
 > catalog with your own TOML rules (see [Custom & Community Rules](#custom--community-rules)).
 
 ## CRITICAL severity
@@ -916,12 +917,13 @@ Empty by default. No namespaces are assumed on your behalf.
 
 > Name and ownership analysis need registry context — who maintains what, plus
 > the official package list. `check`, `install`, `aur-scan-wrap`, and
-> `system --rescan` all supply it. Three paths deliberately do not, and emit no
+> `system --rescan` all supply it. Four paths deliberately do not, and emit no
 > `SQUAT-*` or `OWN-*` findings at all rather than guessing:
 > `aur-scan scan ./dir` (no package identity to look up), `aur-scan diff`
-> (compares two directories, and stays stateless for CI), and the **pacman
-> hook** (offline by design — it must not make network calls inside a
-> transaction). On those paths these codes are *not evaluated*, which is not the
+> (compares two directories, and stays stateless for CI), the **pacman hook**
+> (offline by design — it must not make network calls inside a transaction),
+> and `aur-scan system` **without** `--rescan` (it reads a cached PKGBUILD and
+> has no live registry record for it).* On those paths these codes are *not evaluated*, which is not the
 > same as clean.
 
 ---
@@ -994,7 +996,7 @@ SARIF output is compatible with:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AUR_SCAN_ENABLED` | `1` | Enable/disable scanning in shell integration |
-| `AUR_SCAN_SEVERITY` | `high` | Minimum severity to display |
+| `AUR_SCAN_SEVERITY` | `high` | Minimum severity to display **and to block on** — the shell integrations pass it as both `--severity` and `--fail-on` |
 | `AUR_SCAN_INTERACTIVE` | `1` | Prompt before proceeding |
 | `AUR_SCAN_SCAN_UPGRADES` | `1` | On a system upgrade (`-Syu`/`-Syyu`/bare `yay`), scan **each** AUR package that has a pending update (resolved via the helper's `-Quaq`). A hijacked *update* is the primary AUR threat, so this is on by default; set `0` to skip it. |
 | `AUR_SCAN_SCAN_GETPKGBUILD` | `0` | Also scan the package(s) on `-G`/`--getpkgbuild` (which only downloads a PKGBUILD to review). Off by default; set `1` to opt in. |
