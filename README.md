@@ -1421,7 +1421,7 @@ This project was created to address a critical gap in the Arch Linux security ec
 Built by the community, not just us. Thank you:
 
 - [**@Disklo** (Rafael Lucio)](https://github.com/Disklo) — fixed a false-negative in `aur-scan check` and added the fish shell integration ([#4](https://github.com/KiefStudioMA/ks-aur-scanner/pull/4), 1.0.3)
-- [**@SuitablyMysterious**](https://github.com/SuitablyMysterious) — contributed the June 2026 "Atomic Arch" malware package list now in the IOC database ([#3](https://github.com/KiefStudioMA/ks-aur-scanner/pull/3)), and originated the idea of VirusTotal + abuse.ch/URLhaus threat-intelligence checks ([#9](https://github.com/KiefStudioMA/ks-aur-scanner/pull/9)). That feature ships reimplemented from scratch with fully isolated network egress, but the direction was theirs.
+- [**@SuitablyMysterious**](https://github.com/SuitablyMysterious) — contributed the June 2026 "Atomic Arch" malware package list now in the IOC database ([#3](https://github.com/KiefStudioMA/ks-aur-scanner/pull/3)), and originated the idea of VirusTotal + abuse.ch/URLhaus threat-intelligence checks and of inspecting the prebuilt binary a `-bin` package ships ([#9](https://github.com/KiefStudioMA/ks-aur-scanner/pull/9)). Both ship reimplemented from scratch — threat intel with fully isolated network egress, and the binary analyzer with a hand-written bounded ELF reader rather than a new dependency — but the direction was theirs, and the static-only framing in that PR was right.
 
 Some of the above were brought in by cherry-pick rather than the merge button — the work landed and the credit stands the same.
 
