@@ -6,6 +6,26 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-10
+
+Promotes `2.1.0-rc.2` unchanged. No detection, rule, or behaviour differences
+from the release candidate — the RC soaked for six weeks and the code is the
+code that was tested, so the tag is a promotion rather than a new build.
+
+Everything under 2.1.0-rc.1 and 2.1.0-rc.2 below is part of this release.
+
+### Security
+
+- `Cargo.lock` carries `anyhow` 1.0.104, which is past **RUSTSEC-2026-0190**
+  (unsoundness in `Error::downcast_mut()`, fixed in 1.0.103). `main` still held
+  1.0.100 until this release merged, which is why the weekly cargo-deny
+  advisories job had been failing since 2026-08-03.
+
+### Changed
+
+- `actions/checkout@v5` across CI and the advisories workflow (Node 24 Actions
+  runtime); `main` was still on `@v4` and warning about the Node 20 deprecation.
+
 ## [2.1.0-rc.2] - 2026-07-28
 
 Same candidate as 2.1.0-rc.1 plus packaging/CI hygiene. The `v2.1.0-rc.1` tag is
@@ -353,5 +373,8 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
+[2.1.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0
+[2.1.0-rc.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0-rc.2
+[2.1.0-rc.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0-rc.1
 [2.0.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.0.0
 [1.1.0-rc1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.1.0-rc1

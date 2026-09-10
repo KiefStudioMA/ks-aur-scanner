@@ -147,8 +147,9 @@ gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51
 ```
 
 > **Release-candidate channel — [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc):**
-> tracks the next release before it is promoted to stable (currently the
-> `v2.1.0-rc.2` pre-release when that tag is published). The RC **fails closed**
+> tracks the next release before it is promoted to stable. `v2.1.0-rc.2` has
+> been promoted to stable `v2.1.0`, so the RC channel is idle until the next
+> pre-release tag is cut. The RC **fails closed**
 > (the wrapper/hook deny on a scan error, timeout, or no-TTY prompt rather than
 > proceeding). Most users — and all production systems — should install the
 > stable `aur-scanner`.
