@@ -124,10 +124,17 @@ impl PatternAnalyzer {
             let body_lc = func_body.content.to_lowercase();
             for (pattern, message) in &network_patterns {
                 if body_lc.contains(pattern) && !body_lc.contains(&format!("# {}", pattern)) {
-                    // Check if it's actually a download command (not a variable)
-                    if body_lc.contains(&format!("{} ", pattern))
-                        || body_lc.contains(&format!("${}", pattern))
-                    {
+                    // Do not match command-name suffixes such as libcurl or prefetch.
+                    // A slash remains a boundary so absolute/relative paths still match.
+                    let has_command =
+                        body_lc
+                            .match_indices(&format!("{} ", pattern))
+                            .any(|(start, _)| {
+                                body_lc[..start].chars().next_back().is_none_or(|ch| {
+                                    !ch.is_alphanumeric() && !matches!(ch, '_' | '-' | '.')
+                                })
+                            });
+                    if has_command || body_lc.contains(&format!("${}", pattern)) {
                         findings.push(Finding {
                             id: "FUNC-001".to_string(),
                             severity: Severity::High,
@@ -215,6 +222,47 @@ build() {
             findings.iter().any(|f| f.id == "FUNC-001"),
             "uppercase CURL in build() must still raise FUNC-001: {findings:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn func001_command_suffix_is_not_network_access() {
+        let analyzer = PatternAnalyzer::new(Arc::new(RuleEngine::default()));
+        for target in [
+            "libcurl", "libwget", "prefetch", "my_curl", "my-wget", "my.fetch",
+        ] {
+            let context = create_test_context(&format!(
+                "pkgname=test\npkgver=1\npkgrel=1\nbuild() {{\n    cmake --build build --target {target} --parallel\n}}\n"
+            ));
+            let findings = analyzer.analyze(&context).await.unwrap();
+            assert!(
+                !findings.iter().any(|f| f.id == "FUNC-001"),
+                "building {target} is not network access: {findings:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn func001_download_commands_still_flag() {
+        let analyzer = PatternAnalyzer::new(Arc::new(RuleEngine::default()));
+        for command in [
+            "curl",
+            "wget",
+            "fetch",
+            "/usr/bin/curl",
+            "./wget",
+            "$curl",
+            "true;curl",
+            "cmake --build build --target libcurl --parallel; curl",
+        ] {
+            let context = create_test_context(&format!(
+                "pkgname=test\npkgver=1\npkgrel=1\nbuild() {{\n    {command} https://example.com/source.tar.gz\n}}\n"
+            ));
+            let findings = analyzer.analyze(&context).await.unwrap();
+            assert!(
+                findings.iter().any(|f| f.id == "FUNC-001"),
+                "{command} must still flag: {findings:?}"
+            );
+        }
     }
 
     #[tokio::test]
