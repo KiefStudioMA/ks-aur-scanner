@@ -3,6 +3,27 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// The root-owned configuration file. The only path a privileged consumer will
+/// read — see [`ScanConfig::config_paths_for`].
+pub const SYSTEM_CONFIG_PATH: &str = "/etc/aur-scanner/config.toml";
+
+/// The per-user config path implied by `XDG_CONFIG_HOME` and the home
+/// directory, or `None` when neither yields one.
+///
+/// Pure so the precedence is unit-testable: `XDG_CONFIG_HOME` is process-global
+/// state, and a test that sets it would race every other test in the binary.
+///
+/// An **empty** `XDG_CONFIG_HOME` falls back to `~/.config` rather than
+/// disabling the user path. Written as an `else if` against the same `if let`,
+/// the empty case silently dropped the user path altogether — a config the user
+/// believes is in effect and is not, which is exactly the issue #25 failure this
+/// search order exists to prevent.
+fn user_config_path(xdg: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    xdg.filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| home.map(|h| h.join(".config")))
+        .map(|base| base.join("aur-scanner").join("config.toml"))
+}
+
 /// Severity levels for security findings
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
@@ -301,18 +322,42 @@ impl ScanConfig {
     /// An explicit `-c/--config` path is handled by the CLI and is never in this
     /// list. The first path that exists wins; a present-but-malformed file is a
     /// hard error (never silently skipped in favor of a lower-priority path).
+    ///
+    /// This is the UNPRIVILEGED list. A root-running consumer must call
+    /// [`Self::config_paths_for`] instead -- see the note there.
     pub fn default_config_paths() -> Vec<PathBuf> {
         let mut paths = Vec::with_capacity(2);
-        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-            let p = PathBuf::from(xdg);
-            if !p.as_os_str().is_empty() {
-                paths.push(p.join("aur-scanner").join("config.toml"));
-            }
-        } else if let Some(home) = dirs::home_dir() {
-            paths.push(home.join(".config").join("aur-scanner").join("config.toml"));
+        if let Some(user) = user_config_path(
+            std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+            dirs::home_dir(),
+        ) {
+            paths.push(user);
         }
-        paths.push(PathBuf::from("/etc/aur-scanner/config.toml"));
+        paths.push(PathBuf::from(SYSTEM_CONFIG_PATH));
         paths
+    }
+
+    /// Config search paths for a caller that may hold elevated privileges.
+    ///
+    /// Unprivileged callers get [`Self::default_config_paths`]. A **privileged**
+    /// caller gets `/etc` and nothing else.
+    ///
+    /// The pacman hook runs as root, and it resolves its config before it can
+    /// drop privileges (it needs the config to build the scanner, and `/etc` may
+    /// be root-readable only). If that resolution consulted the user path first,
+    /// a root process would take its security configuration from a file any
+    /// unprivileged user can write. The cheapest exploit is not escalation, it
+    /// is denial of service: a hostile `build()` drops a syntactically broken
+    /// TOML in `~/.config/aur-scanner/`, and because a malformed security config
+    /// is deliberately a hard error, every subsequent pacman transaction dies at
+    /// the parse. Restricting privileged lookups to `/etc` puts that back behind
+    /// root-owned write access, where it was before the hook moved off its
+    /// hardcoded path.
+    pub fn config_paths_for(privileged: bool) -> Vec<PathBuf> {
+        if privileged {
+            return vec![PathBuf::from(SYSTEM_CONFIG_PATH)];
+        }
+        Self::default_config_paths()
     }
 
     /// Load the effective config: `cli_path` if given, otherwise the first
@@ -323,11 +368,23 @@ impl ScanConfig {
     /// malformed file is always an error — a security config must never look
     /// like it is in effect while being silently ignored (issue #25).
     pub fn resolve(cli_path: Option<&std::path::Path>) -> crate::Result<(Self, Option<PathBuf>)> {
+        Self::resolve_for_privilege(cli_path, false)
+    }
+
+    /// [`Self::resolve`], but restricted to root-owned paths when `privileged`.
+    ///
+    /// Call this from any consumer that can run as root — see
+    /// [`Self::config_paths_for`] for why a root process must not read a
+    /// user-writable security config.
+    pub fn resolve_for_privilege(
+        cli_path: Option<&std::path::Path>,
+        privileged: bool,
+    ) -> crate::Result<(Self, Option<PathBuf>)> {
         if let Some(path) = cli_path {
             let cfg = Self::from_toml_file(path)?;
             return Ok((cfg, Some(path.to_path_buf())));
         }
-        for path in Self::default_config_paths() {
+        for path in Self::config_paths_for(privileged) {
             if path.exists() {
                 let cfg = Self::from_toml_file(&path)?;
                 return Ok((cfg, Some(path)));
@@ -501,6 +558,67 @@ mod tests {
                 paths[0]
             );
         }
+    }
+
+    #[test]
+    fn empty_xdg_config_home_still_falls_back_to_dot_config() {
+        // `XDG_CONFIG_HOME=""` is a real shell condition (`export XDG_CONFIG_HOME=`
+        // with nothing after it). Treated as "set", it dropped the user path
+        // entirely and the user's config silently stopped being read -- the
+        // issue #25 symptom.
+        assert_eq!(
+            user_config_path(Some(PathBuf::from("")), Some(PathBuf::from("/home/alice"))),
+            Some(PathBuf::from("/home/alice/.config/aur-scanner/config.toml"))
+        );
+        // A set, non-empty XDG_CONFIG_HOME still wins over the home directory.
+        assert_eq!(
+            user_config_path(
+                Some(PathBuf::from("/xdg")),
+                Some(PathBuf::from("/home/alice"))
+            ),
+            Some(PathBuf::from("/xdg/aur-scanner/config.toml"))
+        );
+        // Unset XDG uses home.
+        assert_eq!(
+            user_config_path(None, Some(PathBuf::from("/home/alice"))),
+            Some(PathBuf::from("/home/alice/.config/aur-scanner/config.toml"))
+        );
+        // Neither available: no user path at all (the system path is added by
+        // the caller, so the list is never empty).
+        assert_eq!(user_config_path(None, None), None);
+        assert_eq!(user_config_path(Some(PathBuf::from("")), None), None);
+    }
+
+    #[test]
+    fn a_privileged_caller_reads_only_the_root_owned_config() {
+        // The pacman hook runs as root and resolves its config before it can
+        // drop privileges. If the user path were consulted there, an
+        // unprivileged user could feed a root process its security config --
+        // and, because a malformed config is a deliberate hard error, could
+        // wedge every pacman transaction by dropping broken TOML in ~/.config.
+        let privileged = ScanConfig::config_paths_for(true);
+        assert_eq!(
+            privileged,
+            vec![PathBuf::from(SYSTEM_CONFIG_PATH)],
+            "a privileged lookup must consult /etc and nothing else"
+        );
+        assert!(
+            !privileged.iter().any(|p| p.starts_with("/home")
+                || p.starts_with(
+                    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/nonexistent"))
+                )),
+            "no user-writable path may appear in a privileged lookup: {privileged:?}"
+        );
+
+        // And the unprivileged list is genuinely different, so this test cannot
+        // pass by the two paths having quietly become the same thing.
+        let unprivileged = ScanConfig::config_paths_for(false);
+        assert_eq!(unprivileged, ScanConfig::default_config_paths());
+        assert_eq!(
+            unprivileged.last().map(PathBuf::as_path),
+            Some(std::path::Path::new(SYSTEM_CONFIG_PATH)),
+            "the system path stays last in the unprivileged list"
+        );
     }
 
     #[test]

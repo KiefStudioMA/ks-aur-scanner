@@ -139,7 +139,7 @@ _aur_scan_gate() {
         print -P "%F{cyan}AUR Security Scanner:%f pre-checking ${#_to_scan[@]} package(s)..."
         local -a scan_args
         scan_args=("--severity" "$AUR_SCAN_SEVERITY")
-        [[ "$AUR_SCAN_INTERACTIVE" != "1" ]] && scan_args+=("--no-confirm")
+        [[ "$AUR_SCAN_INTERACTIVE" != "1" ]] && scan_args+=("--no-confirm" "--fail-on" "$AUR_SCAN_SEVERITY")
         if ! aur-scan check "${scan_args[@]}" "${_to_scan[@]}"; then
             print -P "%F{yellow}Scan failed or user aborted. Not proceeding with $helper.%f"
             return 1

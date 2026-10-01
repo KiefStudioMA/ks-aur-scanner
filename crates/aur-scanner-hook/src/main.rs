@@ -18,10 +18,17 @@ async fn main() -> Result<()> {
         .without_time()
         .init();
 
-    // Load configuration from the same search path as the CLI (user XDG then
-    // /etc). A present-but-malformed security config is a hard error: failing
-    // closed is safer than silently scanning with defaults.
-    let config = match ScanConfig::resolve(None) {
+    // Load configuration. This MUST happen before the privilege drop below --
+    // /etc/aur-scanner/config.toml may be root-readable only -- which is exactly
+    // why the lookup is privilege-aware: as root we read `/etc` and nothing
+    // else. Consulting the CLI's user-first search order here would let any
+    // unprivileged user hand a root process its security config, and because a
+    // malformed security config is a deliberate hard error, let them wedge every
+    // pacman transaction with broken TOML in `~/.config/aur-scanner/`.
+    //
+    // Failing closed on a malformed config is still correct: scanning silently
+    // with defaults is worse than refusing the transaction.
+    let config = match ScanConfig::resolve_for_privilege(None, running_as_root()) {
         Ok((config, _)) => config,
         Err(e) => {
             eprintln!("{} invalid config: {}", "aur-scanner:".red().bold(), e);
@@ -374,6 +381,21 @@ fn decide_privilege_drop(
     }
 }
 
+/// Whether this process currently holds root.
+///
+/// Used both to pick the config search path (before the drop, so the lookup can
+/// exclude user-writable paths) and to decide the drop itself.
+#[cfg(unix)]
+fn running_as_root() -> bool {
+    // SAFETY: simple libc getter with no memory operands.
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(unix))]
+fn running_as_root() -> bool {
+    false
+}
+
 /// Drop root privileges to the invoking user before touching their files, and
 /// return the user name to scan caches for.
 ///
@@ -386,8 +408,7 @@ fn decide_privilege_drop(
 ///   reading user caches as root).
 #[cfg(unix)]
 fn drop_privileges_to_invoking_user() -> Option<String> {
-    // SAFETY: simple libc getter with no memory operands.
-    let is_root = unsafe { libc::geteuid() } == 0;
+    let is_root = running_as_root();
     let sudo_uid = std::env::var("SUDO_UID").ok();
     let sudo_gid = std::env::var("SUDO_GID").ok();
     let sudo_user = std::env::var("SUDO_USER").ok();

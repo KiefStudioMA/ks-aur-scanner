@@ -176,6 +176,25 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     }
     println!();
 
+    // The threshold that actually blocks.
+    //
+    // `--fail-on` when given. Otherwise a NON-INTERACTIVE run has no prompt to
+    // fall back on, so it must fail closed on Critical rather than exit 0.
+    //
+    // It did not. `gate_tripped` was only ever written inside
+    // `if let Some(threshold) = args.fail_on`, and the shell integrations invoke
+    // `aur-scan check --severity <sev> --no-confirm <pkgs>` with no `--fail-on`
+    // -- `--severity` is a DISPLAY floor, not a gate. So with
+    // AUR_SCAN_INTERACTIVE=0 a tree with Criticals exited 0 and the helper ran.
+    //
+    // An interactive run with no threshold keeps its behaviour: the prompt is
+    // the gate, and the user may knowingly accept the risk.
+    let effective_gate = match (args.fail_on, args.interactive) {
+        (Some(threshold), _) => Some(threshold),
+        (None, false) => Some(Severity::Critical),
+        (None, true) => None,
+    };
+
     // 2. Scan every AUR node (the untrusted set).
     let mut scans: BTreeMap<String, ComponentScan> = BTreeMap::new();
     let mut total_critical = 0usize;
@@ -235,7 +254,7 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                 let scan = ComponentScan::from_findings(&result.findings);
                 total_critical += scan.critical;
                 total_high += scan.high;
-                if let Some(threshold) = args.fail_on {
+                if let Some(threshold) = effective_gate {
                     if result
                         .findings
                         .iter()
@@ -342,8 +361,9 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     // scan, so it honors any threshold -- not just critical/high).
     let mut failed = gate_tripped;
     // A package we could not fetch/scan is unreviewed; treat that as a failure
-    // when a gate threshold was requested rather than silently passing.
-    if args.fail_on.is_some() && !fetch_failures.is_empty() {
+    // whenever there is a gate (always, for a non-interactive run) rather than
+    // silently passing. "Could not analyze" is not "clean".
+    if effective_gate.is_some() && !fetch_failures.is_empty() {
         failed = true;
     }
 
