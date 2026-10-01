@@ -18,7 +18,7 @@
 
 A comprehensive security scanner for Arch Linux AUR packages that analyzes PKGBUILDs and install scripts for malicious patterns, suspicious behavior, and security vulnerabilities. Written in Rust for performance and safety.
 
-**Built and maintained by [Kief Studio](https://kief.studio)** — [@HxHippy](https://github.com/HxHippy) and [@m33lie](https://github.com/m33lie) are the maintainers and the review gate for every change ([CODEOWNERS](.github/CODEOWNERS)). Outside contributors propose from forks and have no write access; their work is credited in [Contributors](#contributors). GitHub's sidebar lists commit authors, not the team.
+**Built and maintained by [Kief Studio](https://kief.studio)** — [@HxHippy](https://github.com/HxHippy) is the maintainer and the review gate for every change ([CODEOWNERS](.github/CODEOWNERS)). Outside contributors propose from forks and have no write access; their work is credited in [Contributors](#contributors). GitHub's sidebar lists commit authors, not the team.
 
 ---
 
@@ -110,7 +110,7 @@ This scanner implements detection rules based on real-world attacks and security
 
 | Feature | Description |
 |---------|-------------|
-| **Static Analysis** | 130 detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
+| **Static Analysis** | 138 detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
 | **Install Script Scanning** | Analyzes `.install` scripts for persistence mechanisms |
 | **Source Verification** | Validates URLs, checksums, and download sources |
 | **AUR Integration** | Fetch and scan packages directly from AUR before installation |
@@ -155,7 +155,7 @@ gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51
 > **Release-candidate channel — [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc):**
 > tracks the next release before it is promoted to stable — currently
 > **`v2.2.0-rc.1`**: change detection, name impersonation, ownership signals and
-> static binary analysis. That is a large surface change (118 → 133 detection
+> static binary analysis. That is a large surface change (118 → 138 detection
 > codes) and wants soak time, which is what this channel is for. The RC **fails
 > closed**
 > (the wrapper/hook deny on a scan error, timeout, or no-TTY prompt rather than
@@ -636,7 +636,7 @@ NeedsTargets
 
 ## Detection Rules Reference
 
-> The **130 built-in detection codes**, generated from the catalog
+> The **138 built-in detection codes**, generated from the catalog
 > (`aur-scan codes --format markdown`) — every ID is unique and audit-enforced.
 > (`EXAMPLE-001` is the community-rule sample; `PERM-001`/`PERM-002` are real
 > shipped community rules in the same directory, not built-ins.) Extend the
@@ -650,6 +650,8 @@ NeedsTargets
 | `ATOMIC-002` | Node/Bun package manager in install hook | Malicious Code | rules | CWE-494 |
 | `ATOMIC-003` | eBPF rootkit / payload artifact | Persistence | rules | CWE-506 |
 | `ATOMIC-004` | Sudo shim in user local bin | Malicious Code | rules | CWE-506 |
+| `BIN-002` | Prebuilt binary executed during the build | Malicious Code | binary | CWE-506 |
+| `BIN-003` | Prebuilt eBPF object | Malicious Code | binary | CWE-506 |
 | `BROWSER-001` | Browser profile access | Credential Theft | rules | CWE-522 |
 | `BROWSER-002` | Browser database access | Credential Theft | rules | CWE-522 |
 | `CRED-001` | SSH key access | Credential Theft | rules | CWE-522 |
@@ -660,11 +662,13 @@ NeedsTargets
 | `CRYPTO-002` | Cryptominer binary | Cryptomining | rules | CWE-506 |
 | `CRYPTO-003` | Monero/Bitcoin wallet address | Cryptomining | rules | CWE-506 |
 | `DEEP-001` | Decode-and-execute flow | Obfuscation | deep | CWE-506 |
+| `DEEP-003` | Unicode bidirectional control characters | Obfuscation | deep | CWE-94 |
 | `DLE-001` | Curl pipe to shell | Command Injection | rules | CWE-94 |
 | `DLE-002` | Wget pipe to shell | Command Injection | rules | CWE-94 |
 | `DLE-003` | Curl output executed | Command Injection | rules | CWE-94 |
 | `ENV-001` | LD_PRELOAD manipulation | Malicious Code | rules | CWE-426 |
 | `ENV-003` | Shell startup file modification | Persistence | rules | CWE-506 |
+| `ESCAPE-001` | Extraction or copy outside the build root | Privilege Escalation | rules | CWE-22 |
 | `EXEC-002` | Shell -c command substitution fetch | Malicious Code | rules | CWE-494 |
 | `EXEC-REMOTE` | Fetches and runs external code | Malicious Code | remote_exec | CWE-494 |
 | `EXFIL-001` | Curl POST data exfiltration | Data Exfiltration | rules | CWE-200 |
@@ -697,17 +701,21 @@ NeedsTargets
 | `SHELL-009` | OpenSSL-encrypted reverse shell | Malicious Code | rules | CWE-94 |
 | `SHELL-010` | Named-pipe (mkfifo) reverse shell | Malicious Code | rules | CWE-94 |
 | `SHELL-011` | Busybox/telnet/ncat-ssl shell | Malicious Code | rules | CWE-94 |
+| `SQUAT-001` | Package name imitates a trusted name | Malicious Code | squat | CWE-1007 |
+| `SQUAT-004` | Package occupies an owned namespace under an unauthorised account | Malicious Code | squat | CWE-1007 |
 | `TAMPER-001` | Auth database write | Privilege Escalation | rules | CWE-269 |
 | `TAMPER-002` | doas/sudoers nopasswd grant | Privilege Escalation | rules | CWE-269 |
 | `TAMPER-005` | PAM tampering | Privilege Escalation | rules | CWE-287 |
 | `TAMPER-011` | pacman signature downgrade | Malicious Code | rules | CWE-347 |
-| `TI-VT-001` | VirusTotal flags a source artifact | Malicious Code | threat_intel _(opt-in)_ | CWE-506 |
-| `TI-URLHAUS-001` | URLhaus lists a source URL | Malicious Code | threat_intel _(opt-in)_ | CWE-494 |
+| `TI-URLHAUS-001` | URLhaus lists a source URL | Malicious Code | threat_intel | CWE-494 |
+| `TI-VT-001` | VirusTotal flags a source artifact | Malicious Code | threat_intel | CWE-506 |
 
 ## HIGH severity
 
 | Code | Name | Category | Detector | CWE |
 |------|------|----------|----------|-----|
+| `BIN-001` | Prebuilt binary committed in the package directory | Suspicious Metadata | binary | CWE-494 |
+| `BIN-004` | Binary searches for libraries in an unsafe location | Privilege Escalation | binary | CWE-426 |
 | `CHK-001` | No checksums for sources | Cryptography | checksum | CWE-354 |
 | `CHK-005` | All non-VCS sources use SKIP | Cryptography | checksum | CWE-354 |
 | `CHK-006` | Checksum count mismatch | Configuration | checksum | - |
@@ -716,6 +724,10 @@ NeedsTargets
 | `DEEP-002` | Large embedded encoded blob | Obfuscation | deep | CWE-506 |
 | `DEP-001` | Provides a core package name (dependency confusion) | Suspicious Metadata | metadata | CWE-427 |
 | `DEP-003` | Package index/registry override | Dependencies | rules | CWE-494 |
+| `DIFF-001` | New findings since the last scan | Suspicious Metadata | diff | - |
+| `DIFF-002` | Package ownership changed | Suspicious Metadata | diff | - |
+| `DIFF-003` | Package fetches from a new upstream | Network Security | diff | CWE-494 |
+| `DIFF-004` | Install script added or changed | Persistence | diff | CWE-506 |
 | `ENV-002` | PATH manipulation | Malicious Code | rules | CWE-426 |
 | `EXEC-006` | sqlite3 shell-command execution | Malicious Code | rules | CWE-94 |
 | `EXEC-007` | make reads a Makefile from stdin | Command Injection | rules | CWE-94 |
@@ -741,10 +753,12 @@ NeedsTargets
 | `PRIV-005` | Kernel module operations | Privilege Escalation | privilege | - |
 | `PRIV-006` | Sudo in an install hook | Privilege Escalation | privilege | CWE-250 |
 | `PROV-001` | Package gained risky behavior | Suspicious Metadata | provenance | CWE-506 |
+| `SQUAT-002` | Package name is one keystroke from a widely-installed package | Malicious Code | squat | CWE-1007 |
 | `SRC-002` | Suspicious source domain | Network Security | source | - |
 | `SRC-003` | Raw IP address in source URL | Network Security | source | - |
 | `SRC-004` | URL shortener in source | Network Security | source | - |
 | `SRC-009` | Obfuscated IP in URL | Network Security | rules | CWE-94 |
+| `SRC-010` | Source is a different owner's copy of the upstream repo | Network Security | source | CWE-494 |
 | `TAMPER-013` | Security control disabled | Malicious Code | rules | CWE-693 |
 | `TAMPER-017` | CA trust anchor injection | Malicious Code | rules | CWE-295 |
 | `TRUST-001` | pacman keyring poisoning | Malicious Code | rules | CWE-494 |
@@ -756,6 +770,7 @@ NeedsTargets
 
 | Code | Name | Category | Detector | CWE |
 |------|------|----------|----------|-----|
+| `BIN-005` | Binary contains a packed or encrypted section | Obfuscation | binary | CWE-506 |
 | `CHK-002` | MD5 checksums used | Cryptography | checksum | CWE-328 |
 | `CHK-003` | SHA1 checksums used | Cryptography | checksum | CWE-328 |
 | `CHK-004` | Some sources use SKIP checksum | Cryptography | checksum | CWE-354 |
@@ -764,6 +779,7 @@ NeedsTargets
 | `META-005` | install= points outside the package | Suspicious Metadata | metadata | CWE-426 |
 | `META-006` | backup= of a security-sensitive file | Suspicious Metadata | metadata | CWE-426 |
 | `OBF-004` | String concatenation obfuscation | Obfuscation | rules | - |
+| `OWN-002` | Package is orphaned and flagged out-of-date | Suspicious Metadata | ownership | - |
 | `PRIV-004` | Capabilities being set | Privilege Escalation | privilege | CWE-250 |
 | `SRC-001` | Insecure source/transport protocol | Network Security | source | CWE-319 |
 | `SRC-005` | No sources with a build function | Configuration | source | - |
@@ -776,6 +792,10 @@ NeedsTargets
 | `META-001` | Provides impersonation | Suspicious Metadata | rules | - |
 | `META-002` | validpgpkeys declared but no signature verified | Suspicious Metadata | metadata | CWE-347 |
 | `META-004` | epoch set (forces upgrade over the repo version) | Suspicious Metadata | metadata | - |
+| `OWN-001` | Package is orphaned | Suspicious Metadata | ownership | - |
+| `OWN-003` | Flagged out-of-date for over a year | Suspicious Metadata | ownership | - |
+| `OWN-004` | New package with no community validation | Suspicious Metadata | ownership | - |
+| `SQUAT-003` | Build variant is in different hands from its base | Suspicious Metadata | squat | - |
 | `SRC-006` | VCS source from non-standard host | Network Security | source | - |
 | `SRC-007` | VCS source not pinned to a commit | Network Security | source | CWE-494 |
 | `SRC-008` | Source host differs from upstream url host | Network Security | source | - |

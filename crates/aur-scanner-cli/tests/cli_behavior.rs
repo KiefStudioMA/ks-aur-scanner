@@ -704,3 +704,54 @@ fn non_interactive_check_fails_closed_on_critical() {
         );
     }
 }
+
+#[test]
+fn readme_detection_table_matches_builtin_catalog() {
+    // The README's "Detection Rules Reference" is pasted from
+    // `aur-scan codes --format markdown`. It drifted once: 2.2.0-rc.1 shipped
+    // 20 new codes while the README table still listed the 2.1 set and its prose
+    // gave two different totals. Compare against the BUILT-IN catalog only, so
+    // community rules installed on the test machine cannot affect the result.
+    let readme =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"))
+            .expect("read README.md");
+    let start = readme
+        .find("## Detection Rules Reference")
+        .expect("README has a Detection Rules Reference section");
+    let end = start
+        + readme[start..]
+            .find("## Custom & Community Rules")
+            .expect("reference section is followed by Custom & Community Rules");
+    let section = &readme[start..end];
+
+    let mut documented: Vec<(String, String)> = Vec::new();
+    let mut severity = String::new();
+    for line in section.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            severity = rest.trim_end_matches(" severity").to_string();
+        } else if let Some(rest) = line.strip_prefix("| `") {
+            let id = rest.split('`').next().unwrap_or_default().to_string();
+            documented.push((id, severity.clone()));
+        }
+    }
+    documented.sort();
+
+    let mut builtin: Vec<(String, String)> = Catalog::load()
+        .entries
+        .into_iter()
+        .filter(|e| e.owner != "user")
+        .map(|e| (e.id, e.severity.to_string()))
+        .collect();
+    builtin.sort();
+
+    assert_eq!(
+        documented, builtin,
+        "README detection table is out of date; regenerate it with \
+         `aur-scan codes --format markdown`"
+    );
+    let stated = format!("The **{} built-in detection codes**", builtin.len());
+    assert!(
+        section.contains(&stated),
+        "README should say {stated:?} to match the catalog"
+    );
+}

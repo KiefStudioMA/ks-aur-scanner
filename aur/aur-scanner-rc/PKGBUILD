@@ -7,7 +7,7 @@
 # stable `aur-scanner` / `ks-aur-scanner` packages.
 #
 # 2.2.0-rc.1 focus: change detection, name impersonation, ownership signals and
-# static binary analysis. Large surface change (118 -> 133 codes); wants soak.
+# static binary analysis. Large surface change (118 -> 138 codes); wants soak.
 # Previously: 2.1.0-rc.2 correctness + Atomic Arch depth. Config auto-load
 # from XDG and /etc (threat-intel actually works without -c), false-positive
 # hygiene, ALPM .hook scanning, wave-3/4/5 Atomic Arch rules. Review the

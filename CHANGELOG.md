@@ -110,7 +110,7 @@ Change detection, name impersonation, ownership signals, and static binary
 analysis.
 
 **This is a release candidate, and it is a large one.** The detection surface
-grew from 118 codes to 133 and every scanning path was rewired, so it wants soak
+grew from 118 codes to 138 and every scanning path was rewired, so it wants soak
 time rather than going straight to stable. Install `aur-scanner-rc` to test it.
 
 Every threshold below was set by measuring against the live data -- all 15,436
