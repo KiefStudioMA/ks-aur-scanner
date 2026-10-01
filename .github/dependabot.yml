@@ -1,0 +1,32 @@
+# Dependency and Actions updates, batched weekly.
+#
+# cooldown: a release must be at least 7 days old before it is proposed, so a
+# hijacked or broken release has time to be noticed and yanked first.
+#
+# Every update lands as a PR and needs a maintainer to re-sign its head before
+# merging (see CONTRIBUTING.md); the aur-scanner-git package refuses to build
+# a main that isn't traceable to release-key signatures.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      cargo:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

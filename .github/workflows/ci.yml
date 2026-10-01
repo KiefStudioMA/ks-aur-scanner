@@ -15,6 +15,10 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
+# The default token only needs to read the repository.
+permissions:
+  contents: read
+
 jobs:
   # Lint + the full test suite (unit AND the CLI integration tests that run the
   # real binary against the PKGBUILD fixtures). This is the gate that catches the
@@ -23,14 +27,17 @@ jobs:
     name: clippy / test / build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-09-12
         with:
+          toolchain: stable
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -46,9 +53,12 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-09-12
+        with:
+          toolchain: stable
           components: rustfmt
       - run: cargo fmt --all --check
 
@@ -62,9 +72,9 @@ jobs:
     # This job exists to catch REAL breakage on the next toolchain: compile
     # errors, behaviour changes, test failures. New and tightened lints land in
     # beta constantly, and they frequently fire on macro-generated code we do
-    # not own -- `clippy::double_must_use` fires inside `async_trait`'s own
-    # expansion, which we cannot fix and should not paper over with an `allow`
-    # on three of our traits.
+    # not own -- `clippy::double_must_use` fired inside `async_trait`'s own
+    # expansion until async-trait 0.1.92 dropped the attribute, and the fix was
+    # upstream's to make, not an `allow` on three of our traits.
     #
     # Inheriting the workflow-level `-D warnings` turned all of that into a red
     # X on every run. A job that is permanently red teaches everyone to ignore
@@ -74,11 +84,14 @@ jobs:
     env:
       RUSTFLAGS: ""
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@beta
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-09-12
+        with:
+          toolchain: beta
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --all-targets --all-features
       - run: cargo test --all --all-features
 
@@ -89,7 +102,9 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories bans licenses sources
