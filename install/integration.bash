@@ -146,7 +146,7 @@ _aur_scan_gate() {
         done
         echo "AUR Security Scanner: pre-checking ${#_uniq[@]} package(s)..."
         local scan_args=("--severity" "$AUR_SCAN_SEVERITY")
-        [[ "$AUR_SCAN_INTERACTIVE" != "1" ]] && scan_args+=("--no-confirm")
+        [[ "$AUR_SCAN_INTERACTIVE" != "1" ]] && scan_args+=("--no-confirm" "--fail-on" "$AUR_SCAN_SEVERITY")
         if ! aur-scan check "${scan_args[@]}" "${_uniq[@]}"; then
             echo "Scan failed or user aborted. Not proceeding with $helper."
             return 1

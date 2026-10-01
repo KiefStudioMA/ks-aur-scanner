@@ -178,7 +178,7 @@ function _aur_scan_gate
         echo "AUR Security Scanner: pre-checking "(count $to_scan)" package(s)..."
         set -l scan_args --severity $AUR_SCAN_SEVERITY
         if test "$AUR_SCAN_INTERACTIVE" != "1"
-            set -a scan_args --no-confirm
+            set -a scan_args --no-confirm --fail-on $AUR_SCAN_SEVERITY
         end
         if not aur-scan check $scan_args $to_scan
             echo "Scan failed or user aborted. Not proceeding with $helper."

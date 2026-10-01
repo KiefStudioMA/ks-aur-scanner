@@ -191,3 +191,53 @@ fn fail_on_sets_exit_code() {
         "clean must exit 0 under --fail-on critical"
     );
 }
+
+/// Run `aur-scan check --local <dir> --no-deps --no-confirm` (no `--fail-on`)
+/// and return its exit code. `--local` + `--no-deps` keeps it off the network.
+fn check_no_confirm(dir: &Path) -> i32 {
+    Command::new(bin())
+        .args([
+            "check",
+            "--local",
+            dir.to_str().unwrap(),
+            "--no-deps",
+            "--no-confirm",
+            "-q",
+        ])
+        .output()
+        .unwrap()
+        .status
+        .code()
+        .unwrap_or(-1)
+}
+
+#[test]
+fn non_interactive_check_fails_closed_on_critical() {
+    // This is exactly how the shell integrations call `check` when
+    // AUR_SCAN_INTERACTIVE=0: `--no-confirm` and no `--fail-on`. It used to exit
+    // 0 on a tree full of Criticals, so paru/yay went ahead. With no prompt to
+    // fall back on, a non-interactive run must gate on Critical by itself.
+    let mut checked = 0;
+    for dir in fixture_dirs("malicious") {
+        let (stdout, _, _) = scan(&dir, "json");
+        let (critical, _) = severities(&parse_findings(&stdout));
+        if critical == 0 {
+            continue;
+        }
+        checked += 1;
+        assert_ne!(
+            check_no_confirm(&dir),
+            0,
+            "{dir:?} has {critical} Critical finding(s); `check --no-confirm` must not exit 0"
+        );
+    }
+    assert!(checked > 0, "no malicious fixture produced a Critical");
+
+    for dir in fixture_dirs("clean") {
+        assert_eq!(
+            check_no_confirm(&dir),
+            0,
+            "{dir:?} is clean; `check --no-confirm` must pass it"
+        );
+    }
+}
