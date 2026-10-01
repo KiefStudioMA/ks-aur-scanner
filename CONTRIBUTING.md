@@ -56,13 +56,31 @@ benign look-alike.
 
 ### About signed commits on `main`
 
-`main` is protected by a branch ruleset: **commits must be GPG-signed**, and
-force-push/deletion are blocked. You don't have to sign the commits on your fork
-— when your PR is accepted it's landed as a **signed commit that preserves you
-as the author** (the maintainer signs the merge). If you *do* sign your own
-commits ([GitHub guide](https://docs.github.com/authentication/managing-commit-signature-verification)),
-even better. Either way your authorship is kept and you're credited in the
-release notes and the README contributors list.
+`main` is protected by a branch ruleset: changes land through a pull request,
+**commits must be GPG-signed**, and force-push/deletion are blocked. You don't
+have to sign the commits on your fork. When your change is accepted, the
+maintainer lands it as a commit **signed with the release key** that keeps you
+as the author (or reimplements it and credits you), and that signed commit is
+what gets merged. If you *do* sign your own commits
+([GitHub guide](https://docs.github.com/authentication/managing-commit-signature-verification)),
+even better. Either way you're credited in the release notes and the README
+contributors list.
+
+Why the release key specifically: GitHub signs every "Merge pull request"
+commit with its own key, so the rolling `aur-scanner-git` package does not
+trust a merge on its face. It builds `main` only if every merge on the way back
+is a clean merge of a release-key-signed PR head (see `prepare()` in
+`aur/aur-scanner-git/PKGBUILD`). A PR whose head isn't signed by the release key
+would make that package refuse to build, by design.
+
+**Dependabot PRs** follow the same rule. After review, re-sign the head before
+merging:
+
+```bash
+gh pr checkout <N>
+git commit --amend --no-edit -S
+git push --force-with-lease
+```
 
 ## Reporting security issues
 
