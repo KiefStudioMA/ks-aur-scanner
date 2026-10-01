@@ -142,12 +142,12 @@ impl SecurityAnalyzer for DeepAnalyzer {
         // exec in the other is still a single payload.
         let mut combined = context.pkgbuild.raw_content.clone();
         let mut anchor = context.file_path.clone();
-        if let Some(install) = &context.install_script {
+        for script in context.all_scripts() {
             combined.push('\n');
-            combined.push_str(&install.content);
-            // Prefer the install script as the anchor if the PKGBUILD body is empty.
+            combined.push_str(&script.content);
+            // Prefer a side script as the anchor if the PKGBUILD body is empty.
             if context.pkgbuild.raw_content.trim().is_empty() {
-                anchor = install.path.clone();
+                anchor = script.path.clone();
             }
         }
         Ok(self.analyze_text(&combined, &anchor))

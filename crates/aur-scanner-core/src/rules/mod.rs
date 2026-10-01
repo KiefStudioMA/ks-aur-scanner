@@ -610,10 +610,15 @@ fn heredoc_message_delim(line: &str) -> Option<String> {
     // scanned. When unsure, do NOT suppress (fail toward scanning).
     let before = &line[..pos];
     let last_command = before.rsplit([';', '|', '&', '(']).next().unwrap_or(before);
+    // Basename so `/bin/cat` / `/usr/bin/printf` count as pure printers.
+    // Path-prefixed printers are common in install scriptlets (issue #15).
     let is_pure_printer = last_command
         .split_whitespace()
         .next()
-        .map(|cmd| matches!(cmd, "cat" | "echo" | "printf"))
+        .map(|cmd| {
+            let base = cmd.rsplit('/').next().unwrap_or(cmd);
+            matches!(base, "cat" | "echo" | "printf")
+        })
         .unwrap_or(false);
     // A pipe anywhere on the opener means the body may be fed to a command.
     let piped = line.contains('|');
@@ -1085,12 +1090,36 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             description: "Creating cron jobs for persistence".to_string(),
             severity: Severity::High,
             category: Category::Persistence,
+            // Require a write/install verb (or crontab schedule edit). Bare path
+            // mentions and removal (`rm /etc/cron.d/foo`) must not fire — packages
+            // that clean up stale cron entries are the safe direction (issue #21).
+            //
+            // Adversarial notes (2.1.0-rc.1 review):
+            // - Do NOT anchor with `^` alone: package() bodies are indented, and
+            //   rust `regex` `^` is start-of-string unless `(?m)`.
+            // - Do NOT match `crontab\s+-` as a prefix of `-l`/`-r` (that FPs).
+            // - `regex` has no lookaround; enumerate write forms only.
             patterns: vec![
+                // Copy/install/move/tee into a cron path (word-boundary, any indent).
                 Pattern::Regex {
-                    pattern: r"/etc/cron".to_string(),
+                    pattern: r"\b(?:cp|install|mv|tee)\b[^\n]*/etc/cron".to_string(),
                 },
+                // Redirected printers into a cron path.
                 Pattern::Regex {
-                    pattern: r"crontab\s+".to_string(),
+                    pattern: r"(?:echo|printf|cat)\b[^\n]*>\s*[^\n]*/etc/cron".to_string(),
+                },
+                // crontab -e (edit schedule).
+                Pattern::Regex {
+                    pattern: r"\bcrontab\s+-e\b".to_string(),
+                },
+                // crontab -u USER -e (user-targeted edit). Bare `-u` with `-l`
+                // must not fire — no lookaround, so require the `-e` form.
+                Pattern::Regex {
+                    pattern: r"\bcrontab\s+-u\s+\S+\s+-e\b".to_string(),
+                },
+                // crontab FILE / path / var (not a dash-flag).
+                Pattern::Regex {
+                    pattern: r"\bcrontab\s+(?:/|\./|\.\./|~|\$|[A-Za-z0-9_.])".to_string(),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -1607,16 +1636,21 @@ pub fn get_builtin_rules() -> Vec<Rule> {
         },
         Rule {
             id: "ENV-003".to_string(),
-            name: "Bashrc/profile modification".to_string(),
-            description: "Modifying shell config for persistence".to_string(),
+            name: "Shell startup file modification".to_string(),
+            description: "Modifying shell config for persistence (bashrc, zshrc, fish, profile.d)"
+                .to_string(),
             severity: Severity::Critical,
             category: Category::Persistence,
+            // Path presence only — informational_lines() strips pure-printer
+            // heredoc bodies and message prints so a "add this to ~/.bashrc"
+            // note does not fire (issue #15). Real redirects/writes still match.
             patterns: vec![
                 Pattern::Regex {
-                    pattern: r"~/\.(bashrc|bash_profile|profile|zshrc)".to_string(),
+                    pattern: r"~/\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|config/fish/)"
+                        .to_string(),
                 },
                 Pattern::Regex {
-                    pattern: r"/etc/(bash\.bashrc|profile|zsh/)".to_string(),
+                    pattern: r"/etc/(bash\.bashrc|profile|profile\.d/|zsh/|fish/)".to_string(),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -1657,14 +1691,39 @@ pub fn get_builtin_rules() -> Vec<Rule> {
         Rule {
             id: "ATOMIC-001".to_string(),
             name: "Atomic Arch malicious npm/bun package".to_string(),
-            description: "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js). These pull an infostealer and eBPF rootkit during the build/install phase.".to_string(),
+            description: "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js, nextfile-js / ansi-colors-nextfile-js and related wave-3 names). These pull an infostealer and eBPF rootkit during the build/install phase.".to_string(),
             severity: Severity::Critical,
             category: Category::MaliciousCode,
             patterns: vec![Pattern::Regex {
-                pattern: r"\b(atomic-lockfile|js-digest|lockfile-js)\b".to_string(),
+                // Word-boundary on known campaign package names. `nextfile-js`
+                // also matches when embedded in a scoped/decorated name
+                // (`ansi-colors-nextfile-js`) via the alternation.
+                pattern: r"\b(atomic-lockfile|js-digest|lockfile-js|nextfile-js|ansi-colors-nextfile-js)\b"
+                    .to_string(),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Do NOT build. This is a known-malicious dependency. Remove the package and treat the host as compromised: rotate credentials (SSH, npm/GitHub tokens, browser sessions).".to_string(),
+            cwe_id: Some("CWE-506".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+        Rule {
+            id: "ATOMIC-004".to_string(),
+            name: "Sudo shim in user local bin".to_string(),
+            description: "Writes a `sudo` binary (or symlink) into `~/.local/bin` or another user PATH prefix. The Atomic Arch campaign dropped a credential-stealing sudo shim this way so a later `sudo` invocation harvested the password.".to_string(),
+            severity: Severity::Critical,
+            category: Category::MaliciousCode,
+            patterns: vec![
+                Pattern::Regex {
+                    pattern: r"(?:~|/home/[^/\s]+)/\.(?:local/bin|bin)/sudo\b".to_string(),
+                },
+                Pattern::Regex {
+                    pattern: r#"(?:cp|install|mv|ln)\s+[^\n]*\bsudo\b[^\n]*(?:\.local/bin|/usr/local/bin)"#
+                        .to_string(),
+                },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Do NOT build. A package must never install a sudo impostor. Inspect ~/.local/bin/sudo and rotate credentials if present.".to_string(),
             cwe_id: Some("CWE-506".to_string()),
             enabled: true,
             case_sensitive: false,
@@ -2312,6 +2371,87 @@ mod tests {
         assert!(
             !m.iter().any(|x| x.rule_id == "HIDDEN-001"),
             "a printed note mentioning ~/.config must not trip HIDDEN-001: {m:?}"
+        );
+    }
+
+    #[test]
+    fn path_prefixed_cat_heredoc_mentioning_bashrc_is_not_flagged() {
+        // Issue #15: `/bin/cat <<EOF` ... ~/.bashrc ... must not trip ENV-003 /
+        // HIDDEN-001. Path-prefixed pure printers are common in install scripts.
+        let engine = RuleEngine::default();
+        let content = "post_install() {\n  /bin/cat << EOFMSG\n\nAdd to ~/.bashrc:\n  source /usr/share/cdu/cdu.bash\n\nEOFMSG\n}\n";
+        let m = engine.match_content(content, FileType::InstallScript);
+        assert!(
+            !m.iter()
+                .any(|x| x.rule_id == "ENV-003" || x.rule_id == "HIDDEN-001"),
+            "printed /bin/cat heredoc must not trip ENV-003/HIDDEN-001: {m:?}"
+        );
+    }
+
+    #[test]
+    fn cron_removal_does_not_trip_persist003() {
+        // Issue #21: removing a stale cron entry is the safe direction.
+        let engine = RuleEngine::default();
+        let m = engine.match_content(
+            "rm -f /etc/cron.daily/google-chrome",
+            FileType::InstallScript,
+        );
+        assert!(
+            !m.iter().any(|x| x.rule_id == "PERSIST-003"),
+            "rm of a cron path must not trip PERSIST-003: {m:?}"
+        );
+        // But installing one still must — including indented package() bodies
+        // (adversarial review: `^` without (?m) missed leading whitespace).
+        for s in [
+            "install -Dm644 chrome.cron /etc/cron.daily/google-chrome",
+            "    install -Dm644 chrome.cron /etc/cron.daily/google-chrome",
+            "cp x /etc/cron.d/x",
+            "echo '* * * * * evil' > /etc/cron.d/x",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "PERSIST-003"),
+                "write into /etc/cron must trip PERSIST-003 for: {s}"
+            );
+        }
+        // crontab write forms fire; list/remove must not (prefix `-` bug).
+        for s in ["crontab -e", "crontab /tmp/mycron", "crontab ./tabs"] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "PERSIST-003"),
+                "crontab write form must fire for: {s}"
+            );
+        }
+        for s in ["crontab -l", "crontab -r", "crontab -l -u bob"] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "PERSIST-003"),
+                "crontab list/remove must not fire for: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn atomic_wave3_nextfile_js_and_sudo_shim_detected() {
+        let engine = RuleEngine::default();
+        for s in [
+            "bun add nextfile-js",
+            "bun add ansi-colors-nextfile-js",
+            "cd /tmp && bun add ansi-colors-nextfile-js",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "ATOMIC-001"),
+                "expected ATOMIC-001 for: {s}"
+            );
+        }
+        let m = engine.match_content(
+            "install -Dm755 stealer ~/.local/bin/sudo",
+            FileType::InstallScript,
+        );
+        assert!(
+            m.iter().any(|x| x.rule_id == "ATOMIC-004"),
+            "sudo shim install must trip ATOMIC-004: {m:?}"
         );
     }
 

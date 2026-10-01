@@ -13,7 +13,7 @@ use aur_scanner_core::overlay::{info_from_pkgbuild, OverlaySource};
 use aur_scanner_core::parser::{PkgbuildParser, StaticParser};
 use aur_scanner_core::sbom::{self, ComponentScan};
 use aur_scanner_core::validate::{is_valid_package_name, validate_package_name};
-use aur_scanner_core::{Scanner, Severity};
+use aur_scanner_core::{Finding, OutputConfig, ScanConfig, Scanner, Severity};
 
 use super::banner;
 
@@ -35,6 +35,10 @@ pub struct CheckArgs {
     pub sbom_path: Option<PathBuf>,
     /// Already-fetched package directories to scan from disk (race-free).
     pub local_dirs: Vec<PathBuf>,
+    /// Full scan configuration (threat-intel, cache, rules, display). The
+    /// `[output]` table is display-only and never affects findings or exit
+    /// codes; every other field is honored by the scanner engine.
+    pub config: ScanConfig,
 }
 
 /// How a `--local` dir's self-declared pkgname relates to what the user asked
@@ -69,7 +73,8 @@ fn classify_local_dir(
 /// Run the pre-install check.
 pub async fn run(args: CheckArgs) -> Result<()> {
     let client = AurClient::new().context("Failed to create AUR client")?;
-    let scanner = Scanner::with_defaults().context("Failed to create scanner")?;
+    let output = args.config.output.clone();
+    let scanner = Scanner::new(args.config).context("Failed to create scanner")?;
 
     banner::print_header("Pre-Install Check");
     println!();
@@ -244,7 +249,7 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                 } else {
                     println!("{}", "ok".green());
                 }
-                print_findings_for(&node.name, &result.findings, args.min_severity);
+                print_findings_for(&node.name, &result.findings, args.min_severity, &output);
                 scans.insert(node.name.clone(), scan);
             }
             Err(e) => {
@@ -370,19 +375,50 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     Ok(())
 }
 
-fn print_findings_for(pkg: &str, findings: &[aur_scanner_core::Finding], min: Option<Severity>) {
+fn print_findings_for(
+    pkg: &str,
+    findings: &[Finding],
+    min: Option<Severity>,
+    display: &OutputConfig,
+) {
     for f in findings.iter().filter(|f| {
         min.map(|m| f.severity <= m)
             .unwrap_or(f.severity <= Severity::High)
     }) {
-        println!(
-            "    {} {} [{}] {}",
-            "·".dimmed(),
-            pkg.dimmed(),
-            f.severity,
-            f.title
-        );
+        println!("{}", format_finding_compact(pkg, f, display));
     }
+}
+
+/// Render the one-line compact form `check` uses for each finding. Pure (no
+/// I/O) so the formatting — including the optional `(file:line)` indicator — is
+/// unit-testable. The location is appended only when `display.line` is set and
+/// the analyzer captured one; the file is shown by basename so a fetched
+/// temp-dir path does not bury the signal.
+fn format_finding_compact(pkg: &str, f: &Finding, display: &OutputConfig) -> String {
+    let loc = if display.line {
+        match (f.location.file.file_name(), f.location.line) {
+            (Some(name), Some(line)) => {
+                format!(
+                    "  {}",
+                    format!("({}:{line})", name.to_string_lossy()).dimmed()
+                )
+            }
+            (Some(name), None) => {
+                format!("  {}", format!("({})", name.to_string_lossy()).dimmed())
+            }
+            _ => String::new(),
+        }
+    } else {
+        String::new()
+    };
+    format!(
+        "    {} {} [{}] {}{}",
+        "·".dimmed(),
+        pkg.dimmed(),
+        f.severity,
+        f.title,
+        loc
+    )
 }
 
 fn print_orphans(graph: &DependencyGraph) {
@@ -452,5 +488,75 @@ mod tests {
         for good in ["firefox", "python-requests", "lib32-foo"] {
             assert!(is_valid_package_name(good), "must accept {good}");
         }
+    }
+
+    // --- compact finding rendering (#16: file:line indicator) ----------------
+
+    fn finding_with_location(line: Option<usize>) -> Finding {
+        Finding {
+            id: "ENV-003".to_string(),
+            severity: Severity::Critical,
+            category: aur_scanner_core::Category::Persistence,
+            title: "Bashrc/profile modification".to_string(),
+            description: "test".to_string(),
+            location: aur_scanner_core::Location {
+                file: PathBuf::from("/home/eric/.cache/yay/cdu/cdu.install"),
+                line,
+                column: None,
+                snippet: None,
+            },
+            recommendation: "review".to_string(),
+            cwe_id: None,
+            metadata: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn compact_shows_basename_and_line_when_enabled() {
+        colored::control::set_override(false);
+        let out = format_finding_compact(
+            "cdu",
+            &finding_with_location(Some(4)),
+            &OutputConfig::default(),
+        );
+        // The full temp path is reduced to a basename so the signal is readable.
+        assert!(out.contains("(cdu.install:4)"), "got: {out}");
+        assert!(
+            !out.contains(".cache/yay"),
+            "must not bury the line in a temp path: {out}"
+        );
+        assert!(out.contains("[CRITICAL]") && out.contains("Bashrc/profile modification"));
+    }
+
+    #[test]
+    fn compact_omits_location_when_line_disabled() {
+        colored::control::set_override(false);
+        let display = OutputConfig {
+            line: false,
+            ..OutputConfig::default()
+        };
+        let out = format_finding_compact("cdu", &finding_with_location(Some(4)), &display);
+        assert!(
+            !out.contains("cdu.install"),
+            "line indicator must be suppressed: {out}"
+        );
+        // The finding itself is still rendered -- display toggles never hide it.
+        assert!(
+            out.contains("Bashrc/profile modification"),
+            "finding still shown: {out}"
+        );
+    }
+
+    #[test]
+    fn compact_handles_missing_line_number() {
+        colored::control::set_override(false);
+        let out = format_finding_compact(
+            "cdu",
+            &finding_with_location(None),
+            &OutputConfig::default(),
+        );
+        // No line captured: show the file, no colon-line.
+        assert!(out.contains("(cdu.install)"), "got: {out}");
+        assert!(!out.contains("cdu.install:"), "no dangling colon: {out}");
     }
 }

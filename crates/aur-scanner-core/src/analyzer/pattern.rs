@@ -52,11 +52,17 @@ impl SecurityAnalyzer for PatternAnalyzer {
             }
         }
 
-        // Analyze install script if present
-        if let Some(ref install_script) = context.install_script {
+        // Analyze install scriptlets and ALPM side scripts (*.hook). Same rule
+        // surface: both run with elevated trust during a pacman transaction.
+        for script in context.all_scripts() {
+            let kind = if script.path.extension().and_then(|e| e.to_str()) == Some("hook") {
+                "alpm hook"
+            } else {
+                "install script"
+            };
             let script_matches = self
                 .rule_engine
-                .match_content(&install_script.content, FileType::InstallScript);
+                .match_content(&script.content, FileType::InstallScript);
 
             for rule_match in script_matches {
                 if let Some(rule) = self.rule_engine.get_rule(&rule_match.rule_id) {
@@ -64,10 +70,10 @@ impl SecurityAnalyzer for PatternAnalyzer {
                         id: rule.id.clone(),
                         severity: rule.severity,
                         category: rule.category.clone(),
-                        title: format!("{} (install script)", rule.name),
+                        title: format!("{} ({})", rule.name, kind),
                         description: rule.description.clone(),
                         location: Location {
-                            file: install_script.path.clone(),
+                            file: script.path.clone(),
                             line: Some(rule_match.line),
                             column: Some(rule_match.column),
                             snippet: Some(rule_match.context.clone()),
@@ -77,6 +83,7 @@ impl SecurityAnalyzer for PatternAnalyzer {
                         metadata: serde_json::json!({
                             "matched_text": rule_match.matched_text,
                             "in_install_script": true,
+                            "script_kind": kind,
                         }),
                     });
                 }
@@ -175,6 +182,7 @@ mod tests {
         AnalysisContext {
             pkgbuild,
             install_script: None,
+            side_scripts: vec![],
             config: ScanConfig::default(),
             file_path: PathBuf::from("PKGBUILD"),
         }

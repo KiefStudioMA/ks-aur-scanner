@@ -4,6 +4,108 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [2.1.0] - 2026-09-10
+
+Promotes `2.1.0-rc.2` unchanged. No detection, rule, or behaviour differences
+from the release candidate — the RC soaked for six weeks and the code is the
+code that was tested, so the tag is a promotion rather than a new build.
+
+Everything under 2.1.0-rc.1 and 2.1.0-rc.2 below is part of this release.
+
+### Security
+
+- `Cargo.lock` carries `anyhow` 1.0.104, which is past **RUSTSEC-2026-0190**
+  (unsoundness in `Error::downcast_mut()`, fixed in 1.0.103). `main` still held
+  1.0.100 until this release merged, which is why the weekly cargo-deny
+  advisories job had been failing since 2026-08-03.
+
+### Changed
+
+- `actions/checkout@v5` across CI and the advisories workflow (Node 24 Actions
+  runtime); `main` was still on `@v4` and warning about the Node 20 deprecation.
+
+## [2.1.0-rc.2] - 2026-07-28
+
+Same candidate as 2.1.0-rc.1 plus packaging/CI hygiene. The `v2.1.0-rc.1` tag is
+**immutable** (repo rules block tag deletion/move); this RC re-points testers at
+the clean tip.
+
+### Changed
+
+- Repo-wide `cargo fmt --all`; CI rustfmt is now a hard gate (was non-blocking).
+- CI/audit workflows: `actions/checkout@v4` → `@v5` (Node 24 Actions runtime).
+- `aur-scanner-rc` tracks `v2.1.0-rc.2`.
+
+No detection/rule behaviour changes vs 2.1.0-rc.1.
+
+## [2.1.0-rc.1] - 2026-07-28
+
+Release candidate focused on correctness and Atomic Arch coverage depth. External
+pull requests are treated as untrusted input: only reimplemented, adversarially
+tested changes land. The pacman hook remains fail-closed on Critical findings
+in multi-package transactions (PR #23's soft-continue default is not accepted).
+
+### Added
+
+- **Configurable text output via an `[output]` config table.** Each finding's
+  rendered fields are user-controllable: `line`, `snippet`, `recommendation`,
+  and `cwe`. Rich by default; mistyped keys are hard errors
+  (`deny_unknown_fields`). Display-only — never changes findings, exit codes, or
+  gates. `check` compact output now shows `file:line` (discussion #16).
+- **Default config discovery.** Without `-c`, the CLI and hook load the first
+  existing path among `$XDG_CONFIG_HOME/aur-scanner/config.toml` (or
+  `~/.config/...`) and `/etc/aur-scanner/config.toml`. A present-but-malformed
+  file is a hard error. Fixes threat-intel appearing dead when keys lived only
+  in the system config (issue #25). `check` now applies the full config (not
+  only the display table).
+- **ALPM `*.hook` side-script scanning.** Package-dir `.hook` files are read as
+  text and analyzed with the install-scriptlet rule surface (Atomic Arch wave 4
+  delivery path). Never executed.
+- **ATOMIC-004** — `~/.local/bin/sudo` (and similar) credential-stealer shim
+  detection.
+- **ATOMIC-001** expanded with wave-3 package names (`nextfile-js`,
+  `ansi-colors-nextfile-js`).
+- **ENV-003** expanded to fish/zsh/profile.d startup paths (still subject to the
+  pure-printer / heredoc informational filter).
+
+### Fixed
+
+- **`aur-scan-wrap` / plugin / `install` config discovery** — those paths used
+  built-in `ScanConfig::default()` only, so XDG/`/etc` settings (including
+  threat-intel) never applied when scanning through the wrapper. They now share
+  `ScanConfig::resolve` via `Scanner::with_system_config()` (same contract as the
+  CLI and hook). Pure built-in defaults remain available for unit tests.
+- **SRC-004 false positive on `raw.githubusercontent.com`** — shortener match is
+  host-label-boundary via `neturl`, not a substring (issue #22; `t.co` inside
+  `githubusercontent.com`).
+- **CHK-006 false positive on commented-out sources** — `#` after an unquoted
+  `(` is a shell comment, matching bash (`source=(#"old"` …) (issue #24).
+- **PRIV-002 false positive on clearing SUID** — symbolic modes that *remove*
+  the bit (`u-s`, `g-s`, `-s`) no longer fire; only set forms (`u+s`, `=s`,
+  octal 2–7xxx) do (issue #21).
+- **ENV-003 / HIDDEN-001 on printed install messages** — path-prefixed pure
+  printers (`/bin/cat <<EOF`) are recognized so documentation heredocs that
+  mention `~/.bashrc` do not fire (issue #15).
+- **PERSIST-003 on cron removal** — requires a write/install verb (or
+  `crontab -e` / file install); `rm /etc/cron.d/...` and `crontab -l`/`-r` do
+  not fire (issue #21).
+- **`aur-scanner-git` prepare()** — GitHub merge commits signed by GitHub's key
+  fall back to verifying the first parent against `validpgpkeys` (issue #20).
+
+### Security
+
+- Hook multi-package policy: **unchanged fail-closed**. A Critical finding still
+  aborts the entire transaction. Soft-skip of the offending package only is not
+  the default; it would let a malicious package ride alongside clean ones.
+- `anyhow` bumped past RUSTSEC-2026-0190 (unsound `downcast_mut`).
+
+### Deferred (not this RC)
+
+- Offline analysis of prebuilt `-bin` artifacts (planned follow-up; opt-in threat
+  intel already covers declared hashes when enabled).
+
 ## [2.0.0] - 2026-06-17
 
 Major release: optional, opt-in threat-intelligence lookups (VirusTotal +
@@ -271,5 +373,8 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
+[2.1.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0
+[2.1.0-rc.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0-rc.2
+[2.1.0-rc.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0-rc.1
 [2.0.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.0.0
 [1.1.0-rc1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.1.0-rc1

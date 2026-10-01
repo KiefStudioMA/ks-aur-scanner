@@ -160,7 +160,8 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         anyhow::bail!("no packages specified");
     }
     let client = AurClient::new().context("Failed to create AUR client")?;
-    let scanner = Scanner::with_defaults().context("Failed to create scanner")?;
+    // Same config discovery as `scan` / `check` / hook / wrap (XDG then /etc).
+    let scanner = Scanner::with_system_config().context("Failed to create scanner")?;
 
     banner::print_header("Race-Free Install");
     println!();

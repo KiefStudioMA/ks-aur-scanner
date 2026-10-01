@@ -144,8 +144,8 @@ impl SecurityAnalyzer for IocAnalyzer {
             &mut findings,
         );
 
-        if let Some(install) = &context.install_script {
-            self.scan_file(context, &install.path, &install.content, &mut findings);
+        for script in context.all_scripts() {
+            self.scan_file(context, &script.path, &script.content, &mut findings);
         }
 
         Ok(findings)
@@ -172,6 +172,7 @@ mod tests {
         let context = AnalysisContext {
             pkgbuild,
             install_script: None,
+            side_scripts: vec![],
             config: ScanConfig::default(),
             file_path: PathBuf::from("PKGBUILD"),
         };
@@ -194,6 +195,7 @@ mod tests {
         let context = AnalysisContext {
             pkgbuild,
             install_script: None,
+            side_scripts: vec![],
             config: ScanConfig::default(),
             file_path: PathBuf::from("PKGBUILD"),
         };
@@ -231,6 +233,7 @@ mod tests {
         let context = AnalysisContext {
             pkgbuild,
             install_script: None,
+            side_scripts: vec![],
             config: ScanConfig::default(),
             file_path: PathBuf::from("PKGBUILD"),
         };
