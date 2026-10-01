@@ -71,6 +71,39 @@ were settled with fixture tests rather than by reading.
   disabled. Release tags are signed against a PR head, and a squash or rebase
   merge would orphan the tag it was verified from.
 
+## [2.1.1] - 2026-10-01
+
+Security patch for the 2.1 line. Backports two fixes from the 2.2 branch; no
+detection, rule, or output changes.
+
+### Security
+
+- **`aur-scan check --no-confirm` exited 0 on a Critical** when no `--fail-on`
+  was given. That is how the shell integrations call it when
+  `AUR_SCAN_INTERACTIVE=0`, so in that mode a tree full of Criticals handed
+  straight off to paru/yay. A non-interactive `check` with no threshold now
+  fails closed on Critical (and on any package it could not fetch or scan), and
+  the bash, zsh and fish integrations pass `--fail-on "$AUR_SCAN_SEVERITY"` when
+  non-interactive. Interactive runs are unchanged: the prompt is still the gate.
+  The Nushell integration goes through `aur-scan-wrap`, which was already
+  fail-closed without a terminal.
+- **The pacman hook read a user-writable config as root.** It resolves its
+  configuration before dropping privileges and used the CLI's search order,
+  which puts `$XDG_CONFIG_HOME`/`~/.config` first. Because a malformed config is
+  deliberately a hard error, a hostile `build()` could drop broken TOML in
+  `~/.config/aur-scanner/` and abort every later pacman transaction. As root the
+  hook now reads `/etc/aur-scanner/config.toml` and nothing else.
+
+### Fixed
+
+- An empty `XDG_CONFIG_HOME` no longer disables the user config path; it falls
+  back to `~/.config` (the issue #25 symptom).
+
+### Changed
+
+- `async-trait` 0.1.92, which stops generating the `#[must_use]` that Rust
+  1.99's `clippy::double_must_use` rejects.
+
 ## [2.2.0-rc.1] - 2026-09-10
 
 Change detection, name impersonation, ownership signals, and static binary
