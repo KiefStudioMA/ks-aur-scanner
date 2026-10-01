@@ -12,6 +12,12 @@ were settled with fixture tests rather than by reading.
 
 ### Security
 
+- **A comment could hide a download from `FUNC-001`.** The check skipped the
+  whole function if `# curl` (or `# wget`, `# fetch`) appeared anywhere in it,
+  so one comment line silenced a real `curl` on the next. It now works per
+  logical line and skips only comment lines. A tab after the command, a quoted
+  command name (`"curl" url`), and `${wget}` are matched too.
+
 - **The pacman hook no longer reads a user-writable config as root.** It
   resolves its configuration before it can drop privileges — `/etc` may be
   root-readable only — and it had moved off its hardcoded `/etc` path onto the
@@ -26,6 +32,17 @@ were settled with fixture tests rather than by reading.
   as root, `/etc` and nothing else.
 
 ### Fixed
+
+- **`FUNC-001` false positive on build targets** whose name ends in a command
+  name: `cmake --build build --target libcurl` reported network access. The
+  command now needs a word boundary on the left, so `libcurl`, `prefetch` and
+  `my_wget` are left alone while `/usr/bin/curl`, `\curl` and `;curl` still
+  fire. Reported with a fix by @gulamovzavohir02-glitch
+  ([#35](https://github.com/KiefStudioMA/ks-aur-scanner/pull/35)), reimplemented
+  here with the comment fix above.
+- **The README detection table was stale** (118 codes against 138 in the
+  binary) and its prose gave two other totals. Regenerated, and a test now
+  fails if the table and the built-in catalog disagree.
 
 - **`ATOMIC-004` missed the natural form of a sudo shim.** Both patterns
   required either a literal `~`/`/home/<user>` prefix or the token `sudo`
@@ -66,6 +83,9 @@ were settled with fixture tests rather than by reading.
   finding pointed at whichever was discovered last.
 
 ### Changed
+
+- `async-trait` 0.1.92, which stops generating the `#[must_use]` that Rust
+  1.99's `clippy::double_must_use` rejects.
 
 - The repository accepts **merge commits only**; squash and rebase are
   disabled. Release tags are signed against a PR head, and a squash or rebase
