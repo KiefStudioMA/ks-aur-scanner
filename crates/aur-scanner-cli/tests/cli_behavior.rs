@@ -850,3 +850,41 @@ fn non_utf8_install_script_cannot_hide_a_payload() {
     std::fs::remove_dir_all(&dir).ok();
     assert_eq!(code, 1);
 }
+
+/// When the severity floor hides the finding that trips `--fail-on`, text must
+/// say so (not "No security issues found."), and JSON must keep every finding.
+#[test]
+fn hidden_gate_finding_is_reported_and_json_stays_complete() {
+    let dir = scratch_pkg("hiddengate", "source=('https://example.com/a.tar.gz')");
+    let d = dir.to_str().unwrap();
+    let (out, _, code) = run(&["scan", d, "-s", "critical", "--fail-on", "high"]);
+    assert_eq!(code, 1);
+    assert!(
+        !out.contains("No security issues found."),
+        "text claims clean while the gate tripped: {out}"
+    );
+    assert!(
+        out.contains("hidden by --severity/min_severity; the gate tripped"),
+        "{out}"
+    );
+    let (json, _, _) = run(&["scan", d, "-s", "critical", "--format", "json"]);
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(
+        !v["findings"].as_array().unwrap().is_empty(),
+        "JSON must be the complete record"
+    );
+    // Closest benign form: nothing hidden, genuinely clean.
+    let clean = scratch_pkg("hiddenclean", "");
+    let (out, _, code) = run(&[
+        "scan",
+        clean.to_str().unwrap(),
+        "-s",
+        "critical",
+        "--fail-on",
+        "high",
+    ]);
+    assert_eq!(code, 0);
+    assert!(out.contains("No security issues found."), "{out}");
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&clean).ok();
+}

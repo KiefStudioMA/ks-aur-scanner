@@ -20,20 +20,28 @@ pub enum OutputFormat {
 /// `display` controls which fields the human-readable **text** output includes;
 /// it is intentionally ignored by the JSON and SARIF formatters, which always
 /// emit the complete record so CI and tooling are never blinded by a display
-/// preference.
+/// preference. Callers pass the FULL result to those two formats; `hidden_note`
+/// explains findings the severity filter removed from `result` and is used only
+/// by the text format, so it never reports "No security issues" when findings
+/// exist.
 pub fn format_result(
     result: &ScanResult,
     format: OutputFormat,
     display: &OutputConfig,
+    hidden_note: Option<&str>,
 ) -> Result<String> {
     match format {
-        OutputFormat::Text => format_text(result, display),
+        OutputFormat::Text => format_text(result, display, hidden_note),
         OutputFormat::Json => format_json(result),
         OutputFormat::Sarif => format_sarif(result),
     }
 }
 
-fn format_text(result: &ScanResult, display: &OutputConfig) -> Result<String> {
+fn format_text(
+    result: &ScanResult,
+    display: &OutputConfig,
+    hidden_note: Option<&str>,
+) -> Result<String> {
     let mut output = String::new();
 
     output.push_str(&format!(
@@ -44,13 +52,19 @@ fn format_text(result: &ScanResult, display: &OutputConfig) -> Result<String> {
     output.push_str(&format!("{}\n\n", "=".repeat(60)));
 
     if result.findings.is_empty() {
-        output.push_str(&format!("{}\n", "No security issues found.".green()));
+        match hidden_note {
+            Some(n) => output.push_str(&format!("{}\n", n.yellow().bold())),
+            None => output.push_str(&format!("{}\n", "No security issues found.".green())),
+        }
         return Ok(output);
     }
 
     for finding in &result.findings {
         output.push_str(&format_finding(finding, display));
         output.push('\n');
+    }
+    if let Some(n) = hidden_note {
+        output.push_str(&format!("{}\n", n.yellow().bold()));
     }
 
     Ok(output)
