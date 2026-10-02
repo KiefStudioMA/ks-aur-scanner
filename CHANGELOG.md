@@ -8,8 +8,8 @@ All notable changes to this project are documented here. The format is based on
 
 Fixes from an internal audit of 2.2.0-rc.2 against its own documentation. Every
 fail-open path below was reproduced before it was changed and ships with a test
-that failed on rc.2. Two new detection codes (140 total): `SCAN-001` and
-`TI-UNCHECKED-001`.
+that failed on rc.2. Four new detection codes (142 total): `SCAN-001`,
+`TI-UNCHECKED-001`, `OBF-012`, and `PRIV-009`.
 
 ### Security
 
@@ -55,7 +55,22 @@ that failed on rc.2. Two new detection codes (140 total): `SCAN-001` and
   main package's scriptlet went unseen. Every `install=` is now scanned.
 - **Detection hardening** for staged and indirect fetch-and-execute forms,
   variable indirection across and within functions, inline encoded payloads
-  (bounded decoding), and cron persistence.
+  (bounded decoding), cron persistence, and helper functions that execute
+  their arguments (new Critical `OBF-012`).
+- **Files the scan never read**: every text file in the package directory is
+  now scanned, plus any path the PKGBUILD reaches through `$startdir` or
+  `$srcdir`, not just files with a script extension. A declared `install=`
+  that is missing or a directory is `SCAN-001`.
+- **Kernel modules loaded from an install scriptlet** were not checked at all.
+  Module commands there are now `PRIV-005`, and loading a module the package
+  itself ships is the new Critical `PRIV-009`.
+- **Report and help flags bypassed the wrapper and shell gates.** `--stats`,
+  `--news`, `--order`, `--comments`, `--gendb`, or `--help` anywhere on the
+  command line made `paru -S pkg --stats` install unscanned.
+- **Search-menu installs are refused by default.** `paru <term>`, `yay <term>`,
+  `yay -Y…` (including `-Ys`/`-Yi`, which opened the install menu unscanned),
+  and `-S --interactive` pick the package after the scan; name it with
+  `-S <name>` or set `AUR_SCAN_ALLOW_MENU=1`.
 
 ### Fixed
 
@@ -102,6 +117,19 @@ that failed on rc.2. Two new detection codes (140 total): `SCAN-001` and
   daemon-reload`, shipping a `modprobe.d` file, and reading
   `${XDG_CONFIG_HOME:-~/.config}`.
 - **The printed dependency tree** is nested instead of flat.
+- **Upgrade scanning** forwards the helper flags that change the update set
+  (`--aururl`, `--config`, `--ignore`, `--root`, …) to `-Quaq`, and with
+  `--devel` also scans installed VCS packages. More value-taking options are
+  recognized so their values aren't mistaken for packages, and
+  `aur-scan-wrap --help` prints usage.
+- **The pacman hook's split-package lookup** always consults the `.SRCINFO`
+  index, so a stale directory named after the package can't hide the real
+  clone; differing candidate versions are scanned and reported.
+- **Community rule ids** are trimmed and uppercased before the collision
+  check and must match the `ACME-001` shape.
+- **Hidden gate findings**: when `--severity` hides a finding that trips
+  `--fail-on`, the text output now says so instead of "No security issues
+  found", and JSON/SARIF always carry every finding.
 
 ### Changed
 

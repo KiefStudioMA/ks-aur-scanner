@@ -111,7 +111,7 @@ This scanner implements detection rules based on real-world attacks and security
 
 | Feature | Description |
 |---------|-------------|
-| **Static Analysis** | 140 detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
+| **Static Analysis** | 142 detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
 | **Install Script Scanning** | Analyzes `.install` scripts for persistence mechanisms |
 | **Source Verification** | Validates URLs, checksums, and download sources |
 | **AUR Integration** | Fetch and scan packages directly from AUR before installation |
@@ -344,7 +344,15 @@ terminal and without `--noconfirm`, exits non-zero.
 
 ### aur-scan scan
 
-Scan a local PKGBUILD file or directory.
+Scan a local PKGBUILD file or directory. A directory scan reads the PKGBUILD,
+every declared `install=` scriptlet (split packages included), `.hook` files,
+and every other text file in the package directory, plus anything the
+PKGBUILD reaches through `$startdir` or `$srcdir`: a payload can be run from
+any of them. Files that can't be fully read (oversized, symlinked, not a
+regular file, a missing declared `install=`) are reported as `SCAN-001`
+rather than skipped. `--severity` only trims the text output; if it hides a
+finding that trips `--fail-on`, the output says so, and JSON and SARIF always
+carry every finding.
 
 ```bash
 aur-scan scan <PATH> [OPTIONS]
@@ -901,7 +909,10 @@ still loads. When running as root (the pacman hook), only the `/usr/share` and
 `/etc` directories are read. `file_types` accepts `pkgbuild`,
 `install_script`, and `source_file` (local scripts shipped next to the
 PKGBUILD). A shipped example lives at
-`/usr/share/aur-scanner/rules.d/example.toml`. Use an org-specific prefix.
+`/usr/share/aur-scanner/rules.d/example.toml`. Ids must look like `ACME-001`
+(letters, then hyphen-separated parts); they are trimmed and uppercased before
+the collision check, so `shell-001` is the same id as `SHELL-001`. Use an
+org-specific prefix.
 
 ## Change Detection
 
@@ -1092,11 +1103,12 @@ SARIF output is compatible with:
 | `AUR_SCAN_INTERACTIVE` | `1` | Prompt before proceeding |
 | `AUR_SCAN_SCAN_UPGRADES` | `1` | On a system upgrade (`-Syu`/`-Syyu`/bare `yay`), scan **each** AUR package that has a pending update (resolved via the helper's `-Quaq`). A hijacked *update* is the primary AUR threat, so this is on by default; set `0` to skip it. |
 | `AUR_SCAN_SCAN_GETPKGBUILD` | `0` | Also scan the package(s) on `-G`/`--getpkgbuild` (which only downloads a PKGBUILD to review). Off by default; set `1` to opt in. |
+| `AUR_SCAN_ALLOW_MENU` | `0` | Search-menu installs (`paru <term>`, `yay <term>`, `yay -Y…`, `-S --interactive`) are refused by default, because the package is picked from the menu after the scan. Name the package with `-S <name>`, or set `1` to scan the search term and leave the final pick to the pacman hook. |
 | `AUR_SCAN_MODE` | `gate` | `install` routes installs through `aur-scan install` (race-free build) instead of handing off to the helper |
 | `AUR_SCAN_HOOK_STRICT` | `0` | Pacman hook: abort instead of warn when a foreign package can't be scanned (see Level 4) |
 | `AUR_SCAN_VT_MAX_LOOKUPS` | `4` | VirusTotal lookups per scan when threat intel is on (config key `vt_max_lookups` wins) |
 
-All four shell integrations (bash, zsh, fish, Nushell) and `aur-scan-wrap` honor these. The shell integration scans what's **named** on the command line — `-S pkg`, a bare `helper pkg`, `yay -Y pkg`, local build directories, and (above) the upgrade set. It cannot see the package chosen *after* an interactive search-and-select menu (`yay`'s default `-Y` mode resolves it at runtime); for that — and for any helper or path the shell functions don't wrap — enable the opt-in **pacman hook**, which fires on the exact package set of every transaction. `paru`, `yay`, `pikaur`, `trizen`, and `pakku` are wrapped as shell functions (they share pacman's `-S`/`-Syu` grammar); `aura` (installs via `-A`) and the subcommand-grammar tools (`aurutils`, `rua`, `pat-aur`) are covered by the pacman hook instead, which fires on every transaction regardless of helper.
+All four shell integrations (bash, zsh, fish, Nushell) and `aur-scan-wrap` honor these. The shell integration scans what's **named** on the command line — `-S pkg`, a bare `helper pkg`, `yay -Y pkg`, local build directories, and (above) the upgrade set. It cannot see the package chosen *after* an interactive search-and-select menu, so menu installs are refused unless `AUR_SCAN_ALLOW_MENU=1`; for that case — and for any helper or path the shell functions don't wrap — enable the opt-in **pacman hook**, which fires on the exact package set of every transaction. With `--devel` on the command line, upgrades also scan every installed VCS (`-git`, `-svn`, `-hg`, `-bzr`) package, since the helper's update list can't name them reliably; a `Devel` setting in the helper's own config is not detected. `paru`, `yay`, `pikaur`, `trizen`, and `pakku` are wrapped as shell functions (they share pacman's `-S`/`-Syu` grammar); `aura` (installs via `-A`) and the subcommand-grammar tools (`aurutils`, `rua`, `pat-aur`) are covered by the pacman hook instead, which fires on every transaction regardless of helper.
 
 **Color output** is on when writing to a terminal and automatically off when piped or redirected. Force it off with the global `--no-color` flag or by setting `NO_COLOR=1`.
 

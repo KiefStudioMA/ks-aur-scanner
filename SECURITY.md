@@ -45,6 +45,10 @@ before reporting (`paru -S aur-scanner-git` / re-build the tagged package).
   inherited git configuration; protocol-restricted; time-bounded) to fetch a
   PKGBUILD, and read-only `pacman` queries. **The scan cannot compromise the
   machine doing the scanning** — that property is non-negotiable.
+- **Unreadable means unreviewed, never clean.** A package file the scanner
+  can't fully read — oversized, symlinked, not a regular file, or a declared
+  `install=` that is missing — is reported as the Critical `SCAN-001`, and
+  every install gate treats that package as unreviewed.
 - **Building is a separate, explicit step.** `aur-scan install` runs `makepkg`
   and `aur-scan-wrap` hands off to your AUR helper, but only after the scan gate
   passes. That is the point where the package's own code runs, by your choice,
