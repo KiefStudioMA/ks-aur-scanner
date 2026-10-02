@@ -55,7 +55,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "nat
 chrono = { version = "0.4", features = ["serde"] }
 
 # Terminal output
-colored = "2.1"
+colored = "3.1"
 
 # Hashing
 blake3 = "1.5"
