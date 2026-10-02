@@ -392,10 +392,6 @@ fn installation_gating_paths_build_registry_context() {
             "crates/aur-scanner-cli/src/commands/install.rs",
             "the race-free path that actually builds",
         ),
-        (
-            "crates/aur-scanner-plugin/src/bin/wrapper.rs",
-            "the AUR-helper wrapper every paru/yay/nushell user goes through",
-        ),
     ] {
         let src = std::fs::read_to_string(root.join(rel))
             .unwrap_or_else(|e| panic!("reading {rel}: {e}"));
@@ -403,6 +399,33 @@ fn installation_gating_paths_build_registry_context() {
             src.contains("Registry::From"),
             "{rel} ({why}) must supply registry context; without it \
              SQUAT-*, OWN-* and [[owned_namespaces]] cannot fire on this path"
+        );
+    }
+
+    // The AUR-helper wrapper every paru/yay/nushell user goes through does not
+    // scan in-process: it hands the decision to `aur-scan check` / `aur-scan
+    // install`, which build the registry context checked above. Pin that
+    // delegation, and that no in-process scan without context creeps back in.
+    let rel = "crates/aur-scanner-plugin/src/bin/wrapper.rs";
+    let src =
+        std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("reading {rel}: {e}"));
+    assert!(
+        src.contains("Command::new(\"aur-scan\")")
+            && src.contains("\"check\"")
+            && src.contains("\"install\""),
+        "{rel} must delegate scanning to `aur-scan check`/`install` so the \
+         registry context (SQUAT-*, OWN-*, [[owned_namespaces]]) applies"
+    );
+    for in_process in [
+        "Registry::None",
+        "scan_pkgbuild",
+        "scan_directory",
+        "Scanner::new",
+    ] {
+        assert!(
+            !src.contains(in_process),
+            "{rel} scans in-process ({in_process}); route it through \
+             `aur-scan check` or supply Registry::From"
         );
     }
 }
