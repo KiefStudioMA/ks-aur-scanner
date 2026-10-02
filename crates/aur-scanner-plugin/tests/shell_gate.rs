@@ -655,6 +655,37 @@ struct Sandbox {
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
+/// The system tool directories as seen by the gates, minus any installed
+/// `aur-scan*` binaries. A machine that already has the package installed (every
+/// existing user, and the PKGBUILDs run this suite in `check()`) would otherwise
+/// put the REAL `/usr/bin/aur-scan` on the gates' PATH: the "scanner missing"
+/// cases stop being missing, and the real scanner runs against the stubs.
+fn system_bin() -> &'static Path {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("aur-scan-gate-sysbin-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for src in ["/usr/bin", "/bin"] {
+            let Ok(entries) = fs::read_dir(src) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let name = e.file_name();
+                if name.to_string_lossy().starts_with("aur-scan") {
+                    continue;
+                }
+                let link = dir.join(&name);
+                if !link.exists() {
+                    #[cfg(unix)]
+                    let _ = std::os::unix::fs::symlink(e.path(), &link);
+                }
+            }
+        }
+        dir
+    })
+}
+
 impl Sandbox {
     fn new(with_scanner: bool) -> Self {
         let root = std::env::temp_dir().join(format!(
@@ -726,7 +757,10 @@ exit 99"#,
 
     fn base_cmd(&self, mut cmd: Command, extra_env: &[(&str, &str)]) -> Command {
         cmd.env_clear()
-            .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
+            .env(
+                "PATH",
+                format!("{}:{}", self.bin.display(), system_bin().display()),
+            )
             .env("HOME", &self.root)
             .env("NO_COLOR", "1")
             .env("STUB_LOG", &self.log)
