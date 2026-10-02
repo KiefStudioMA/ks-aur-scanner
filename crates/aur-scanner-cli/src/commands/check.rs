@@ -4,10 +4,10 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::{BTreeMap, HashMap};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
-use aur_scanner_core::aur::{AurClient, PackageInfoSource};
+use aur_scanner_core::aur::{package_deadline, with_deadline, AurClient, PackageInfoSource};
 use aur_scanner_core::depgraph::{self, DependencyGraph, PackageSource, ResolveOptions};
 use aur_scanner_core::history::{
     compare as history_compare, findings_for_changes, History, PackageRecord, Scope,
@@ -185,9 +185,40 @@ pub(crate) enum MaintainerLookup {
     NotLookedUp,
 }
 
+/// What to do once the scan is finished. Pure so the fail-closed contract is
+/// unit-testable without a terminal.
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    /// Nothing at or above the gate and the tree is fully reviewed.
+    Pass,
+    /// The gate tripped in an interactive run on a real terminal: ask the user.
+    Prompt,
+    /// Fail: unreviewed packages, a tripped gate with no one to ask, or no TTY.
+    Deny,
+}
+
+/// Decide the outcome.
+///
+/// * `incomplete` -- an unresolved/truncated/unfetchable package: never promptable.
+/// * `gate_tripped` -- a finding at or above the `--fail-on` (or default) level.
+/// * a prompt is only possible when interactive AND stdin is a terminal; a piped
+///   `y` (CI, cron, `echo y |`) is not consent.
+fn verdict(incomplete: bool, gate_tripped: bool, interactive: bool, stdin_is_tty: bool) -> Verdict {
+    if incomplete {
+        Verdict::Deny
+    } else if !gate_tripped {
+        Verdict::Pass
+    } else if interactive && stdin_is_tty {
+        Verdict::Prompt
+    } else {
+        Verdict::Deny
+    }
+}
+
 /// Run the pre-install check.
 pub async fn run(args: CheckArgs) -> Result<()> {
-    let client = AurClient::new().context("Failed to create AUR client")?;
+    let timeout_seconds = args.config.timeout_seconds;
+    let client = AurClient::with_timeout(timeout_seconds).context("Failed to create AUR client")?;
     let output = args.config.output.clone();
     let scanner = Scanner::new(args.config).context("Failed to create scanner")?;
 
@@ -202,7 +233,7 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     let parser = StaticParser::new();
     for dir in &args.local_dirs {
         let pkgbuild_path = dir.join("PKGBUILD");
-        let content = std::fs::read_to_string(&pkgbuild_path)
+        let content = aur_scanner_core::read_text_capped(&pkgbuild_path)
             .with_context(|| format!("reading {}", pkgbuild_path.display()))?;
         let parsed = parser
             .parse(&content)
@@ -282,12 +313,11 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         aur_count.to_string().bold(),
         repo_count
     );
-    if !graph.truncated.is_empty() {
-        println!(
-            "  {} tree truncated at depth/size cap for: {}",
-            "note:".yellow(),
-            graph.truncated.join(", ")
-        );
+    // Anything the resolver could not vouch for is an UNSCANNED package, so it
+    // fails the check (a --no-deps run never expands, hence never truncates).
+    let graph_issues = graph.blocking_issues();
+    for issue in &graph_issues {
+        println!("  {} {}", "UNREVIEWED:".red().bold(), issue);
     }
     println!();
 
@@ -356,13 +386,14 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     // `if ! aur-scan check ...` handed straight off to paru. The primary
     // documented protection was a no-op in exactly the mode people script.
     //
-    // An interactive run keeps its previous behaviour: the prompt is the gate,
-    // and the user may knowingly accept the risk.
+    // An interactive run with no `--fail-on` prompts at High and above (the
+    // historical prompt floor); with `--fail-on <level>` it prompts for ANY
+    // finding at or above that level, not just Critical/High. A non-interactive
+    // run has no prompt, so the threshold simply fails it.
     let effective_gate = match (args.fail_on, args.interactive) {
         (Some(t), _) => t,
         (None, false) => Severity::Critical,
-        // Interactive with no explicit threshold: the prompt below decides.
-        (None, true) => Severity::Critical,
+        (None, true) => Severity::High,
     };
 
     let mut scans: BTreeMap<String, ComponentScan> = BTreeMap::new();
@@ -438,23 +469,30 @@ pub async fn run(args: CheckArgs) -> Result<()> {
             None => MaintainerLookup::NotLookedUp,
         };
 
-        let result = match &local_pkgbuild {
-            Some(p) => scanner
-                .scan_pkgbuild(p, registry_ctx)
-                .await
-                .map(|r| (r, p.clone()))
-                .map_err(|e| format!("scan error: {e}")),
-            None => match client.fetch_pkgbuild(&node.name).await {
-                Ok(fetched) => scanner
-                    .scan_pkgbuild(&fetched.pkgbuild_path, registry_ctx)
+        // Overall per-package deadline from `timeout_seconds`: a hung fetch or
+        // scan is "not reviewed" (fail closed), never a pass. The fetched temp
+        // dir is returned so it outlives the history comparison below.
+        let deadline = package_deadline(timeout_seconds);
+        let scanned = with_deadline(deadline, async {
+            match &local_pkgbuild {
+                Some(p) => scanner
+                    .scan_pkgbuild(p, registry_ctx)
                     .await
-                    .map(|r| (r, fetched.pkgbuild_path.clone()))
-                    .map_err(|e| format!("scan error: {e}")),
-                Err(e) => Err(format!("fetch error: {e}")),
-            },
-        };
+                    .map(|r| (r, p.clone(), None)),
+                None => {
+                    let fetched = client.fetch_pkgbuild(&node.name).await?;
+                    let path = fetched.pkgbuild_path.clone();
+                    scanner
+                        .scan_pkgbuild(&path, registry_ctx)
+                        .await
+                        .map(|r| (r, path, Some(fetched)))
+                }
+            }
+        })
+        .await;
+        let result = scanned.map_err(|e| format!("fetch/scan error: {e}"));
         match result {
-            Ok((mut result, scanned_path)) => {
+            Ok((mut result, scanned_path, _keep_alive)) => {
                 // Compare against the last time we saw this package and record
                 // what it looks like now. A first scan is silent -- there is
                 // nothing to compare against, and complaining about a cold
@@ -469,14 +507,8 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                         scope,
                         aur_scanner_core::history::analysis_fingerprint(scanner.min_severity()),
                     ) {
-                        // Honour the configured threshold. These are produced
-                        // after the scan returns, so they miss the filter the
-                        // engine applies to everything else.
-                        Ok(diff_findings) => result.findings.extend(
-                            diff_findings
-                                .into_iter()
-                                .filter(|f| f.severity <= scanner.min_severity()),
-                        ),
+                        // Gates see the full set: `min_severity` is display-only.
+                        Ok(diff_findings) => result.findings.extend(diff_findings),
                         Err(e) => {
                             tracing::debug!("history comparison for {} failed: {e}", node.name)
                         }
@@ -522,6 +554,9 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     );
     print!("{}", sbom::render_tree(&graph, &scans));
     print_orphans(&graph);
+    for note in &graph.notes {
+        println!("  {} {}", "note:".yellow(), note);
+    }
 
     // Loudly call out opaque boundaries: packages that fetch/run external code.
     // The scanner intentionally does NOT follow these, so their real behavior
@@ -593,46 +628,53 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     }
 
     // 6. Decide pass/fail. The gate trips if any finding was at or above the
-    // requested threshold (computed per-finding via `is_at_least` during the
-    // scan, so it honors any threshold -- not just critical/high).
-    // An interactive run defers to the prompt; a non-interactive one cannot,
-    // so the computed gate is what decides.
-    let mut failed = gate_tripped && !args.interactive;
-    // A package we could not fetch/scan is unreviewed. Treat that as a failure
-    // rather than silently passing -- "could not analyze" is not "clean".
-    // "Could not analyze" is not "clean". Block on an unreviewed package whenever
-    // there is a gate to trip: a non-interactive run always has one now, and an
-    // interactive run has one only if a threshold was asked for explicitly.
-    if !fetch_failures.is_empty() && (!args.interactive || args.fail_on.is_some()) {
-        failed = true;
-    }
-
-    if args.interactive && (total_critical > 0 || total_high > 0) {
-        println!();
-        if total_critical > 0 {
-            println!(
-                "{}",
-                "WARNING: Critical security issues in the dependency tree!"
-                    .red()
-                    .bold()
-            );
+    // threshold (computed per-finding via `is_at_least` during the scan, so it
+    // honors any threshold -- not just critical/high). A package that could not
+    // be resolved, fetched or scanned is unreviewed: "could not analyze" is not
+    // "clean", and it cannot be waved through with a prompt.
+    let incomplete = !fetch_failures.is_empty() || !graph_issues.is_empty();
+    match verdict(
+        incomplete,
+        gate_tripped,
+        args.interactive,
+        io::stdin().is_terminal(),
+    ) {
+        Verdict::Pass => Ok(()),
+        Verdict::Deny => {
+            if incomplete {
+                anyhow::bail!("Unreviewed packages in the dependency tree; refusing to pass");
+            }
+            if args.interactive {
+                println!(
+                    "{}",
+                    "Not a terminal: cannot ask for consent, so the gate stays closed.".yellow()
+                );
+            }
+            anyhow::bail!("Security issues detected");
         }
-        print!("{} ", "Proceed with installation? [y/N]:".yellow().bold());
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
-            println!("{}", "Installation aborted by user.".yellow());
-            failed = true;
-        } else {
-            println!("{}", "User accepted risks, proceeding...".dimmed());
+        Verdict::Prompt => {
+            println!();
+            if total_critical > 0 {
+                println!(
+                    "{}",
+                    "WARNING: Critical security issues in the dependency tree!"
+                        .red()
+                        .bold()
+                );
+            }
+            print!("{} ", "Proceed with installation? [y/N]:".yellow().bold());
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            if matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                println!("{}", "User accepted risks, proceeding...".dimmed());
+                Ok(())
+            } else {
+                println!("{}", "Installation aborted by user.".yellow());
+                anyhow::bail!("Security issues detected or user aborted");
+            }
         }
     }
-
-    if failed {
-        anyhow::bail!("Security issues detected or user aborted");
-    }
-    Ok(())
 }
 
 fn print_findings_for(
@@ -818,5 +860,33 @@ mod tests {
         // No line captured: show the file, no colon-line.
         assert!(out.contains("(cdu.install)"), "got: {out}");
         assert!(!out.contains("cdu.install:"), "no dangling colon: {out}");
+    }
+
+    // --- gate verdict (fail closed) -------------------------------------------
+
+    #[test]
+    fn gate_tripped_prompts_only_on_a_real_terminal() {
+        // `check --fail-on medium` interactive: a Medium trips the gate and must
+        // prompt (it used to exit 0 silently).
+        assert_eq!(verdict(false, true, true, true), Verdict::Prompt);
+        // `echo y | aur-scan check`: stdin is not a TTY -> never accepted.
+        assert_eq!(verdict(false, true, true, false), Verdict::Deny);
+        // Non-interactive: no prompt exists, deny.
+        assert_eq!(verdict(false, true, false, true), Verdict::Deny);
+        assert_eq!(verdict(false, true, false, false), Verdict::Deny);
+    }
+
+    #[test]
+    fn clean_tree_passes_and_incomplete_never_does() {
+        assert_eq!(verdict(false, false, true, true), Verdict::Pass);
+        assert_eq!(verdict(false, false, false, false), Verdict::Pass);
+        // Unresolved/truncated/unfetchable: denied even with a TTY, even when
+        // interactive, and even though no finding tripped the gate.
+        for tty in [true, false] {
+            for inter in [true, false] {
+                assert_eq!(verdict(true, false, inter, tty), Verdict::Deny);
+                assert_eq!(verdict(true, true, inter, tty), Verdict::Deny);
+            }
+        }
     }
 }

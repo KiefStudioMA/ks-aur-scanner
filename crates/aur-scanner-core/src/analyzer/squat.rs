@@ -432,6 +432,18 @@ impl SquatAnalyzer {
             if !in_namespace {
                 continue;
             }
+            // A local directory has no registry identity: its maintainer is the
+            // overlay's "(local)" placeholder, meaning UNKNOWN. Unknown is not
+            // "an unauthorised account", so say nothing rather than raise a
+            // Critical about an account that does not exist.
+            if reg
+                .maintainer
+                .as_deref()
+                .is_some_and(crate::overlay::is_local_maintainer)
+            {
+                tracing::debug!("{name}: maintainer unknown (local overlay); skipping SQUAT-004");
+                continue;
+            }
             let authorised = reg
                 .maintainer
                 .as_ref()
@@ -720,6 +732,21 @@ mod tests {
         }];
         let f = a.check_owned_namespaces("aur-scanner-bin", &r, &owned, Path::new("PKGBUILD"));
         assert_eq!(ids(&f), vec!["SQUAT-004"]);
+    }
+
+    #[test]
+    fn owned_namespace_ignores_the_local_overlay_marker() {
+        // `check --local`: the maintainer is the unknown-local placeholder, which
+        // must not be read as an unauthorised account.
+        let a = SquatAnalyzer::new();
+        let mut r = reg();
+        r.maintainer = Some(crate::overlay::LOCAL_MAINTAINER.to_string());
+        let owned = vec![OwnedNamespace {
+            prefix: "aur-scanner".into(),
+            maintainers: vec!["KiefStudio".into()],
+        }];
+        let f = a.check_owned_namespaces("aur-scanner-bin", &r, &owned, Path::new("PKGBUILD"));
+        assert!(f.is_empty(), "{:?}", ids(&f));
     }
 
     #[test]
