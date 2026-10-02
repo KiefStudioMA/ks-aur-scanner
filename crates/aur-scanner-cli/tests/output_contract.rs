@@ -28,17 +28,27 @@ fn write_pkgbuild(dir: &Path, body: &str) {
     std::fs::write(dir.join("PKGBUILD"), body).unwrap();
 }
 
-/// A package whose `install=` escapes the directory makes the scanner log a
-/// warning during the scan.
-const WARNING_PKG: &str =
-    "pkgname=t\npkgver=1\npkgrel=1\ninstall=../../etc/passwd\nbuild() {\n  true\n}\n";
+/// A plain package; the warning comes from a config that enables threat intel
+/// without any provider key, which makes the scanner log a `warn!`.
+const WARNING_PKG: &str = "pkgname=t\npkgver=1\npkgrel=1\nbuild() {\n  true\n}\n";
 
 #[test]
 fn warnings_go_to_stderr_and_json_sarif_stay_valid() {
     let dir = scratch("warn");
     write_pkgbuild(&dir, WARNING_PKG);
+    let cfg = dir.join("config.toml");
+    std::fs::write(&cfg, "enable_threat_intel = true\n").unwrap();
     for fmt in ["json", "sarif"] {
-        let out = run(&["scan", dir.to_str().unwrap(), "--format", fmt]);
+        let out = Command::new(bin())
+            .args(["-c", cfg.to_str().unwrap(), "scan"])
+            .arg(dir.to_str().unwrap())
+            .args(["--format", fmt])
+            .env_remove("RUST_LOG")
+            .env_remove("VT_API_KEY")
+            .env_remove("VIRUSTOTAL_API_KEY")
+            .env_remove("URLHAUS_AUTH_KEY")
+            .output()
+            .unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
         let v: serde_json::Value = serde_json::from_slice(&out.stdout)
             .unwrap_or_else(|e| panic!("{fmt} stdout is not one JSON document ({e}): {stdout}"));
@@ -50,7 +60,7 @@ fn warnings_go_to_stderr_and_json_sarif_stay_valid() {
         assert!(!stdout.contains('\u{1b}'), "ANSI escape on stdout");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains("suspicious install="),
+            stderr.contains("threat-intel lookups are disabled"),
             "the warning must be on stderr: {stderr}"
         );
         assert!(
