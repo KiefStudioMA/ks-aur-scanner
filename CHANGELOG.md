@@ -6,7 +6,10 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-Fixes from an internal audit of 2.2.0-rc.2 against its own documentation. Every
+## [2.2.0] - 2026-10-02
+
+Stable release of the 2.2.0 line: everything in rc.1 and rc.2 below, plus the
+fixes from an internal audit of rc.2 against its own documentation. Every
 fail-open path below was reproduced before it was changed and ships with a test
 that failed on rc.2. Four new detection codes (142 total): `SCAN-001`,
 `TI-UNCHECKED-001`, `OBF-012`, and `PRIV-009`.
@@ -816,6 +819,7 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
+[2.2.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0
 [2.2.0-rc.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0-rc.2
 [2.1.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.1
 [2.2.0-rc.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0-rc.1
