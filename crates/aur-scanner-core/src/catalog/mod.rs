@@ -226,6 +226,8 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
           "An opt-in VirusTotal lookup reports engines detecting the declared sha256 of a source artifact as malicious.", "Do not build or install; review the VirusTotal report for this hash."),
         e("TI-URLHAUS-001", "URLhaus lists a source URL", Critical, MaliciousCode, "threat_intel", Some("CWE-494"),
           "An opt-in abuse.ch/URLhaus lookup lists a source= URL as a known malware/payload distribution URL.", "Do not build or install; the source URL is a known-bad distribution point."),
+        e("TI-UNCHECKED-001", "Threat-intel lookups incomplete", Info, Configuration, "threat_intel", None,
+          "Some source hashes or URLs were not checked by the opt-in threat-intel providers (per-scan lookup cap reached or provider rate limit), so a clean result does not cover them.", "Re-scan later (cached verdicts are reused), raise AUR_SCAN_VT_MAX_LOOKUPS if your key allows it, or review the remaining sources manually."),
         // -- provenance --
         e("PROV-001", "Package gained risky behavior", High, SuspiciousMetadata, "provenance", Some("CWE-506"),
           "The package introduced fetch/execute behavior it did not have at the previous scan.", "Review the PKGBUILD/install diff before building."),
