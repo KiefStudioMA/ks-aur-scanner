@@ -95,12 +95,12 @@ The Arch User Repository (AUR) is an incredible community resource that extends 
 
 | Date | Attack | Impact |
 |------|--------|--------|
-| **June 2026** | "Atomic Arch" — 1,500+ orphaned packages adopted and modified to pull malicious npm/bun packages (`atomic-lockfile`, `js-digest`) | Credential stealer + eBPF rootkit (`scales.bpf.c`) dropped from install hooks |
+| **June 2026** | "Atomic Arch" — orphaned packages adopted and modified to pull malicious npm/bun packages (`atomic-lockfile`, `js-digest`) from install hooks ([Arch Linux news](https://archlinux.org/news/active-aur-malicious-packages-incident/)) | Reported credential stealer + eBPF rootkit (`scales.bpf.c`) |
 | **July 2025** | CHAOS RAT distributed via `firefox-patch-bin` and `librewolf-fix-bin` | Remote access trojan with persistence via systemd masquerading |
 | **2018** | Orphaned packages `acroread`, `balz`, `minergate` hijacked | Cryptominer installation via `curl \| bash` and systemd timers |
 | **Ongoing** | Typosquatting attacks mimicking popular package names | Various malware payloads |
 
-**There was no automated tool to scan for these threats before installation. Now there is.**
+**An AUR payload runs when `makepkg` builds the package, so the scan has to happen before the build. That is where this scanner sits: in front of your AUR helper, on the exact files about to be built.**
 
 This scanner implements detection rules based on real-world attacks and security research, providing an additional layer of defense for the Arch Linux ecosystem.
 
@@ -118,9 +118,9 @@ This scanner implements detection rules based on real-world attacks and security
 | **Threat Intelligence** _(opt-in)_ | Optional VirusTotal hash & URLhaus URL reputation checks — **off by default**, bring-your-own-key, public hashes/URLs only |
 | **Multiple Output Formats** | Human-readable, JSON, and SARIF for CI/CD integration |
 | **Shell Integration** | Seamless wrapper for yay, paru, and other AUR helpers |
-| **Pacman Hook** | System-wide enforcement during package transactions |
+| **Pacman Hook** _(backstop)_ | Opt-in check during the pacman transaction; runs after the build, so it catches `.install` scriptlets, not build-time payloads |
 | **Offline Operation** | Core scanning works without network access |
-| **Zero Dependencies Runtime** | Single static binary with no runtime dependencies |
+| **Small Runtime Footprint** | One binary per tool; runtime needs only `gcc-libs` and `openssl` from the Arch repos |
 
 ---
 
@@ -192,7 +192,7 @@ sudo install -Dm644 install/rules.d/example.toml /usr/share/aur-scanner/rules.d/
 # Pacman hook — opt-in backstop only. It runs AFTER makepkg has already built
 # (and executed) the package, so it catches .install scriptlets, not build-time
 # payloads. Prefer the shell integration above. Enable it deliberately:
-sudo install -Dm644 install/aur-scan.hook /usr/share/libalpm/hooks/aur-scan.hook
+sudo install -Dm644 install/aur-scan.hook /etc/pacman.d/hooks/aur-scan.hook
 ```
 
 ---
@@ -607,7 +607,7 @@ The wrapper:
 For a defense-in-depth backstop, install the pacman hook:
 
 ```bash
-sudo cp /usr/share/aur-scan/aur-scan.hook.example /usr/share/libalpm/hooks/aur-scan.hook
+sudo install -Dm644 /usr/share/aur-scan/aur-scan.hook.example /etc/pacman.d/hooks/aur-scan.hook
 ```
 
 **Hook behavior:**
@@ -615,7 +615,7 @@ sudo cp /usr/share/aur-scan/aur-scan.hook.example /usr/share/libalpm/hooks/aur-s
 - **Aborts the transaction on CRITICAL findings** (anywhere in the scanned PKGBUILD or its resolved `.install` scriptlet), and aborts fail-closed if a located PKGBUILD cannot be analyzed
 - Warns on HIGH severity findings
 
-**Hook configuration** (`/usr/share/libalpm/hooks/aur-scan.hook`):
+**Hook configuration** (`/etc/pacman.d/hooks/aur-scan.hook`, the admin hook directory; `/usr/share/libalpm/hooks/` belongs to packages):
 
 ```ini
 [Trigger]
@@ -1130,7 +1130,8 @@ Guarantees:
 - **Auditable egress** — every external call lives in one file
   (`crates/aur-scanner-core/src/threat_intel/remote.rs`): HTTPS-only,
   no-redirect, time-bounded.
-- **Cached & capped** — verdicts are cached (authenticated `DiskCache`) and
+- **Cached & capped** — verdicts are cached in your private (0700) cache
+  directory with an integrity check that rejects corrupted entries, and
   lookups are bounded per scan to respect VirusTotal's 4-request/minute public
   API quota.
 
@@ -1277,7 +1278,7 @@ ks-aur-scanner/
 ### System Requirements
 
 - Arch Linux (or Arch-based distribution)
-- Rust 1.70+ (for building)
+- Rust 1.85+ (for building; `rust-version` in `Cargo.toml`, checked in CI)
 - `pacman` (for system audit feature)
 
 ---
@@ -1458,8 +1459,9 @@ Some of the above were brought in by cherry-pick rather than the merge button �
 
 Sent a PR? Add yourself here. See the full list on the [contributors page](https://github.com/KiefStudioMA/ks-aur-scanner/graphs/contributors).
 
-Being listed here — or in GitHub's contributors sidebar — means you authored code
-that landed. It does not mean you maintain this project, review it, or vouch for
+Being listed here means your code, idea, or report shaped something that
+landed — as authored commits, or reimplemented with credit as described above.
+GitHub's contributors sidebar lists commit authors only. It does not mean you maintain this project, review it, or vouch for
 it: [Kief Studio](https://kief.studio) does that, and the responsibility is ours.
 The distinction protects contributors as much as it does us.
 
