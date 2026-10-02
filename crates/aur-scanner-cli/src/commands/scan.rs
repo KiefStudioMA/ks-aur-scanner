@@ -41,6 +41,10 @@ pub async fn run(
     // Snapshot the display config before `config` is consumed by the scanner;
     // it controls only how the text output is rendered, not what is scanned.
     let display = config.output.clone();
+    // `min_severity` trims what is SHOWN. The scan itself returns every finding
+    // and `--fail-on` evaluates all of them, so a low display threshold (or a
+    // user-writable config) can never switch a gate off.
+    let shown_min = config.min_severity;
 
     // Create scanner
     let scanner = Scanner::new(config).context("Failed to create scanner")?;
@@ -62,7 +66,8 @@ pub async fn run(
         crate::OutputFormat::Sarif => OutputFormat::Sarif,
     };
 
-    let output_str = output::format_result(&result, format, &display)?;
+    let shown = result.visible(shown_min);
+    let output_str = output::format_result(&shown, format, &display)?;
 
     // Write output
     let wrote_to_file = output_path.is_some();
@@ -82,9 +87,9 @@ pub async fn run(
     if !quiet {
         let machine_format = !matches!(format, OutputFormat::Text);
         if machine_format && !wrote_to_file {
-            print_summary(&result, &mut std::io::stderr());
+            print_summary(&shown, &mut std::io::stderr());
         } else {
-            print_summary(&result, &mut std::io::stdout());
+            print_summary(&shown, &mut std::io::stdout());
         }
     }
 
