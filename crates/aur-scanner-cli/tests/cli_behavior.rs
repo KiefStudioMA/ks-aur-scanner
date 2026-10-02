@@ -328,6 +328,11 @@ fn every_registry_none_call_site_is_deliberate() {
             "crates/aur-scanner-plugin/src/lib.rs",
             "doc comment on the embedder API explaining when each variant applies",
         ),
+        (
+            "crates/aur-scanner-core/tests/detection_hardening.rs",
+            "offline detection fixtures: they pin the analyzers on a PKGBUILD \
+             on disk, where there is no AUR record to supply",
+        ),
     ];
 
     let mut offenders = Vec::new();
