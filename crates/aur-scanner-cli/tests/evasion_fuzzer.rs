@@ -156,6 +156,49 @@ fn transforms() -> Vec<Transform> {
         ("line-continuation before pipe", |s| {
             changed(s, s.replacen("| ", "\\\n  | ", 1))
         }),
+        // --- detection hardening (audit 2026-10) ---
+        ("two assignments on one line", |s| {
+            if !s.contains("| bash") || !s.contains("curl ") {
+                return None;
+            }
+            changed(
+                s,
+                s.replacen("curl ", "$_a ", 1)
+                    .replacen("| bash", "| $_b", 1)
+                    .replacen("{\n", "{\n  _a=curl; _b=bash\n", 1),
+            )
+        }),
+        ("top-level variable used in a function", |s| {
+            if !s.contains("curl ") {
+                return None;
+            }
+            changed(s, format!("_c=curl\n{}", s.replacen("curl ", "$_c ", 1)))
+        }),
+        ("local multi-assignment", |s| {
+            if !s.contains("| bash") || !s.contains("curl ") {
+                return None;
+            }
+            changed(
+                s,
+                s.replacen("curl ", "$_a ", 1)
+                    .replacen("| bash", "| $_b", 1)
+                    .replacen("{\n", "{\n  local _a=curl _b=bash\n", 1),
+            )
+        }),
+        ("filter chain before the shell", |s| {
+            changed(
+                s,
+                s.replacen("| bash", "| cat | bash", 1)
+                    .replacen("| sh", "| cat | sh", 1),
+            )
+        }),
+        ("IFS word separators in the fetcher", |s| {
+            changed(
+                s,
+                s.replacen("curl -fsSL ", "curl${IFS}-fsSL${IFS}", 1)
+                    .replacen("curl -s ", "curl${IFS}-s${IFS}", 1),
+            )
+        }),
         // --- defense-in-depth (validates the case-insensitivity work, 4119) ---
         ("case-variation of command tokens", |s| {
             changed(
