@@ -689,7 +689,7 @@ NeedsTargets
 
 ## Detection Rules Reference
 
-> The **140 built-in detection codes**, generated from the catalog
+> The **142 built-in detection codes**, generated from the catalog
 > (`aur-scan codes --format markdown`) — every ID is unique and audit-enforced.
 > (`EXAMPLE-001` is the community-rule sample; `PERM-001`/`PERM-002` are real
 > shipped community rules in the same directory, not built-ins.) Extend the
@@ -733,6 +733,7 @@ NeedsTargets
 | `INSTALL-003` | Network access in install script | Network Security | rules | CWE-494 |
 | `INSTALL-004` | Language package manager invoked in install hook | Malicious Code | rules | CWE-494 |
 | `IOC-001` | Known indicator-of-compromise match | Malicious Code | ioc | CWE-506 |
+| `OBF-012` | Message function redefined to execute its arguments | Obfuscation | deep | CWE-94 |
 | `PASTE-001` | Pastebin download | Malicious Code | rules | CWE-506 |
 | `PERSIST-001` | Systemd service creation in install | Persistence | rules | CWE-506 |
 | `PERSIST-002` | Systemd timer creation | Persistence | rules | CWE-506 |
@@ -743,6 +744,7 @@ NeedsTargets
 | `PRIV-003` | Sudoers modification | Privilege Escalation | privilege | CWE-250 |
 | `PRIV-007` | Privileged account manipulation | Privilege Escalation | rules | CWE-269 |
 | `PRIV-008` | Password manipulation | Privilege Escalation | rules | CWE-269 |
+| `PRIV-009` | Kernel module loaded from a package-shipped file | Privilege Escalation | privilege | CWE-506 |
 | `SCAN-001` | Package file could not be analyzed | Configuration | scanner | CWE-693 |
 | `SHELL-001` | Bash reverse shell | Malicious Code | rules | CWE-506 |
 | `SHELL-002` | Netcat reverse shell | Malicious Code | rules | CWE-506 |

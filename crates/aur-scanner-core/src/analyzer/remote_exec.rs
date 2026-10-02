@@ -15,7 +15,7 @@
 use super::SecurityAnalyzer;
 use crate::error::Result;
 use crate::resolve::{resolve_variables, statement_head};
-use crate::rules::informational_lines;
+use crate::rules::informational_lines_with;
 use crate::textutil::{
     deobfuscate, logical_lines, normalize_shell_quoting, split_statements, split_words,
     BraceScanner, INTERPRETERS, SHELLS, SHELL_LAUNCHER, SHELL_PATH,
@@ -24,6 +24,7 @@ use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use lazy_static::lazy_static;
 use regex::Regex;
+use std::collections::HashSet;
 
 lazy_static! {
     /// A line that downloads and immediately executes remote content.
@@ -531,7 +532,20 @@ impl RemoteExecAnalyzer {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn scan(&self, text: &str, file: &std::path::Path, in_install: bool) -> Vec<Finding> {
+        let local = crate::rules::ShadowSet::from_text(text).names();
+        self.scan_with(text, file, in_install, &local)
+    }
+
+    /// [`Self::scan`] with the package-wide set of redefined printer names.
+    fn scan_with(
+        &self,
+        text: &str,
+        file: &std::path::Path,
+        in_install: bool,
+        shadowed: &HashSet<String>,
+    ) -> Vec<Finding> {
         let mut findings = Vec::new();
         // Splice backslash-newline continuations so `curl evil \`<nl>`| sh`
         // cannot escape the fetch-exec pattern by living on two physical lines.
@@ -542,7 +556,7 @@ impl RemoteExecAnalyzer {
         // package that merely DOCUMENTS a `curl ... | sh` example does not raise
         // EXEC-REMOTE.
         let line_strs: Vec<&str> = lines.iter().map(|(_, s)| s.as_str()).collect();
-        let informational = informational_lines(&line_strs);
+        let informational = informational_lines_with(&line_strs, shadowed);
         // Variable-resolved variant (static taint pass): `c=curl; $c url | sh`,
         // top-level `_c=curl` used in a function, `${IFS}` separators and short
         // inline-encoded payloads. Aligned to logical lines by start line.
@@ -807,9 +821,29 @@ impl Default for RemoteExecAnalyzer {
 #[async_trait]
 impl SecurityAnalyzer for RemoteExecAnalyzer {
     async fn analyze(&self, context: &AnalysisContext) -> Result<Vec<Finding>> {
-        let mut findings = self.scan(&context.pkgbuild.raw_content, &context.file_path, false);
+        let shadow = context.shadowed_printers();
+        let shadowed = shadow.names();
+        let mut findings: Vec<Finding> = Vec::new();
+        let mut files: Vec<(&str, &std::path::Path, bool)> = vec![(
+            context.pkgbuild.raw_content.as_str(),
+            context.file_path.as_path(),
+            false,
+        )];
         for script in context.all_scripts() {
-            findings.extend(self.scan(&script.content, &script.path, true));
+            files.push((script.content.as_str(), script.path.as_path(), true));
+        }
+        for (text, path, in_install) in files {
+            let mut seen: HashSet<(String, Option<usize>)> = HashSet::new();
+            let mut all = self.scan_with(text, path, in_install, &shadowed);
+            // Calls to a redefined printer, replaced by what they execute.
+            if let Some(inlined) = shadow.inline_calls(text) {
+                all.extend(self.scan_with(&inlined, path, in_install, &shadowed));
+            }
+            for f in all {
+                if seen.insert((f.id.clone(), f.location.line)) {
+                    findings.push(f);
+                }
+            }
         }
         Ok(findings)
     }

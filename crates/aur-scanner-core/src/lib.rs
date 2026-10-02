@@ -714,9 +714,25 @@ mod tests {
         write_pkg(d.path(), "");
         std::fs::write(d.path().join("run"), "#!/bin/sh\necho hi\n").unwrap();
         std::fs::write(d.path().join("notes.txt"), "plain\n").unwrap();
+        std::fs::write(
+            d.path().join("blob"),
+            [0u8, 0x80, 0x81, 0, 0xff, 0xfe, 0, 0x90],
+        )
+        .unwrap();
         let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
-        assert_eq!(files.side.len(), 1);
-        assert_eq!(files.side[0].file_type, FileType::SourceFile);
+        // Every text-like file is read (a shell can run or source any of them
+        // via $startdir); a binary blob is left to the BIN-* checks.
+        let mut names: Vec<String> = files
+            .side
+            .iter()
+            .filter_map(|s| s.path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["notes.txt", "run"]);
+        assert!(files
+            .side
+            .iter()
+            .all(|s| s.file_type == FileType::SourceFile));
     }
 
     #[test]
@@ -733,6 +749,26 @@ mod tests {
         );
         let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
         assert!(files.side.iter().all(|s| !s.content.contains("SECRET")));
+    }
+
+    #[test]
+    fn declared_install_missing_or_directory_is_unanalyzable() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "install=gone.install");
+        let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
+        assert!(files.findings.iter().any(|f| f.id == UNANALYZABLE_CODE));
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "install=sub.install");
+        std::fs::create_dir(d.path().join("sub.install")).unwrap();
+        let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
+        assert!(files.findings.iter().any(|f| f.id == UNANALYZABLE_CODE));
+        // Benign: a present, declared scriptlet raises nothing.
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "install=ok.install");
+        std::fs::write(d.path().join("ok.install"), "post_install() { true; }\n").unwrap();
+        let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
+        assert!(files.findings.is_empty());
+        assert!(files.install.is_some());
     }
 
     #[test]

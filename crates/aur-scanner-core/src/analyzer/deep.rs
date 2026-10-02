@@ -7,12 +7,13 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
-use crate::rules::informational_lines;
+use crate::rules::informational_lines_with;
 use crate::textutil::{deobfuscate_text, logical_lines, SHELLS, SHELL_LAUNCHER, SHELL_PATH};
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use lazy_static::lazy_static;
 use regex::Regex;
+use std::collections::HashSet;
 
 lazy_static! {
     /// A decoding/decompression operation that produces executable text.
@@ -47,7 +48,18 @@ impl DeepAnalyzer {
         Self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn analyze_text(&self, text: &str, file: &std::path::Path) -> Vec<Finding> {
+        let local = crate::rules::ShadowSet::from_text(text).names();
+        self.analyze_text_with(text, file, &local)
+    }
+
+    fn analyze_text_with(
+        &self,
+        text: &str,
+        file: &std::path::Path,
+        shadowed: &HashSet<String>,
+    ) -> Vec<Finding> {
         let mut findings = Vec::new();
 
         // Strip comment lines AND printed/informational lines (a non-redirected
@@ -57,7 +69,7 @@ impl DeepAnalyzer {
         // so a backslash-continued decode/exec is still seen as one command.
         let lines = logical_lines(text);
         let line_strs: Vec<&str> = lines.iter().map(|(_, s)| s.as_str()).collect();
-        let informational = informational_lines(&line_strs);
+        let informational = informational_lines_with(&line_strs, shadowed);
         let code: String = lines
             .iter()
             .enumerate()
@@ -231,7 +243,44 @@ impl SecurityAnalyzer for DeepAnalyzer {
                 anchored_to_script = true;
             }
         }
-        Ok(self.analyze_text(&combined, &anchor))
+        let shadow = context.shadowed_printers();
+        let shadowed = shadow.names();
+        let mut findings = self.analyze_text_with(&combined, &anchor, &shadowed);
+        // Calls to a redefined printer, replaced by what they execute.
+        if let Some(inlined) = shadow.inline_calls(&combined) {
+            for f in self.analyze_text_with(&inlined, &anchor, &shadowed) {
+                if !findings
+                    .iter()
+                    .any(|e| e.id == f.id && e.location.line == f.location.line)
+                {
+                    findings.push(f);
+                }
+            }
+        }
+        // A message function that runs its arguments is a finding in itself,
+        // whether or not the call site shows what it will run.
+        for def in shadow.executing() {
+            findings.push(Finding {
+                id: "OBF-012".to_string(),
+                severity: Severity::Critical,
+                category: Category::Obfuscation,
+                title: format!("Message function '{}' redefined to execute its arguments", def.name),
+                description: format!(
+                    "'{}' is normally a printer, but this package redefines it so that it runs what it is given. Every call that looks like a status message is then a command.",
+                    def.name
+                ),
+                location: Location {
+                    file: def.file.clone(),
+                    line: Some(def.line),
+                    column: None,
+                    snippet: None,
+                },
+                recommendation: "Do not install. A legitimate package has no reason to make a message helper run its arguments.".to_string(),
+                cwe_id: Some("CWE-94".to_string()),
+                metadata: serde_json::json!({ "function": def.name, "alias": def.alias }),
+            });
+        }
+        Ok(findings)
     }
 
     fn name(&self) -> &str {

@@ -192,9 +192,11 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
         e("PRIV-004", "Capabilities being set", Medium, PrivilegeEscalation, "privilege", Some("CWE-250"),
           "A function sets file capabilities, granting elevated privileges.", "Verify capabilities are necessary and minimal."),
         e("PRIV-005", "Kernel module operations", High, PrivilegeEscalation, "privilege", None,
-          "A function performs kernel module operations (insmod/modprobe).", "Kernel module handling in a package is suspicious."),
+          "A PKGBUILD function or an install scriptlet performs kernel module operations (insmod/modprobe/rmmod).", "Kernel module handling in a package is suspicious."),
         e("PRIV-006", "Sudo in an install hook", High, PrivilegeEscalation, "privilege", Some("CWE-250"),
           "An install scriptlet uses sudo.", "Install hooks must not require sudo."),
+        e("PRIV-009", "Kernel module loaded from a package-shipped file", Critical, PrivilegeEscalation, "privilege", Some("CWE-506"),
+          "An install scriptlet loads a kernel module the package itself ships (insmod of a file outside the kernel's own module tree, or modprobe/insmod of a module whose .ko the package carries). A module runs with full kernel privilege and can hide itself; this is the rootkit-installation pattern. Loading a module that is not shipped by the package is reported as PRIV-005 (High).", "Do not install. Kernel modules belong in the kernel packages or a reviewed DKMS package, not loaded from an AUR scriptlet."),
         // -- source analyzer --
         e("SRC-001", "Insecure source/transport protocol", Medium, NetworkSecurity, "source", Some("CWE-319"),
           "A source uses an insecure transport (http://, ftp://, git://, git+http://), tamperable in transit.", "Use https/git+https from a trusted host."),
@@ -218,6 +220,8 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
           "The file decodes/decompresses data and dynamically executes shell input, possibly across lines.", "Decode and review the payload manually."),
         e("DEEP-002", "Large embedded encoded blob", High, Obfuscation, "deep", Some("CWE-506"),
           "A large base64-like blob is embedded in the package.", "Decode and verify the blob is legitimate data."),
+        e("OBF-012", "Message function redefined to execute its arguments", Critical, Obfuscation, "deep", Some("CWE-94"),
+          "A function or alias named like a message printer (echo, printf, msg, note, warning, plain, error ...) is redefined so that it runs what it is given (\"$@\", eval, sh -c, a pipe to a shell). Scanners and reviewers treat those names as harmless text, so every call that looks like a status message becomes a command. Calls to a redefined printer are analyzed as code, and the name stops being treated as inert everywhere in the package.", "Do not install. A legitimate package has no reason to make a message helper execute its arguments."),
         // -- remote_exec analyzer --
         e("EXEC-REMOTE", "Fetches and runs external code", Critical, MaliciousCode, "remote_exec", Some("CWE-494"),
           "The package downloads and executes code from an external URL at build/install time; the scanner does not follow it (opaque boundary).", "Do not build; obtain software that ships its real code."),

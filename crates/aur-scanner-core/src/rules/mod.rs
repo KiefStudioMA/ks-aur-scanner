@@ -1,8 +1,10 @@
 //! Rule engine for pattern-based security detection
 
 mod loader;
+pub mod shadow;
 
 pub use loader::RuleLoader;
+pub use shadow::{ShadowDef, ShadowSet};
 
 use crate::error::{Result, ScanError};
 use crate::resolve::resolve_variables;
@@ -316,6 +318,18 @@ impl RuleEngine {
 
     /// Match content against all rules for a file type
     pub fn match_content(&self, content: &str, file_type: FileType) -> Vec<RuleMatch> {
+        let local = ShadowSet::from_text(content).names();
+        self.match_content_with(content, file_type, &local)
+    }
+
+    /// [`Self::match_content`] with the package-wide set of redefined printer
+    /// names (see [`ShadowSet::names`]), which are code rather than inert text.
+    pub fn match_content_with(
+        &self,
+        content: &str,
+        file_type: FileType,
+        shadowed: &HashSet<String>,
+    ) -> Vec<RuleMatch> {
         let mut matches = Vec::new();
 
         let rules = match self.rules_by_type.get(&file_type) {
@@ -356,7 +370,7 @@ impl RuleEngine {
         // pure-printer heredoc, e.g. a `cat <<EOF` post_install message) are not
         // executed, so low-risk path-presence rules must not match them. A
         // heredoc fed to an interpreter, or redirected to a file, is still code.
-        let informational = informational_lines(&line_strs);
+        let informational = informational_lines_with(&line_strs, shadowed);
 
         for compiled in rules {
             for (idx, (phys_line, line)) in lines.iter().enumerate() {
@@ -563,6 +577,17 @@ pub fn user_rule_dirs_for(privileged: bool) -> Vec<std::path::PathBuf> {
 /// `sudo`/`setcap`/`sudoers` message or a documentation heredoc cannot raise a
 /// Critical false positive (defect #5).
 pub(crate) fn informational_lines(lines: &[&str]) -> Vec<bool> {
+    // File-local view: a printer redefined in these very lines is not inert.
+    // Callers that can see the whole package use `informational_lines_with` and
+    // pass the package-wide set (a redefinition may live in another file).
+    let local = ShadowSet::from_text(&lines.join("\n")).names();
+    informational_lines_with(lines, &local)
+}
+
+/// [`informational_lines`] with the set of printer names the package redefines
+/// into something that can execute (see [`ShadowSet::names`]). Those names are
+/// code, never inert text, in every file of the package.
+pub(crate) fn informational_lines_with(lines: &[&str], shadowed: &HashSet<String>) -> Vec<bool> {
     let mut flags = vec![false; lines.len()];
     let mut terminator: Option<String> = None;
     for (i, line) in lines.iter().enumerate() {
@@ -573,9 +598,9 @@ pub(crate) fn informational_lines(lines: &[&str]) -> Vec<bool> {
             }
             continue;
         }
-        if let Some(delim) = heredoc_message_delim(line) {
+        if let Some(delim) = heredoc_message_delim(line, shadowed) {
             terminator = Some(delim);
-        } else if is_pure_message_print(line) {
+        } else if is_pure_message_print(line, shadowed) {
             flags[i] = true;
         }
     }
@@ -590,13 +615,11 @@ pub(crate) fn informational_lines(lines: &[&str]) -> Vec<bool> {
 /// must contain no redirection, pipe, command substitution, or command chaining
 /// (any of which could execute or write). `echo x > ~/.bashrc`, `echo "$(curl
 /// evil)"`, and `echo x | sh` therefore are NOT treated as inert.
-fn is_pure_message_print(line: &str) -> bool {
+fn is_pure_message_print(line: &str, shadowed: &HashSet<String>) -> bool {
     let t = line.trim();
     let cmd = t.split([' ', '\t']).next().unwrap_or("");
-    const PRINTERS: &[&str] = &[
-        "echo", "printf", "print", "note", "msg", "msg2", "warning", "plain", "error",
-    ];
-    if !PRINTERS.contains(&cmd) {
+    use shadow::PRINTERS;
+    if !PRINTERS.contains(&cmd) || shadowed.contains(cmd) {
         return false;
     }
     // Anything that could redirect, pipe, substitute, or chain a command means
@@ -667,7 +690,7 @@ fn has_executable_operator(t: &str) -> bool {
 /// If `line` opens a heredoc that just prints a message (no redirection to a
 /// file), return its terminator delimiter. Redirected heredocs write content
 /// somewhere and must still be scanned, so they return `None`.
-fn heredoc_message_delim(line: &str) -> Option<String> {
+fn heredoc_message_delim(line: &str, shadowed: &HashSet<String>) -> Option<String> {
     let pos = line.find("<<")?;
     let rest = line[pos + 2..]
         .strip_prefix('-')
@@ -720,7 +743,7 @@ fn heredoc_message_delim(line: &str) -> Option<String> {
         .next()
         .map(|cmd| {
             let base = cmd.rsplit('/').next().unwrap_or(cmd);
-            matches!(base, "cat" | "echo" | "printf")
+            matches!(base, "cat" | "echo" | "printf") && !shadowed.contains(base)
         })
         .unwrap_or(false);
     // A pipe anywhere on the opener means the body may be fed to a command.
