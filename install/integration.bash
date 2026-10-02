@@ -36,6 +36,11 @@ _aur_scan_valid_name() {
 #   _AUR_SCAN_LOCAL        local build dirs (`-B dir`, `-Ui`, `-U dir`) to scan
 #   _AUR_SCAN_NOTICES      prebuilt-package installs that cannot be pre-scanned
 #   _AUR_SCAN_BLOCK        reasons the invocation must be refused (cannot be validated)
+#   _AUR_SCAN_MENU         the helper will show a search menu and install the pick
+#                          (`paru <term>`, `yay <term>`, `yay -Y <term>`, `-S --interactive`);
+#                          the pick is made AFTER the gate, so it is refused unless
+#                          AUR_SCAN_ALLOW_MENU=1. Neither paru nor yay auto-selects an
+#                          exact name: the menu is always shown.
 # Bias: scan whenever an install is possible; refuse what cannot be scanned.
 _aur_scan_classify() {
     _AUR_SCAN_IS_UPGRADE=0
@@ -45,6 +50,7 @@ _aur_scan_classify() {
     _AUR_SCAN_LOCAL=()
     _AUR_SCAN_NOTICES=()
     _AUR_SCAN_BLOCK=()
+    _AUR_SCAN_MENU=0
     local op="" mods="" longs=" " eoo=0 skip=0 a rest i c
     for a in "$@"; do
         if [[ "$skip" == "1" ]]; then skip=0; continue; fi
@@ -151,6 +157,20 @@ _aur_scan_classify() {
         return
     fi
 
+    # Search-menu installs: bare `helper <term>` (paru: interactive search; yay:
+    # op -Y), `yay -Y <term>` (its -s/-i/-l/-g/-p do not stop the menu; only
+    # --gendb and -c do) and `-S --interactive`. The installed set is picked
+    # after this gate runs, so it cannot be scanned.
+    local yay_menu=0
+    if [[ "$op" == *Y* && "$is_sync" == "0" && "$is_upfile" == "0" && $npk -gt 0 \
+       && "$mods" != *c* && "$longs" != *" --gendb "* ]]; then
+        yay_menu=1; _AUR_SCAN_MENU=1
+    elif [[ -z "$op" && $npk -gt 0 && "$readonly_sync" == "0" ]]; then
+        _AUR_SCAN_MENU=1
+    elif [[ "$is_sync" == "1" && "$longs" == *" --interactive "* && "$readonly_sync" == "0" ]]; then
+        _AUR_SCAN_MENU=1
+    fi
+
     # System upgrade: -Syu/-Su/-Sua, yay -Yu, or the helper's default (no
     # operation and no operands -- e.g. bare `paru` == `paru -Syu`). The upgraded
     # packages are not named, so the gate enumerates the AUR update set itself.
@@ -162,7 +182,7 @@ _aur_scan_classify() {
     # Named install: operands of a non-read-only invocation. Covers `-S pkg`, bare
     # `helper pkg`, and yay's `-Y pkg` (#12). `aur/x` scans x; `core/x` (another
     # repo) needs no scan; anything that is not a legal name is REFUSED.
-    if [[ $npk -gt 0 && "$readonly_sync" == "0" ]]; then
+    if [[ $npk -gt 0 && ( "$readonly_sync" == "0" || "$yay_menu" == "1" ) ]]; then
         local p repo name
         for p in "${_AUR_SCAN_PKGS[@]}"; do
             name="$p"; repo=""
@@ -223,6 +243,11 @@ _aur_scan_gate() {
         local _r
         for _r in "${_AUR_SCAN_BLOCK[@]}"; do echo "AUR Security Scanner: BLOCKED: $_r" >&2; done
         echo "Not proceeding with $helper. Use ${helper}-unsafe to bypass deliberately." >&2
+        return 1
+    fi
+    if [[ "$_AUR_SCAN_MENU" == "1" && "${AUR_SCAN_ALLOW_MENU:-0}" != "1" ]]; then
+        echo "AUR Security Scanner: BLOCKED: menu-mode install: the helper lets you pick packages from a search menu AFTER this scan, so the packages you pick would not be scanned. Name the exact package instead ('-S <name>'), or set AUR_SCAN_ALLOW_MENU=1 to accept the old behaviour (the search term is scanned as a package name; rely on the pacman hook for the final pick)." >&2
+        echo "Nothing was installed. Use ${helper}-unsafe to bypass deliberately." >&2
         return 1
     fi
     local _n

@@ -37,6 +37,8 @@ struct Case {
     skip_wrapper: bool,
     /// Optional: required severity token on the `check` call.
     severity: Option<&'static str>,
+    /// Optional: text that must appear in the gate's output (a refusal reason).
+    text_has: Option<&'static str>,
 }
 
 const fn case(
@@ -53,6 +55,15 @@ const fn case(
         expect,
         skip_wrapper: false,
         severity: None,
+        text_has: None,
+    }
+}
+
+/// A search-menu install that must be refused with the menu message.
+const fn menu_refused(name: &'static str, args: &'static [&'static str]) -> Case {
+    Case {
+        text_has: Some("AUR_SCAN_ALLOW_MENU"),
+        ..case(name, args, &[], Expect::Blocked)
     }
 }
 
@@ -270,6 +281,67 @@ fn cases() -> Vec<Case> {
         case(
             "-r <root> takes the next argument",
             &["-r", "/tmp/root", "-S", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        // --- search-menu installs -------------------------------------------
+        // `paru <term>` / `yay <term>` / `yay -Y <term>` / `-S --interactive`
+        // open a menu and install the PICK after the gate ran. Neither helper
+        // auto-selects an exact name, so there is no exact-name exception.
+        menu_refused("bare term is a menu install", &["foo"]),
+        menu_refused("bare aur/name is still a menu install", &["aur/foo"]),
+        menu_refused("yay -Y term is a menu install", &["-Y", "foo"]),
+        menu_refused("yay --yay term is a menu install", &["--yay", "foo"]),
+        menu_refused("yay -Ys term is still a menu install", &["-Ys", "foo"]),
+        menu_refused("yay -Yi term is still a menu install", &["-Yi", "foo"]),
+        menu_refused(
+            "-S --interactive term is a menu install",
+            &["-S", "--interactive", "foo"],
+        ),
+        menu_refused(
+            "-S --interactive without a term is a menu install",
+            &["-S", "--interactive"],
+        ),
+        menu_refused(
+            "bare term with flags is a menu install",
+            &["--noconfirm", "foo"],
+        ),
+        case(
+            "AUR_SCAN_ALLOW_MENU=1 scans the term and proceeds",
+            &["foo"],
+            &[("AUR_SCAN_ALLOW_MENU", "1")],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "AUR_SCAN_ALLOW_MENU=1 covers yay -Y too",
+            &["-Y", "foo"],
+            &[("AUR_SCAN_ALLOW_MENU", "1")],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "AUR_SCAN_ALLOW_MENU=1 still blocks an unvalidatable term",
+            &["foo;bar"],
+            &[("AUR_SCAN_ALLOW_MENU", "1")],
+            Blocked,
+        ),
+        case(
+            "AUR_SCAN_ALLOW_MENU=0 keeps refusing",
+            &["foo"],
+            &[("AUR_SCAN_ALLOW_MENU", "0")],
+            Blocked,
+        ),
+        case(
+            "interactive search without install passes",
+            &["-Ss", "--interactive", "foo"],
+            &[],
+            Ran(None),
+        ),
+        case("bare search flag passes", &["-s", "foo"], &[], Ran(None)),
+        case("yay -Yc passes", &["-Yc"], &[], Ran(None)),
+        case("yay -Y --gendb passes", &["-Y", "--gendb"], &[], Ran(None)),
+        case(
+            "-S name is not a menu",
+            &["-S", "foo"],
             &[],
             Ran(Some((&["foo"], &[]))),
         ),
@@ -668,6 +740,10 @@ fn run_all(gate: Gate) {
             Expect::Blocked => {
                 if ok || !ran.is_empty() {
                     why = Some(format!("expected BLOCK, ok={ok} ran={ran:?}"));
+                } else if let Some(t) = c.text_has {
+                    if !text.contains(t) {
+                        why = Some(format!("refusal does not mention {t:?}"));
+                    }
                 }
             }
             Expect::Ran(scan) => {

@@ -25,6 +25,8 @@
 //!   AUR_SCAN_MODE             `install` = race-free `aur-scan install` for named installs
 //!   AUR_SCAN_SCAN_UPGRADES    0 = do not scan the AUR update set on -Syu / bare helper
 //!   AUR_SCAN_SCAN_GETPKGBUILD 1 = also scan `-G` downloads
+//!   AUR_SCAN_ALLOW_MENU       1 = allow search-menu installs (`paru <term>`, `yay <term>`),
+//!                             scanning only the typed term; default is to refuse them
 
 use aur_scanner_core::validate::is_valid_package_name;
 use colored::Colorize;
@@ -169,6 +171,11 @@ struct Plan {
     notices: Vec<String>,
     /// Reasons the invocation must be refused outright.
     blocked: Vec<String>,
+    /// The helper will show a search menu and install whatever the user picks
+    /// (`paru <term>`, `yay <term>`, `yay -Y <term>`, `-S --interactive`). The
+    /// picked packages are chosen AFTER this gate runs, so they cannot be
+    /// scanned; the invocation is refused unless `AUR_SCAN_ALLOW_MENU=1`.
+    menu: bool,
 }
 
 /// Classify a pacman/paru/yay invocation by its *operation*, not by substring
@@ -337,10 +344,28 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
         plan.upgrade = true;
     }
 
+    // Search-menu installs. Verified against the helpers' sources:
+    //  * paru: a bare `paru <term>` runs `interactive_search` (the term is only
+    //    a search; an exact name just sorts first, it is not auto-selected);
+    //    `-S --interactive [term]` does the same.
+    //  * yay: bare targets become op `-Y`, and `handleYay` always opens the
+    //    number menu for `-Y <term>`; `-s`/`-i`/`-l`/`-g`/`-p` do not change
+    //    that (only `--gendb` and `-c` do).
+    // Either way the installed set is picked after the gate ran.
+    let interactive = long_opts.contains(&"interactive");
+    let yay_menu = has('Y')
+        && !is_sync
+        && !is_upfile
+        && !operands.is_empty()
+        && !(mods.contains('c') || long_opts.contains(&"gendb") || long_opts.contains(&"clean"));
+    let bare_menu = op.is_empty() && !operands.is_empty() && !readonly_sync;
+    let sync_menu = is_sync && interactive && !readonly_sync;
+    plan.menu = yay_menu || bare_menu || sync_menu;
+
     // Named install: any operand of a non-read-only invocation (covers
     // `-S pkg`, `-Sw pkg`, bare `helper pkg`, yay `-Y pkg`). Fail closed on an
     // operand that cannot be validated.
-    if !readonly_sync {
+    if !readonly_sync || yay_menu {
         for o in &operands {
             match parse_operand(o) {
                 Operand::Aur(n) => {
@@ -425,6 +450,13 @@ fn check_argv(
     a
 }
 
+/// Why a search-menu install is refused (mirrored by the shell integrations).
+const MENU_REFUSAL: &str = "menu-mode install: the helper lets you pick packages from a \
+search menu AFTER this scan, so the packages you pick would not be scanned. \
+Name the exact package instead ('-S <name>'), or set AUR_SCAN_ALLOW_MENU=1 to accept the \
+old behaviour (the search term is scanned as a package name; rely on the pacman hook for \
+the final pick).";
+
 fn block(msg: &str) -> ExitCode {
     eprintln!("{} {}", "BLOCKED:".red().bold(), msg);
     ExitCode::FAILURE
@@ -453,6 +485,11 @@ fn main() -> ExitCode {
         eprintln!(
             "Nothing was installed. Use '{helper}-unsafe' in your shell to bypass the scan deliberately."
         );
+        return ExitCode::FAILURE;
+    }
+    if plan.menu && !env_is("AUR_SCAN_ALLOW_MENU", "1") {
+        eprintln!("{} {}", "BLOCKED:".red().bold(), MENU_REFUSAL);
+        eprintln!("Nothing was installed.");
         return ExitCode::FAILURE;
     }
     for n in &plan.notices {
@@ -792,6 +829,45 @@ mod tests {
         assert_eq!(names(&["--clonedir=/tmp/x", "-S", "pkg"]), s(&["pkg"]));
         // A boolean flag must NOT swallow an operand.
         assert_eq!(names(&["-S", "--needed", "pkg"]), s(&["pkg"]));
+    }
+
+    // Search-menu installs are flagged: the pick is made after the gate runs.
+    #[test]
+    fn menu_installs_are_flagged() {
+        for args in [
+            &["foo"][..],
+            &["aur/foo"],
+            &["--noconfirm", "foo"],
+            &["-Y", "foo"],
+            &["--yay", "foo"],
+            &["-Ys", "foo"],
+            &["-Yi", "foo"],
+            &["-S", "--interactive", "foo"],
+            &["-S", "--interactive"],
+            &["-Sy", "--interactive"],
+        ] {
+            assert!(plan(args).menu, "{args:?} is a menu install");
+        }
+        // The term is still collected so AUR_SCAN_ALLOW_MENU=1 keeps scanning it.
+        assert_eq!(plan(&["-Ys", "foo"]).names, s(&["foo"]));
+        for args in [
+            &["-S", "foo"][..],
+            &["-Ss", "--interactive", "foo"],
+            &["-Qs", "--interactive", "foo"],
+            &["-s", "foo"],
+            &["-Yc"],
+            &["-Y", "--gendb"],
+            &["-Y"],
+            &["-Syu"],
+            &[],
+            &["-G", "foo"],
+            &["-B", "d"],
+        ] {
+            assert!(
+                !classify(args, &|_| true).menu,
+                "{args:?} is not a menu install"
+            );
+        }
     }
 
     // Every option the helpers document as taking a required value must eat it.
