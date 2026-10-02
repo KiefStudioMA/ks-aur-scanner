@@ -40,10 +40,19 @@ before reporting (`paru -S aur-scanner-git` / re-build the tagged package).
 
 - **Static analysis only.** `aur-scan` parses PKGBUILDs and install scripts with
   pure pattern/AST analysis. It does **not** run `makepkg`, source the PKGBUILD,
-  evaluate shell, or execute the package. The only subprocesses it spawns are a
-  hardened `git clone` (no hooks/submodules, protocol-restricted) to fetch a
+  evaluate shell, or execute the package. While scanning, the only subprocesses
+  it spawns are a hardened `git clone` (no hooks, submodules, symlinks, or
+  inherited git configuration; protocol-restricted; time-bounded) to fetch a
   PKGBUILD, and read-only `pacman` queries. **The scan cannot compromise the
   machine doing the scanning** — that property is non-negotiable.
+- **Unreadable means unreviewed, never clean.** A package file the scanner
+  can't fully read — oversized, symlinked, not a regular file, or a declared
+  `install=` that is missing — is reported as the Critical `SCAN-001`, and
+  every install gate treats that package as unreviewed.
+- **Building is a separate, explicit step.** `aur-scan install` runs `makepkg`
+  and `aur-scan-wrap` hands off to your AUR helper, but only after the scan gate
+  passes. That is the point where the package's own code runs, by your choice,
+  never as part of a scan.
 - **Opaque boundary.** When a package fetches and runs code from an external
   source, the scanner flags it and stops — it does **not** follow the URL or
   resolve that chain. It tells you "this runs code from `<url>`," which is the
@@ -58,13 +67,18 @@ before reporting (`paru -S aur-scanner-git` / re-build the tagged package).
 - Release tags are **GPG-signed**; verify with `git verify-tag v<version>`.
 - The tagged AUR packages build from the signed tag and verify it
   (`validpgpkeys`) rather than trusting a GitHub tarball hash.
-- The rolling `aur-scanner-git` package verifies the HEAD **commit** signature
-  in `prepare()` (`git verify-commit HEAD`) against the same key. This is a
-  weaker guarantee than tag verification -- it proves the commit's author but
-  does not bind the build to a specific reviewed release. Prefer the tagged
-  packages for production systems.
-- `main` and `v*` tags are protected by a branch ruleset: **signed commits
-  required, no force-push, no deletion.**
+- The rolling `aur-scanner-git` package refuses to build a HEAD whose content
+  cannot be traced to commits signed by the release key. `prepare()` checks the
+  signer by fingerprint, not with a bare `git verify-commit`, which would accept
+  any good signature in the builder's keyring. GitHub's own "Merge pull request"
+  commits pass only when they are a clean merge of a release-key-signed head
+  onto an already trusted base. This is still weaker than tag verification: it
+  proves where the code came from but does not pin a reviewed release. Prefer
+  the tagged packages for production systems.
+- `main` is protected by a ruleset: changes land through a pull request,
+  commits must be signed, and force-push and deletion are blocked. `v*` tags
+  cannot be deleted or moved. GitHub does not enforce tag signatures; the tagged
+  packages enforce them at build time through `validpgpkeys`.
 - Signing key fingerprint: `25631EAE3F43999050B7D7021132BF893C33FB51`
   (`gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51`).
 - **Verify this fingerprint out-of-band before trusting the key.** Cross-check

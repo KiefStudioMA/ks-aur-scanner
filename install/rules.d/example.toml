@@ -6,6 +6,8 @@
 #   ~/.config/aur-scanner/rules.d/       (per user)
 #
 # Every rule's `id` must be UNIQUE across the whole catalog (built-in + yours).
+# A rule that reuses an existing id is REJECTED, so rules.d can add detections
+# but never replace or lower a built-in one.
 # Run `aur-scan codes` to see the full index, or `aur-scan explain <ID>`.
 # Use a distinct prefix for your org (e.g. ACME-001) to avoid collisions.
 #

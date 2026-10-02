@@ -6,9 +6,10 @@
 //! payload packages, dropped file artifacts, C2 domains, and payload hashes.
 //!
 //! The database is embedded at build time and can be extended at runtime by an
-//! on-disk override (see [`IocDatabase::load`]), so the indicator set can be
+//! on-disk override (see [`IocDatabase::try_load`]), so the indicator set can be
 //! updated from a live feed without rebuilding.
 
+use crate::error::{Result, ScanError};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -105,37 +106,84 @@ impl IocDatabase {
         toml::from_str(EMBEDDED).expect("embedded IOC database must parse")
     }
 
-    /// Load the database: embedded defaults merged with the first readable
-    /// on-disk override found, so indicators can be updated from a feed without
-    /// a rebuild. Always succeeds (falls back to embedded).
+    /// Load the database, failing closed on a broken system override.
+    ///
+    /// Embedded defaults are merged with every readable on-disk override so
+    /// indicators can be updated from a feed without a rebuild. A system-owned
+    /// override (`/usr/share/aur-scanner/ioc.toml`, `/etc/aur-scanner/ioc.toml`)
+    /// that exists but is unreadable or malformed is a hard error, the same
+    /// contract as the scanner config: a security feed must never look like it
+    /// is in effect while being silently ignored. The per-user override lives in
+    /// a user-writable directory, so a malformed one is reported loudly on
+    /// stderr and skipped rather than letting any process that can write there
+    /// disable every scan; a root process never reads it at all.
+    pub fn try_load() -> Result<Self> {
+        Self::try_load_from(&Self::override_sources())
+    }
+
+    /// Lenient variant of [`Self::try_load`]: on error it prints the error to
+    /// stderr and falls back to the embedded defaults. Prefer `try_load`.
     pub fn load() -> Self {
+        Self::try_load().unwrap_or_else(|e| {
+            eprintln!("aur-scan: error: {e}; using the embedded IOC defaults only");
+            Self::embedded()
+        })
+    }
+
+    /// Load from explicit `(path, is_system_path)` sources, in order.
+    fn try_load_from(sources: &[(PathBuf, bool)]) -> Result<Self> {
         let mut db = Self::embedded();
-        for path in Self::override_paths() {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                match toml::from_str::<IocDatabase>(&text) {
-                    Ok(extra) => {
-                        tracing::info!("merged IOC overrides from {}", path.display());
-                        db.merge(extra);
+        for (path, system) in sources {
+            let text = match std::fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    let msg = format!("cannot read IOC override {}: {e}", path.display());
+                    if *system {
+                        return Err(ScanError::Config(msg));
                     }
-                    Err(e) => {
-                        tracing::warn!("ignoring malformed IOC file {}: {}", path.display(), e)
+                    eprintln!("aur-scan: error: {msg}; ignoring it");
+                    continue;
+                }
+            };
+            match toml::from_str::<IocDatabase>(&text) {
+                Ok(extra) => {
+                    tracing::info!("merged IOC overrides from {}", path.display());
+                    db.merge(extra);
+                }
+                Err(e) => {
+                    let msg = format!("malformed IOC override {}: {e}", path.display());
+                    if *system {
+                        return Err(ScanError::Config(msg));
                     }
+                    eprintln!("aur-scan: error: {msg}; ignoring it");
                 }
             }
         }
-        db
+        Ok(db)
+    }
+
+    /// Candidate override locations with whether each is a root-owned system
+    /// path, in load order. A privileged process skips the user path.
+    fn override_sources() -> Vec<(PathBuf, bool)> {
+        let mut sources = vec![
+            (PathBuf::from("/usr/share/aur-scanner/ioc.toml"), true),
+            (PathBuf::from("/etc/aur-scanner/ioc.toml"), true),
+        ];
+        if !crate::rules::running_as_root() {
+            if let Some(data) = dirs::data_dir() {
+                sources.push((data.join("aur-scanner/ioc.toml"), false));
+            }
+        }
+        sources
     }
 
     /// Candidate on-disk override locations, in load order.
     fn override_paths() -> Vec<PathBuf> {
-        let mut paths = vec![
-            PathBuf::from("/usr/share/aur-scanner/ioc.toml"),
-            PathBuf::from("/etc/aur-scanner/ioc.toml"),
-        ];
-        if let Some(data) = dirs::data_dir() {
-            paths.push(data.join("aur-scanner/ioc.toml"));
-        }
-        paths
+        Self::override_sources()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect()
     }
 
     /// Union another database into this one. Indicator maps are merged
@@ -314,5 +362,25 @@ mod tests {
         ));
         assert!(!domain_hit("curl https://notevil.example/x"));
         assert!(!domain_hit("git clone https://evil.example.attacker.net/x"));
+    }
+
+    #[test]
+    fn malformed_system_override_is_a_hard_error() {
+        let dir = std::env::temp_dir().join(format!("aur-ioc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("ioc.toml");
+        std::fs::write(&bad, "this is = not [valid toml").unwrap();
+        let err = IocDatabase::try_load_from(&[(bad.clone(), true)])
+            .expect_err("malformed system IOC file must fail");
+        assert!(err.to_string().contains("malformed IOC override"), "{err}");
+        // A malformed *user* file is reported and skipped, not fatal.
+        assert!(IocDatabase::try_load_from(&[(bad, false)]).is_ok());
+        // A missing file is simply absent.
+        assert!(IocDatabase::try_load_from(&[(dir.join("nope.toml"), true)]).is_ok());
+        // A good system override merges.
+        let good = dir.join("good.toml");
+        std::fs::write(&good, "[domains]\n\"evil2.example\" = \"c\"\n").unwrap();
+        let db = IocDatabase::try_load_from(&[(good, true)]).unwrap();
+        assert!(db.domains.contains_key("evil2.example"));
     }
 }

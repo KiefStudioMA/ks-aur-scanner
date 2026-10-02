@@ -24,8 +24,8 @@ change, no matter how useful the rest of it is.
    fix it precisely (see the 1.0.2 `chmod 755` false-positive fix for the shape
    of a good correction: narrow the pattern, add regression tests both ways).
 4. **Tests, clippy, fmt — all green.**
-   - `cargo test --all` passes
-   - `cargo clippy --all` produces **no warnings**
+   - `cargo test --workspace --locked` passes
+   - `cargo clippy --workspace --all-targets --all-features -- -D warnings` is clean
    - `cargo fmt --all` applied
    - New behaviour ships with new tests. Detection/false-positive fixes ship with
      a test that fails before your change and passes after.
@@ -49,7 +49,7 @@ benign look-alike.
 
 1. Fork, branch from `main`.
 2. Make the change. Keep it focused — one concern per PR.
-3. `cargo fmt --all && cargo clippy --all && cargo test --all`.
+3. `cargo fmt --all && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --locked` (the same flags CI uses).
 4. Open a PR. Fill in the checklist (it's short and it's about the invariants above).
 5. A maintainer reviews. Expect questions on anything touching the static-only
    boundary or the catalog.

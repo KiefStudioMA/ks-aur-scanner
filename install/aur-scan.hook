@@ -1,3 +1,20 @@
+# AUR Security Scanner - pacman hook (opt-in backstop)
+#
+# Install as an ADMIN hook, in /etc/pacman.d/hooks/ (create it if needed):
+#
+#   sudo install -Dm644 aur-scan.hook /etc/pacman.d/hooks/aur-scan.hook
+#
+# Do NOT copy it into /usr/share/libalpm/hooks/: that directory belongs to
+# packages (a package update or removal will overwrite or delete the file).
+# /etc/pacman.d/hooks/ is the HookDir for local configuration, and a hook of the
+# same name there overrides a packaged one.
+#
+# By default the hook warns loudly about every target it could not scan (for
+# example a `pacman -U` of a package with no cached PKGBUILD) but lets the
+# transaction proceed. To abort the transaction instead, set
+# AUR_SCAN_HOOK_STRICT=1 in the hook's environment or create the marker file
+# /etc/aur-scanner/hook-strict.
+
 [Trigger]
 Operation = Install
 Operation = Upgrade

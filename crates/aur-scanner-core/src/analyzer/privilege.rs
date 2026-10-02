@@ -2,11 +2,12 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
-use crate::rules::informational_lines;
-use crate::textutil::logical_lines;
+use crate::rules::informational_lines_with;
+use crate::textutil::{logical_lines, normalize_shell_quoting, split_statements, split_words};
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use regex::Regex;
+use std::collections::HashSet;
 
 /// Reduce a shell body to only the lines that are actually executed, so the
 /// privilege patterns never match printed text. Backslash-newline continuations
@@ -18,21 +19,263 @@ use regex::Regex;
 /// raised a Critical false positive on a benign package that merely *printed* a
 /// `sudo systemctl ...` instruction, or shipped a heredoc/`note` mentioning
 /// `/etc/sudoers` or `setcap` (defect #5). A printed mention is not an action.
-fn executable_body(content: &str) -> String {
-    let lines = logical_lines(content);
-    let strs: Vec<&str> = lines.iter().map(|(_, s)| s.as_str()).collect();
-    let info = informational_lines(&strs);
-    lines
-        .iter()
-        .enumerate()
-        .filter(|(i, (_, l))| !l.trim_start().starts_with('#') && !info[*i])
-        .map(|(_, (_, l))| l.as_str())
+fn executable_body(content: &str, shadowed: &HashSet<String>) -> String {
+    executable_lines(content, shadowed)
+        .into_iter()
+        .map(|(_, l)| l)
         .collect::<Vec<_>>()
         .join("\n")
 }
 
+/// The executable logical lines of `content` with the line each starts on.
+fn executable_lines(content: &str, shadowed: &HashSet<String>) -> Vec<(usize, String)> {
+    let lines = logical_lines(content);
+    let strs: Vec<&str> = lines.iter().map(|(_, s)| s.as_str()).collect();
+    let info = informational_lines_with(&strs, shadowed);
+    lines
+        .into_iter()
+        .enumerate()
+        .filter(|(i, (_, l))| !l.trim_start().starts_with('#') && !info[*i])
+        .map(|(_, l)| l)
+        .collect()
+}
+
+/// Whether one shell statement sets a setuid/setgid bit ONLY on files named
+/// `chrome-sandbox` inside `$pkgdir` -- the standard, expected install step of
+/// every Electron/Chromium `-bin` package (the sandbox helper must be setuid
+/// root to create user namespaces on kernels that restrict them). Every path
+/// operand must be exactly a `chrome-sandbox` file and at least one must live
+/// under `$pkgdir`; a statement that also touches any other file is NOT exempt,
+/// so `chmod 4755 "$pkgdir/opt/x/chrome-sandbox" "$pkgdir/usr/bin/y"` stays
+/// Critical.
+fn is_pkgdir_chrome_sandbox_suid(stmt: &str) -> bool {
+    let words = split_words(stmt);
+    let Some(cmd_idx) = words.iter().position(|w| {
+        let w = normalize_shell_quoting(w);
+        let base = w.rsplit('/').next().unwrap_or("");
+        base == "chmod" || base == "install"
+    }) else {
+        return false;
+    };
+    // Everything before the command may only be a harmless launcher.
+    if words[..cmd_idx]
+        .iter()
+        .any(|w| !matches!(w.as_str(), "sudo" | "command" | "exec" | "env"))
+    {
+        return false;
+    }
+    let is_mode = |w: &str| {
+        let digits = w.len() >= 3 && w.chars().all(|c| c.is_ascii_digit());
+        let symbolic = w.chars().any(|c| matches!(c, '+' | '='))
+            && w.chars().all(|c| "ugoa+-=rwxXst".contains(c));
+        digits || symbolic
+    };
+    let mut paths = Vec::new();
+    for w in &words[cmd_idx + 1..] {
+        let n = normalize_shell_quoting(w);
+        if n.starts_with('-') || is_mode(&n) {
+            continue;
+        }
+        paths.push(n);
+    }
+    !paths.is_empty()
+        && paths
+            .iter()
+            .all(|p| p.rsplit('/').next() == Some("chrome-sandbox"))
+        && paths.iter().any(|p| p.contains("pkgdir"))
+}
+
+/// The module name (`-` folded to `_`) of a `*.ko[.zst|.xz|.gz]` path.
+fn module_basename(path: &str) -> Option<String> {
+    let base = path.rsplit('/').next()?;
+    for ext in [".ko", ".ko.zst", ".ko.xz", ".ko.gz"] {
+        if let Some(stem) = base.strip_suffix(ext) {
+            if !stem.is_empty() {
+                return Some(stem.replace('-', "_").to_ascii_lowercase());
+            }
+        }
+    }
+    None
+}
+
+/// Names (`-` folded to `_`) of kernel modules this package ships or builds:
+/// every `*.ko` it names in the PKGBUILD or its scripts, every module file in
+/// the package directory, and the package's own name.
+fn shipped_modules(context: &AnalysisContext) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut scan = |text: &str| {
+        for tok in text.split(|c: char| !(c.is_ascii_alphanumeric() || "_.-/".contains(c))) {
+            if let Some(m) = module_basename(tok) {
+                out.insert(m);
+            }
+        }
+    };
+    scan(&context.pkgbuild.raw_content);
+    for s in context.all_scripts() {
+        scan(&s.content);
+    }
+    for entry in &context.pkgbuild.source {
+        scan(&entry.url);
+    }
+    if let Some(dir) = context.file_path.parent() {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                if let Some(m) = module_basename(&e.file_name().to_string_lossy()) {
+                    out.insert(m);
+                }
+            }
+        }
+    }
+    for n in &context.pkgbuild.pkgname {
+        out.insert(n.replace('-', "_").to_ascii_lowercase());
+    }
+    out
+}
+
+/// Whether a module path lies in the kernel's own module tree.
+fn in_kernel_tree(path: &str) -> bool {
+    path.starts_with("/lib/modules/") || path.starts_with("/usr/lib/modules/")
+}
+
+/// How a module command ranks: `None` = not a module command, `Some(None)` =
+/// ordinary (High), `Some(Some(reason))` = package-shipped module (Critical).
+fn classify_module_stmt(stmt: &str, shipped: &HashSet<String>) -> Option<Option<String>> {
+    let words: Vec<String> = split_words(stmt)
+        .iter()
+        .map(|w| normalize_shell_quoting(w))
+        .collect();
+    let idx = words.iter().position(|w| {
+        let base = w.rsplit('/').next().unwrap_or("");
+        ["insmod", "modprobe", "rmmod"]
+            .iter()
+            .any(|c| base.eq_ignore_ascii_case(c))
+    })?;
+    let cmd = words[idx]
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if cmd == "rmmod" {
+        return Some(None);
+    }
+    let mut positional: Vec<&str> = Vec::new();
+    let mut custom_root = false;
+    let mut skip_value = false;
+    for w in &words[idx + 1..] {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if matches!(w.as_str(), "-d" | "--dirname" | "-C" | "--config")
+            || w.starts_with("--dirname=")
+        {
+            custom_root = true;
+            skip_value = !w.contains('=');
+        } else if matches!(w.as_str(), "-S" | "--set-version") {
+            skip_value = true;
+        } else if !w.starts_with('-') {
+            positional.push(w);
+        }
+    }
+    if custom_root {
+        return Some(Some(
+            "loads modules from a module root or config the package chooses".to_string(),
+        ));
+    }
+    let Some(first) = positional.first() else {
+        return Some(None);
+    };
+    let is_path = first.contains('/') || module_basename(first).is_some();
+    if is_path {
+        if !in_kernel_tree(first) {
+            return Some(Some(format!(
+                "loads a module from '{first}', a location outside the kernel's module tree"
+            )));
+        }
+        if module_basename(first).is_some_and(|m| shipped.contains(&m)) {
+            return Some(Some(format!(
+                "loads '{first}', a module this package ships"
+            )));
+        }
+        return Some(None);
+    }
+    if cmd == "modprobe" && shipped.contains(&first.replace('-', "_").to_ascii_lowercase()) {
+        return Some(Some(format!(
+            "loads module '{first}', which this package ships"
+        )));
+    }
+    Some(None)
+}
+
+/// `insmod` / `modprobe` / `rmmod` in install scriptlets and ALPM hooks. A
+/// scriptlet runs as root at install time, so a module loaded from there runs in
+/// the kernel; one the package ships itself is the rootkit pattern (Critical).
+/// `depmod` alone and `dkms` are not module loads and do not match.
+fn install_module_findings(context: &AnalysisContext, shadowed: &HashSet<String>) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let shipped = shipped_modules(context);
+    for script in context.all_scripts() {
+        if script.file_type != crate::types::FileType::InstallScript {
+            continue;
+        }
+        let mut first_plain: Option<(usize, String)> = None;
+        for (line_no, line) in executable_lines(&script.content, shadowed) {
+            for (stmt, _) in split_statements(&line) {
+                match classify_module_stmt(&stmt, &shipped) {
+                    None => {}
+                    Some(None) => {
+                        first_plain.get_or_insert((line_no, stmt.trim().to_string()));
+                    }
+                    Some(Some(reason)) => findings.push(Finding {
+                        id: "PRIV-009".to_string(),
+                        severity: Severity::Critical,
+                        category: Category::PrivilegeEscalation,
+                        title: "Kernel module loaded from a package-shipped file".to_string(),
+                        description: format!(
+                            "Install script '{}' {reason}. A module runs with full kernel privilege.",
+                            script.path.display()
+                        ),
+                        location: Location {
+                            file: script.path.clone(),
+                            line: Some(line_no),
+                            column: None,
+                            snippet: Some(stmt.trim().to_string()),
+                        },
+                        recommendation: "Do not install; kernel modules must not be loaded from a package's own files by a scriptlet.".to_string(),
+                        cwe_id: Some("CWE-506".to_string()),
+                        metadata: serde_json::json!({ "reason": reason }),
+                    }),
+                }
+            }
+        }
+        if let Some((line_no, stmt)) = first_plain {
+            findings.push(Finding {
+                id: "PRIV-005".to_string(),
+                severity: Severity::High,
+                category: Category::PrivilegeEscalation,
+                title: "Kernel module operations".to_string(),
+                description: format!(
+                    "Install script '{}' performs kernel module operations (insmod/modprobe/rmmod)",
+                    script.path.display()
+                ),
+                location: Location {
+                    file: script.path.clone(),
+                    line: Some(line_no),
+                    column: None,
+                    snippet: Some(stmt),
+                },
+                recommendation: "Verify kernel module operations are legitimate".to_string(),
+                cwe_id: None,
+                metadata: serde_json::json!({ "file": script.path.display().to_string() }),
+            });
+        }
+    }
+    findings
+}
+
 /// Analyzer for privilege escalation patterns
 pub struct PrivilegeAnalyzer {
+    module_pattern: Regex,
     sudo_pattern: Regex,
     suid_pattern: Regex,
     sudoers_pattern: Regex,
@@ -71,6 +314,14 @@ impl PrivilegeAnalyzer {
             // stripped by `executable_body()` so this adds no false positives.
             sudoers_pattern: Regex::new(r"(?i)/etc/sudoers").unwrap(),
             capabilities_pattern: Regex::new(r"(?i)setcap\s+").unwrap(),
+            // A kernel-module COMMAND (`modprobe`, `insmod`, `rmmod`, optionally
+            // path-prefixed or behind a launcher). A path that merely CONTAINS the
+            // word -- installing `$pkgdir/usr/lib/modprobe.d/foo.conf` -- is a
+            // config file, not a module operation.
+            module_pattern: Regex::new(
+                r#"(?i)(?:^|[\s;&|(`'"])(?:\S*/)?(?:insmod|rmmod|modprobe)(?:\s|$|;|&|\||\)|`|'|")"#,
+            )
+            .unwrap(),
         }
     }
 }
@@ -85,13 +336,14 @@ impl Default for PrivilegeAnalyzer {
 impl SecurityAnalyzer for PrivilegeAnalyzer {
     async fn analyze(&self, context: &AnalysisContext) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
+        let shadowed = context.shadowed_printers().names();
 
         // Check functions for privilege escalation patterns. Match only the
         // executable lines of the body (printed/informational lines stripped) so
         // a documented `sudo`/`setcap`/`sudoers` mention cannot raise a Critical
         // false positive (defect #5).
         for (func_name, func_body) in &context.pkgbuild.functions {
-            let body = executable_body(&func_body.content);
+            let body = executable_body(&func_body.content, &shadowed);
             // Check for sudo in build functions
             if self.sudo_pattern.is_match(&body) {
                 let severity = if func_name == "build" || func_name.starts_with("package") {
@@ -124,8 +376,51 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
                 });
             }
 
-            // Check for SUID bit setting
-            if self.suid_pattern.is_match(&body) {
+            // Check for SUID bit setting. Judge each statement: the Electron
+            // `chmod 4755 "$pkgdir/opt/<app>/chrome-sandbox"` step is an expected,
+            // known pattern (Low); anything else stays Critical.
+            let (mut suid_real, mut suid_sandbox) = (0usize, 0usize);
+            for line in body.lines() {
+                for (stmt, _) in split_statements(line) {
+                    if self.suid_pattern.is_match(&stmt) {
+                        if is_pkgdir_chrome_sandbox_suid(&stmt) {
+                            suid_sandbox += 1;
+                        } else {
+                            suid_real += 1;
+                        }
+                    }
+                }
+            }
+            // A multi-line match the per-statement walk could not attribute is
+            // treated as real (never weaker than the whole-body match).
+            if suid_real == 0 && suid_sandbox == 0 && self.suid_pattern.is_match(&body) {
+                suid_real = 1;
+            }
+            if suid_real == 0 && suid_sandbox > 0 {
+                findings.push(Finding {
+                    id: "PRIV-002".to_string(),
+                    severity: Severity::Low,
+                    category: Category::PrivilegeEscalation,
+                    title: format!("Expected SUID chrome-sandbox in {}()", func_name),
+                    description: format!(
+                        "Function '{}' sets the setuid bit on a `chrome-sandbox` helper under $pkgdir. This is the standard step for Electron/Chromium-based packages and is expected; verify the package really bundles that runtime.",
+                        func_name
+                    ),
+                    location: Location {
+                        file: context.file_path.clone(),
+                        line: Some(func_body.line_start),
+                        column: None,
+                        snippet: None,
+                    },
+                    recommendation: "No action needed for a genuine Electron/Chromium bundle; no other file is made setuid".to_string(),
+                    cwe_id: Some("CWE-732".to_string()),
+                    metadata: serde_json::json!({
+                        "function": func_name,
+                        "known_pattern": "chrome-sandbox",
+                    }),
+                });
+            }
+            if suid_real > 0 {
                 findings.push(Finding {
                     id: "PRIV-002".to_string(),
                     severity: Severity::Critical,
@@ -201,8 +496,7 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
             }
 
             // Check for kernel module loading
-            if body.contains("insmod") || body.contains("modprobe") || body.contains("/lib/modules")
-            {
+            if self.module_pattern.is_match(&body) || body.contains("/lib/modules") {
                 findings.push(Finding {
                     id: "PRIV-005".to_string(),
                     severity: Severity::High,
@@ -227,10 +521,13 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
             }
         }
 
+        // Kernel module commands in install scriptlets and ALPM hooks.
+        findings.extend(install_module_findings(context, &shadowed));
+
         // Check install scriptlets and ALPM side scripts for sudo in hook bodies.
         for script in context.all_scripts() {
             for hook in &script.hooks {
-                let body = executable_body(&hook.content);
+                let body = executable_body(&hook.content, &shadowed);
                 if self.sudo_pattern.is_match(&body) {
                     findings.push(Finding {
                         id: "PRIV-006".to_string(),
@@ -281,8 +578,10 @@ mod tests {
             pkgbuild,
             install_script: None,
             side_scripts: vec![],
+            local_binaries: vec![],
             config: ScanConfig::default(),
             file_path: PathBuf::from("PKGBUILD"),
+            registry: None,
         }
     }
 

@@ -7,7 +7,8 @@ use aur_scanner_core::threat_intel::{ioc::active_override_path, IocDatabase};
 
 /// Show IOC database stats, or check a single name/value against it.
 pub fn run(check: Option<&str>) -> Result<()> {
-    let db = IocDatabase::load();
+    // A malformed system IOC override is a hard error (non-zero exit).
+    let db = IocDatabase::try_load()?;
 
     if let Some(value) = check {
         return run_check(&db, value);

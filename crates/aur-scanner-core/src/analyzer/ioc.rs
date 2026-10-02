@@ -173,8 +173,10 @@ mod tests {
             pkgbuild,
             install_script: None,
             side_scripts: vec![],
+            local_binaries: vec![],
             config: ScanConfig::default(),
             file_path: PathBuf::from("PKGBUILD"),
+            registry: None,
         };
         let analyzer = IocAnalyzer::new(Arc::new(IocDatabase::embedded()));
         let findings = analyzer.analyze(&context).await.unwrap();
@@ -196,8 +198,10 @@ mod tests {
             pkgbuild,
             install_script: None,
             side_scripts: vec![],
+            local_binaries: vec![],
             config: ScanConfig::default(),
             file_path: PathBuf::from("PKGBUILD"),
+            registry: None,
         };
         let analyzer = IocAnalyzer::new(Arc::new(IocDatabase::embedded()));
         let findings = analyzer.analyze(&context).await.unwrap();
@@ -234,8 +238,10 @@ mod tests {
             pkgbuild,
             install_script: None,
             side_scripts: vec![],
+            local_binaries: vec![],
             config: ScanConfig::default(),
             file_path: PathBuf::from("PKGBUILD"),
+            registry: None,
         };
         let analyzer = IocAnalyzer::new(Arc::new(IocDatabase::embedded()));
         let findings = analyzer.analyze(&context).await.unwrap();

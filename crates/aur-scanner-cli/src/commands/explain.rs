@@ -65,6 +65,9 @@ fn print_detailed_explanation(entry: &CatalogEntry) {
     println!("{}", "=".repeat(70));
     println!();
 
+    println!("{} {}", "Severity:".cyan().bold(), severity_colored);
+    println!();
+
     println!("{}", "Category:".cyan().bold());
     println!("  {}  (detector: {})", entry.category, entry.owner.dimmed());
     println!();

@@ -41,6 +41,138 @@ pub fn logical_lines(content: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// Split one logical shell line into simple statements at UNQUOTED `;`, `&&`,
+/// `||` and a lone `&` (background), returning `(statement, separator)` pairs so
+/// the original line can be rebuilt by concatenation. Quote-aware (`'..'`,
+/// `".."`, backslash escapes, backticks) and does not split inside `$( .. )`,
+/// `<( .. )`, `>( .. )` or `name=( .. )` groups, nor inside `${ .. }`. A trailing
+/// `# comment` is left attached to the last statement. Used so several
+/// assignments / commands on one line (`c=curl; s=sh; $c url | $s`) are seen in
+/// order.
+pub fn split_statements(line: &str) -> Vec<(String, String)> {
+    let b: Vec<char> = line.chars().collect();
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut cur = String::new();
+    let (mut sq, mut dq, mut bt) = (false, false, false);
+    let mut depth = 0i32; // () and ${} groups
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == '\\' && !sq && i + 1 < b.len() {
+            cur.push(c);
+            cur.push(b[i + 1]);
+            i += 2;
+            continue;
+        }
+        if sq {
+            if c == '\'' {
+                sq = false;
+            }
+            cur.push(c);
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' if !dq => sq = true,
+            '"' => dq = !dq,
+            '`' => bt = !bt,
+            '#' if !dq
+                && !bt
+                && depth == 0
+                && (cur.is_empty() || cur.ends_with(char::is_whitespace)) =>
+            {
+                cur.extend(&b[i..]);
+                break;
+            }
+            '(' if !dq => {
+                let prev = cur.chars().last();
+                let grouped = matches!(prev, Some('$' | '<' | '>' | '='))
+                    || prev.is_some_and(|p| p.is_alphanumeric() || p == '_');
+                if grouped || depth > 0 {
+                    depth += 1;
+                }
+            }
+            ')' if !dq && depth > 0 => depth -= 1,
+            '{' if !dq && cur.ends_with('$') => depth += 1,
+            '}' if !dq && depth > 0 => depth -= 1,
+            _ => {}
+        }
+        if !dq && !bt && depth == 0 {
+            let two: String = b[i..(i + 2).min(b.len())].iter().collect();
+            let sep = if two == "&&" || two == "||" {
+                Some(two)
+            } else if c == ';' {
+                Some(";".to_string())
+            } else if c == '&' && !cur.ends_with(['>', '<', '|']) && b.get(i + 1) != Some(&'>') {
+                Some("&".to_string())
+            } else {
+                None
+            };
+            if let Some(sep) = sep {
+                let adv = sep.chars().count();
+                out.push((std::mem::take(&mut cur), sep));
+                i += adv;
+                continue;
+            }
+        }
+        cur.push(c);
+        i += 1;
+    }
+    out.push((cur, String::new()));
+    out
+}
+
+/// Split a statement into shell words at unquoted whitespace, keeping quoting
+/// intact (so each word can later be normalized) and keeping `$( .. )`, `( .. )`
+/// and `${ .. }` groups and backtick spans together as part of one word.
+pub fn split_words(stmt: &str) -> Vec<String> {
+    let b: Vec<char> = stmt.chars().collect();
+    let mut words: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let (mut sq, mut dq, mut bt) = (false, false, false);
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == '\\' && !sq && i + 1 < b.len() {
+            cur.push(c);
+            cur.push(b[i + 1]);
+            i += 2;
+            continue;
+        }
+        if sq {
+            if c == '\'' {
+                sq = false;
+            }
+            cur.push(c);
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' if !dq => sq = true,
+            '"' => dq = !dq,
+            '`' => bt = !bt,
+            '(' if !dq => depth += 1,
+            ')' if !dq && depth > 0 => depth -= 1,
+            '{' if !dq && cur.ends_with('$') => depth += 1,
+            '}' if !dq && depth > 0 => depth -= 1,
+            _ => {}
+        }
+        if c.is_whitespace() && !sq && !dq && !bt && depth == 0 {
+            if !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(c);
+        }
+        i += 1;
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    words
+}
+
 /// A small stateful scanner that tracks shell brace depth while ignoring braces
 /// that appear inside single/double quotes (with backslash escapes) or in a `#`
 /// comment. Function and install-hook body extraction relies on brace balance
@@ -368,9 +500,54 @@ pub const SHELL_PATH: &str = r"(?:/\S+/)?";
 /// the nested `*` is ReDoS-free.
 pub const SHELL_LAUNCHER: &str = r"(?:(?:/\S+/)?(?:busybox|toybox|env|command|exec|setsid|stdbuf|nice)\s+(?:-\S+\s+|\w+=\S*\s+)*)*";
 
+/// Anchor a command NAME to a position where a command can actually start:
+/// the beginning of a logical line, after a shell separator (`;`, `&&`, `||`,
+/// `|`), inside a subshell or command substitution, or after whitespace.
+///
+/// A bare command name in a regex is a substring match, and command names are
+/// short. `nc\s+.*-c\s+` (the old SHELL-002 netcat rule) matched the `nc` at the
+/// *end of the word* `MEGAsync` in
+/// `git -C MEGAsync -c protocol.file.allow='always' submodule update`, reporting
+/// a routine submodule checkout as a Critical reverse shell (issue #32).
+/// Requiring a separator before the name makes `MEGAsync` unmatchable, because
+/// the character before `nc` there is `y`.
+///
+/// An optional path prefix is included so `/usr/bin/nc` still matches. Rules
+/// should follow this with the command name and a `\b`.
+pub const CMD_START: &str = r"(?:^|[\s;&|(){}`])(?:/\S+/)?";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_statements_respects_quotes_and_groups() {
+        let s =
+            |l: &str| -> Vec<String> { split_statements(l).into_iter().map(|(a, _)| a).collect() };
+        assert_eq!(s("a=1; b=2 && c"), ["a=1", " b=2 ", " c"]);
+        assert_eq!(s("echo 'a;b' \"c && d\""), ["echo 'a;b' \"c && d\""]);
+        assert_eq!(s("x=$(a; b); y"), ["x=$(a; b)", " y"]);
+        assert_eq!(
+            s("cmd=(a b); \"${cmd[@]}\""),
+            ["cmd=(a b)", " \"${cmd[@]}\""]
+        );
+        assert_eq!(s("ls 2>&1 | cat"), ["ls 2>&1 | cat"]);
+        // rebuilding from statements + separators is lossless
+        let l = "a=1; b=$(x | y) && c || d & e";
+        let rebuilt: String = split_statements(l)
+            .into_iter()
+            .map(|(a, b)| a + &b)
+            .collect();
+        assert_eq!(rebuilt, l);
+    }
+
+    #[test]
+    fn split_words_keeps_groups_together() {
+        assert_eq!(
+            split_words("local c=curl s=\"a b\" arr=(x y) z=$(a b)"),
+            ["local", "c=curl", "s=\"a b\"", "arr=(x y)", "z=$(a b)"]
+        );
+    }
 
     #[test]
     fn deobfuscates_ansic_and_quote_splitting() {
@@ -584,5 +761,86 @@ mod tests {
         // `foo\\` ends in an escaped backslash, not a line continuation.
         let ll = logical_lines("foo\\\\\nbar");
         assert_eq!(ll.len(), 2);
+    }
+}
+
+/// Make untrusted text safe to print to a terminal.
+///
+/// Findings quote package-controlled data -- a source URL, a pkgname, a
+/// maintainer handle, a matched snippet -- straight into their title and
+/// description. Printed raw, an escape sequence in any of those fields is
+/// executed by the terminal, and the tool whose entire job is showing a human
+/// what is inside an untrusted file becomes the thing that lets the file
+/// control the display. Cursor movement can overwrite the severity that was
+/// just printed; SGR can recolour a Critical to look like the "ok" line above
+/// it.
+///
+/// C0 controls (except tab), DEL, and the C1 range are replaced with a visible
+/// `\xNN` escape, so nothing is silently dropped either -- a reviewer sees that
+/// something odd was there. Newlines are removed rather than escaped in
+/// single-line contexts by the caller; here they are preserved so multi-line
+/// descriptions still wrap.
+///
+/// JSON and SARIF output do NOT need this: `serde_json` already escapes control
+/// characters, and those consumers are programs, not terminals.
+pub fn sanitize_for_terminal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\t' | '\n' => out.push(c),
+            // C0 controls and DEL.
+            c if (c as u32) < 0x20 || c as u32 == 0x7F => {
+                out.push_str(&format!("\\x{:02X}", c as u32));
+            }
+            // C1 controls, which some terminals honour as escape equivalents.
+            c if (0x80..=0x9F).contains(&(c as u32)) => {
+                out.push_str(&format!("\\x{:02X}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_for_terminal;
+
+    #[test]
+    fn strips_escape_sequences_from_untrusted_text() {
+        let hostile = "https://example.com/\u{1b}[31mFAKE-CLEAN\u{1b}[0m/x.tar.gz";
+        let safe = sanitize_for_terminal(hostile);
+        assert!(!safe.contains('\u{1b}'), "ESC must not survive: {safe:?}");
+        assert!(safe.contains("\\x1B"), "and must be visible: {safe:?}");
+        // The readable content is preserved so the finding still makes sense.
+        assert!(safe.contains("FAKE-CLEAN"));
+    }
+
+    #[test]
+    fn neutralises_cursor_movement_and_carriage_return() {
+        // \r alone can rewrite the current line, hiding a severity.
+        let safe = sanitize_for_terminal("CRITICAL\rok      ");
+        assert!(!safe.contains('\r'));
+        assert!(safe.contains("CRITICAL"));
+    }
+
+    #[test]
+    fn leaves_ordinary_text_alone() {
+        for s in [
+            "Curl pipe to shell",
+            "source: https://github.com/alice/tool/archive/v1.0.tar.gz",
+            "maintainer changed: alice -> bob",
+            "pkgdesc with accents: configuración, 日本語",
+            "a\ttabbed\tline",
+            "multi\nline\ndescription",
+        ] {
+            assert_eq!(sanitize_for_terminal(s), s, "must not alter: {s:?}");
+        }
+    }
+
+    #[test]
+    fn neutralises_c1_controls() {
+        let safe = sanitize_for_terminal("before\u{9b}31mafter");
+        assert!(!safe.contains('\u{9b}'));
     }
 }

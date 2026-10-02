@@ -1,7 +1,11 @@
-//! The scanner's ONLY outbound network surface for third-party threat
-//! intelligence. Every call to VirusTotal or abuse.ch / URLhaus lives in this
-//! file and nowhere else, so the project's entire external egress can be
-//! audited in one place.
+//! The scanner's only outbound network surface for **third-party threat
+//! intelligence**. Every call to VirusTotal or abuse.ch / URLhaus lives in this
+//! file and nowhere else, so that egress can be audited in one place.
+//!
+//! This is *not* the project's entire external egress: `aur.rs` talks to the AUR
+//! RPC / package endpoints, and the hardened `git clone` subprocess fetches AUR
+//! repositories. Those are separate, always-on-when-used paths; this module is
+//! the opt-in one.
 //!
 //! Invariants every function here upholds:
 //!
@@ -50,6 +54,68 @@ fn client() -> Result<reqwest::Client> {
         .map_err(|e| ScanError::Network(e.to_string()))
 }
 
+/// Hard cap on a third-party response body (same bound as the AUR RPC reader).
+/// The request timeout bounds time, not size; a hostile or MITM'd endpoint could
+/// otherwise stream unbounded data into memory.
+const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read a response body with a hard size cap and parse it as JSON. Streams
+/// chunks and aborts once the cap is exceeded; `Content-Length` is only a
+/// fast-path hint since it can be absent or false.
+async fn read_capped_json(mut resp: reqwest::Response, who: &str) -> Result<serde_json::Value> {
+    if resp
+        .content_length()
+        .is_some_and(|len| len > MAX_BODY_BYTES as u64)
+    {
+        return Err(ScanError::Network(format!(
+            "{who} response too large (> {MAX_BODY_BYTES} bytes)"
+        )));
+    }
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| ScanError::Network(format!("{who} body read failed: {e}")))?
+    {
+        if body.len() + chunk.len() > MAX_BODY_BYTES {
+            return Err(ScanError::Network(format!(
+                "{who} response exceeded {MAX_BODY_BYTES} byte cap; aborting read"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body)
+        .map_err(|e| ScanError::Network(format!("{who} body parse failed: {e}")))
+}
+
+/// Prepare a `source=` URL for transmission to a third party: strip any
+/// `user:password@` userinfo (credentials embedded in a source URL must never
+/// leave the machine) and the `#fragment` (makepkg directives like
+/// `#commit=` / `#signed` are local, not part of the resource).
+///
+/// The query string and path are deliberately kept byte-for-byte: URLhaus
+/// matches *exact* URLs, so normalising them would turn a listed URL into a
+/// miss. The rest of the URL is already public in the PKGBUILD.
+pub fn sanitize_url_for_lookup(url: &str) -> String {
+    let no_frag = url.split('#').next().unwrap_or(url);
+    let Some(scheme_end) = no_frag.find("://") else {
+        return no_frag.to_string();
+    };
+    let (scheme, rest) = no_frag.split_at(scheme_end + 3);
+    // The authority ends at the first path/query delimiter (a backslash is
+    // treated as `/` by lenient URL parsers, so treat it as a delimiter too).
+    let auth_end = rest.find(['/', '?', '\\']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(auth_end);
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    format!("{scheme}{host}{tail}")
+}
+
+/// True when `e` is a provider "too many requests" (HTTP 429) failure, i.e. the
+/// quota is exhausted and further calls this scan are pointless.
+pub fn is_rate_limited(e: &ScanError) -> bool {
+    matches!(e, ScanError::Network(m) if m.contains("HTTP 429"))
+}
+
 /// True for a clean 64-char hex sha256. A hash is interpolated into a URL path,
 /// so anything else is rejected before it can reach the network.
 fn is_hex_sha256(s: &str) -> bool {
@@ -96,12 +162,8 @@ pub async fn virustotal_file(api_key: &str, sha256: &str) -> Result<Option<Threa
     if !status.is_success() {
         return Err(ScanError::Network(format!("VirusTotal HTTP {status}")));
     }
-    match resp.json::<serde_json::Value>().await {
-        Ok(json) => Ok(parse_vt_stats(&json)),
-        Err(e) => Err(ScanError::Network(format!(
-            "VirusTotal body parse failed: {e}"
-        ))),
-    }
+    let json = read_capped_json(resp, "VirusTotal").await?;
+    Ok(parse_vt_stats(&json))
 }
 
 /// VirusTotal v3 URL report. The URL identifier is the unpadded URL-safe base64
@@ -109,6 +171,7 @@ pub async fn virustotal_file(api_key: &str, sha256: &str) -> Result<Option<Threa
 /// contract as [`virustotal_file`]: `Ok(None)` only on a definitive 404, `Err`
 /// on any transient failure so it is not cached.
 pub async fn virustotal_url(api_key: &str, url: &str) -> Result<Option<ThreatScore>> {
+    let url = sanitize_url_for_lookup(url);
     let id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(url.as_bytes());
     let resp = match client()?
         .get(format!("{VT_API}/urls/{id}"))
@@ -130,22 +193,19 @@ pub async fn virustotal_url(api_key: &str, url: &str) -> Result<Option<ThreatSco
     if !status.is_success() {
         return Err(ScanError::Network(format!("VirusTotal HTTP {status}")));
     }
-    match resp.json::<serde_json::Value>().await {
-        Ok(json) => Ok(parse_vt_stats(&json)),
-        Err(e) => Err(ScanError::Network(format!(
-            "VirusTotal body parse failed: {e}"
-        ))),
-    }
+    let json = read_capped_json(resp, "VirusTotal").await?;
+    Ok(parse_vt_stats(&json))
 }
 
 /// URLhaus URL lookup. abuse.ch made the `Auth-Key` header MANDATORY (free key
 /// from <https://auth.abuse.ch/>), so this is only called when a key is set.
 /// `POST /v1/url/` with form field `url=`. Fail-open.
 pub async fn urlhaus_url(auth_key: &str, url: &str) -> Result<Option<ThreatScore>> {
+    let url = sanitize_url_for_lookup(url);
     let resp = match client()?
         .post(format!("{URLHAUS_API}/url/"))
         .header("Auth-Key", auth_key)
-        .form(&[("url", url)])
+        .form(&[("url", url.as_str())])
         .send()
         .await
     {
@@ -160,12 +220,8 @@ pub async fn urlhaus_url(auth_key: &str, url: &str) -> Result<Option<ThreatScore
             resp.status()
         )));
     }
-    match resp.json::<serde_json::Value>().await {
-        Ok(json) => Ok(Some(parse_urlhaus(&json))),
-        Err(e) => Err(ScanError::Network(format!(
-            "URLhaus body parse failed: {e}"
-        ))),
-    }
+    let json = read_capped_json(resp, "URLhaus").await?;
+    Ok(Some(parse_urlhaus(&json)))
 }
 
 /// URLhaus payload (hash) lookup: `POST /v1/payload/` with `sha256_hash=`.
@@ -190,12 +246,8 @@ pub async fn urlhaus_payload(auth_key: &str, sha256: &str) -> Result<Option<Thre
             resp.status()
         )));
     }
-    match resp.json::<serde_json::Value>().await {
-        Ok(json) => Ok(Some(parse_urlhaus(&json))),
-        Err(e) => Err(ScanError::Network(format!(
-            "URLhaus body parse failed: {e}"
-        ))),
-    }
+    let json = read_capped_json(resp, "URLhaus").await?;
+    Ok(Some(parse_urlhaus(&json)))
 }
 
 /// Parse a VirusTotal v3 report body (file or URL) into a [`ThreatScore`]. The
@@ -245,6 +297,42 @@ mod tests {
         assert!(!is_hex_sha256(&"a".repeat(63)));
         assert!(!is_hex_sha256("../../etc/passwd"));
         assert!(!is_hex_sha256(&"g".repeat(64)));
+    }
+
+    #[test]
+    fn url_userinfo_and_fragment_are_stripped_but_query_kept() {
+        assert_eq!(
+            sanitize_url_for_lookup("https://user:s3cret@host.example/a/b.tgz?x=1&y=2#sha=1"),
+            "https://host.example/a/b.tgz?x=1&y=2"
+        );
+        assert_eq!(
+            sanitize_url_for_lookup("https://tok@host.example"),
+            "https://host.example"
+        );
+        // An '@' after the authority (in the path/query) is data, not userinfo.
+        assert_eq!(
+            sanitize_url_for_lookup("https://host.example/a@b?e=x@y"),
+            "https://host.example/a@b?e=x@y"
+        );
+        // Backslash is an authority delimiter for lenient parsers.
+        assert_eq!(
+            sanitize_url_for_lookup("https://evil.example\\@good.example/x"),
+            "https://evil.example\\@good.example/x"
+        );
+        assert_eq!(
+            sanitize_url_for_lookup("https://a.example/f.tgz"),
+            "https://a.example/f.tgz"
+        );
+    }
+
+    #[test]
+    fn rate_limit_detection() {
+        assert!(is_rate_limited(&ScanError::Network(
+            "VirusTotal HTTP 429 Too Many Requests".into()
+        )));
+        assert!(!is_rate_limited(&ScanError::Network(
+            "VirusTotal HTTP 500".into()
+        )));
     }
 
     #[test]

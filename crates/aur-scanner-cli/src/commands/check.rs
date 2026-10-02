@@ -4,16 +4,20 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::collections::{BTreeMap, HashMap};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
-use aur_scanner_core::aur::{AurClient, PackageInfoSource};
+use aur_scanner_core::aur::{package_deadline, with_deadline, AurClient, PackageInfoSource};
 use aur_scanner_core::depgraph::{self, DependencyGraph, PackageSource, ResolveOptions};
+use aur_scanner_core::history::{
+    compare as history_compare, findings_for_changes, History, PackageRecord, Scope,
+};
 use aur_scanner_core::overlay::{info_from_pkgbuild, OverlaySource};
 use aur_scanner_core::parser::{PkgbuildParser, StaticParser};
+use aur_scanner_core::registry;
 use aur_scanner_core::sbom::{self, ComponentScan};
 use aur_scanner_core::validate::{is_valid_package_name, validate_package_name};
-use aur_scanner_core::{Finding, OutputConfig, ScanConfig, Scanner, Severity};
+use aur_scanner_core::{Finding, OutputConfig, Registry, ScanConfig, Scanner, Severity};
 
 use super::banner;
 
@@ -70,9 +74,151 @@ fn classify_local_dir(
     }
 }
 
+/// Compare a fresh scan against the stored record for the same package, emit
+/// findings for what moved, and store the new record.
+///
+/// Returns an empty vector on a first scan. Every failure path is an `Err` the
+/// caller logs and discards: change detection is an enhancement layered on top
+/// of the scan, and a broken cache must never turn a good scan into a bad one.
+pub(crate) fn diff_against_history(
+    history: &History,
+    result: &aur_scanner_core::ScanResult,
+    pkgbuild_path: &std::path::Path,
+    maintainer: MaintainerLookup,
+    scope: Scope,
+    fingerprint: String,
+) -> anyhow::Result<Vec<Finding>> {
+    // Capped, like every other read the scanner does. An uncapped
+    // read_to_string here bypasses MAX_SCAN_FILE_BYTES and lets a hostile repo
+    // hand the history layer a multi-gigabyte "PKGBUILD".
+    let content = aur_scanner_core::read_text_capped(pkgbuild_path)?;
+    let parsed = StaticParser::new().parse(&content)?;
+
+    // Hash the package-side scripts separately from the PKGBUILD so "gained an
+    // install script" is distinguishable from "the PKGBUILD changed".
+    let dir = pkgbuild_path.parent().unwrap_or(std::path::Path::new("."));
+    let mut scripts: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_file()
+                    && matches!(
+                        p.extension().and_then(|e| e.to_str()),
+                        Some("install") | Some("hook")
+                    )
+            })
+            .collect();
+        paths.sort();
+        for path in paths {
+            if let Ok(c) = aur_scanner_core::read_text_capped(&path) {
+                scripts.push(c);
+            }
+        }
+    }
+
+    let previous = history.get(&current_key(result), scope);
+
+    // A lookup that FAILED is not a package that is orphaned.
+    //
+    // `PackageRecord.maintainer` is `Option<String>` where `None` documents
+    // "orphaned". Both writers derived it from an AUR lookup that also yields
+    // `None` when the RPC call errored, so one transient failure rewrote every
+    // record's maintainer to None -- and `compare` then read that as
+    // `Some("alice") -> None` and emitted DIFF-002 "Package has been orphaned"
+    // for the whole tree. The next successful run emitted the mirror image at
+    // HIGH: "Orphaned package has been adopted", naming maintainers who never
+    // changed. That is the code meant to catch the xeactor pattern, firing
+    // dozens of times about nothing, which teaches people to ignore it.
+    //
+    // When we did not look, carry the previous value forward instead of
+    // asserting anything.
+    let maintainer = match maintainer {
+        MaintainerLookup::Known(m) => m,
+        MaintainerLookup::NotLookedUp => previous.as_ref().and_then(|p| p.maintainer.clone()),
+    };
+
+    let current = PackageRecord::from_scan(result, &parsed, maintainer)
+        .with_scripts(&scripts)
+        .with_fingerprint(fingerprint);
+    let findings = match &previous {
+        Some(previous) => {
+            let changes = history_compare(previous, &current);
+            findings_for_changes(
+                previous,
+                &current,
+                &changes,
+                &result.findings,
+                pkgbuild_path,
+            )
+        }
+        None => Vec::new(),
+    };
+
+    // Return the findings even if the store cannot be updated. Computing a real
+    // delta and then discarding it because the cache is full or read-only is a
+    // fail-OPEN: the tool has a baseline, has detected a hijack-shaped change
+    // against it, and says nothing. Report first, persist second.
+    if let Err(e) = history.put(&current, scope) {
+        tracing::warn!(
+            "could not update scan history for {}: {e}; change detection will \
+             re-report this next run",
+            current.package
+        );
+    }
+    Ok(findings)
+}
+
+/// The history key for a completed scan.
+fn current_key(result: &aur_scanner_core::ScanResult) -> String {
+    result.package_name.clone()
+}
+
+/// What we know about a package's maintainer, distinguishing "the registry says
+/// nobody" from "we never asked".
+#[derive(Debug, Clone)]
+pub(crate) enum MaintainerLookup {
+    /// The registry answered. `None` inside means genuinely orphaned.
+    Known(Option<String>),
+    /// No lookup happened, or it failed. Asserts nothing.
+    NotLookedUp,
+}
+
+/// What to do once the scan is finished. Pure so the fail-closed contract is
+/// unit-testable without a terminal.
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    /// Nothing at or above the gate and the tree is fully reviewed.
+    Pass,
+    /// The gate tripped in an interactive run on a real terminal: ask the user.
+    Prompt,
+    /// Fail: unreviewed packages, a tripped gate with no one to ask, or no TTY.
+    Deny,
+}
+
+/// Decide the outcome.
+///
+/// * `incomplete` -- an unresolved/truncated/unfetchable package: never promptable.
+/// * `gate_tripped` -- a finding at or above the `--fail-on` (or default) level.
+/// * a prompt is only possible when interactive AND stdin is a terminal; a piped
+///   `y` (CI, cron, `echo y |`) is not consent.
+fn verdict(incomplete: bool, gate_tripped: bool, interactive: bool, stdin_is_tty: bool) -> Verdict {
+    if incomplete {
+        Verdict::Deny
+    } else if !gate_tripped {
+        Verdict::Pass
+    } else if interactive && stdin_is_tty {
+        Verdict::Prompt
+    } else {
+        Verdict::Deny
+    }
+}
+
 /// Run the pre-install check.
 pub async fn run(args: CheckArgs) -> Result<()> {
-    let client = AurClient::new().context("Failed to create AUR client")?;
+    let timeout_seconds = args.config.timeout_seconds;
+    let client = AurClient::with_timeout(timeout_seconds).context("Failed to create AUR client")?;
     let output = args.config.output.clone();
     let scanner = Scanner::new(args.config).context("Failed to create scanner")?;
 
@@ -87,7 +233,7 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     let parser = StaticParser::new();
     for dir in &args.local_dirs {
         let pkgbuild_path = dir.join("PKGBUILD");
-        let content = std::fs::read_to_string(&pkgbuild_path)
+        let content = aur_scanner_core::read_text_capped(&pkgbuild_path)
             .with_context(|| format!("reading {}", pkgbuild_path.display()))?;
         let parsed = parser
             .parse(&content)
@@ -167,35 +313,89 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         aur_count.to_string().bold(),
         repo_count
     );
-    if !graph.truncated.is_empty() {
-        println!(
-            "  {} tree truncated at depth/size cap for: {}",
-            "note:".yellow(),
-            graph.truncated.join(", ")
-        );
+    // Anything the resolver could not vouch for is an UNSCANNED package, so it
+    // fails the check (a --no-deps run never expands, hence never truncates).
+    let graph_issues = graph.blocking_issues();
+    for issue in &graph_issues {
+        println!("  {} {}", "UNREVIEWED:".red().bold(), issue);
     }
     println!();
 
+    // 2. Scan every AUR node (the untrusted set).
+    //
+    // The official-repo name list is the trusted corpus for name-impersonation
+    // comparison. Read it once for the whole tree rather than per package.
+    // Scan history: how this package looked last time. Opening it is
+    // best-effort -- if the cache directory is unusable we simply do not do
+    // change detection, rather than refusing to scan.
+    let history = match History::open(History::default_dir()) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            eprintln!(
+                "{} scan history unavailable ({e}); change detection is off for this run",
+                "note:".yellow()
+            );
+            None
+        }
+    };
+
+    let official_names = registry::load_official_names().await;
+    if official_names.is_empty() {
+        eprintln!(
+            "{} could not read the pacman sync databases; name-impersonation \
+             checks are disabled for this run",
+            "note:".yellow()
+        );
+    }
+
+    // Registry records for the AUR nodes, in one batch. Resolution kept only the
+    // fields it needed for the graph; ownership analysis needs the rest
+    // (submission date, votes, out-of-date flag). A failure here is not fatal --
+    // the scan proceeds with no registry context and the name analyzers stay
+    // silent rather than guessing.
+    let aur_node_names: Vec<String> = graph
+        .aur_packages()
+        .iter()
+        .map(|n| n.name.clone())
+        .collect();
+    let node_info: HashMap<String, aur_scanner_core::aur::AurPackageInfo> = {
+        let refs: Vec<&str> = aur_node_names.iter().map(|s| s.as_str()).collect();
+        match source.info_batch(&refs).await {
+            Ok(infos) => infos.into_iter().map(|i| (i.name.clone(), i)).collect(),
+            Err(e) => {
+                eprintln!(
+                    "{} could not load AUR package metadata ({e}); ownership and \
+                     name-impersonation checks are disabled for this run",
+                    "note:".yellow()
+                );
+                HashMap::new()
+            }
+        }
+    };
+
     // The threshold that actually blocks.
     //
-    // `--fail-on` when given. Otherwise a NON-INTERACTIVE run has no prompt to
+    // `--fail-on` when given. Otherwise: a NON-INTERACTIVE run has no prompt to
     // fall back on, so it must fail closed on Critical rather than exit 0.
     //
     // It did not. `gate_tripped` was only ever written inside
     // `if let Some(threshold) = args.fail_on`, and the shell integrations invoke
     // `aur-scan check --severity <sev> --no-confirm <pkgs>` with no `--fail-on`
-    // -- `--severity` is a DISPLAY floor, not a gate. So with
-    // AUR_SCAN_INTERACTIVE=0 a tree with Criticals exited 0 and the helper ran.
+    // at all -- `--severity` is a DISPLAY floor, not a gate. So a user with
+    // AUR_SCAN_INTERACTIVE=0 got "Tree totals: 3 CRITICAL", exit 0, and
+    // `if ! aur-scan check ...` handed straight off to paru. The primary
+    // documented protection was a no-op in exactly the mode people script.
     //
-    // An interactive run with no threshold keeps its behaviour: the prompt is
-    // the gate, and the user may knowingly accept the risk.
+    // An interactive run with no `--fail-on` prompts at High and above (the
+    // historical prompt floor); with `--fail-on <level>` it prompts for ANY
+    // finding at or above that level, not just Critical/High. A non-interactive
+    // run has no prompt, so the threshold simply fails it.
     let effective_gate = match (args.fail_on, args.interactive) {
-        (Some(threshold), _) => Some(threshold),
-        (None, false) => Some(Severity::Critical),
-        (None, true) => None,
+        (Some(t), _) => t,
+        (None, false) => Severity::Critical,
+        (None, true) => Severity::High,
     };
 
-    // 2. Scan every AUR node (the untrusted set).
     let mut scans: BTreeMap<String, ComponentScan> = BTreeMap::new();
     let mut total_critical = 0usize;
     let mut total_high = 0usize;
@@ -212,6 +412,20 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         let local_pkgbuild = local_dir_by_name
             .get(&node.name)
             .map(|d| d.join("PKGBUILD"));
+        // History is keyed by package NAME, and for a --local dir that name is
+        // whatever the PKGBUILD declares about itself. Recording it in the same
+        // namespace as AUR packages lets a directory declaring
+        // `pkgname=firefox` overwrite the real firefox baseline -- and because
+        // DIFF-* are pure deltas, a poisoned baseline does not raise a false
+        // alarm, it SILENCES the next real change. So local scans go in their
+        // own namespace: they still diff against previous local scans of the
+        // same directory (which is the whole point of `check --local`), and can
+        // never touch an AUR package's record.
+        let scope = if local_pkgbuild.is_some() {
+            History::LOCAL
+        } else {
+            History::AUR
+        };
         if local_pkgbuild.is_some()
             && classify_local_dir(&node.name, &requested_roots)
                 == LocalDirBinding::UnrequestedShadow
@@ -236,32 +450,80 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         );
         io::stdout().flush().ok();
 
-        let result = match &local_pkgbuild {
-            Some(p) => scanner
-                .scan_pkgbuild(p)
-                .await
-                .map_err(|e| format!("scan error: {e}")),
-            None => match client.fetch_pkgbuild(&node.name).await {
-                Ok(fetched) => scanner
-                    .scan_pkgbuild(&fetched.pkgbuild_path)
-                    .await
-                    .map_err(|e| format!("scan error: {e}")),
-                Err(e) => Err(format!("fetch error: {e}")),
-            },
+        // What the registry says about this package: who maintains it, how long
+        // it has existed, and -- when the name is a `-bin`/`-git` variant --
+        // who maintains the package it is a variant of. Absent for a node the
+        // RPC did not return, in which case the name analyzers stay silent.
+        let registry_ctx = match node_info.get(&node.name) {
+            Some(info) => {
+                Registry::From(registry::context_for(info, official_names.clone(), source).await)
+            }
+            None => Registry::None,
         };
+
+        // Distinguish "the registry says nobody" from "we never asked" -- see
+        // MaintainerLookup. Conflating them made one RPC blip rewrite every
+        // record to orphaned and emit a false DIFF-002 pair across the tree.
+        let maintainer = match node_info.get(&node.name) {
+            Some(i) => MaintainerLookup::Known(i.maintainer.clone()),
+            None => MaintainerLookup::NotLookedUp,
+        };
+
+        // Overall per-package deadline from `timeout_seconds`: a hung fetch or
+        // scan is "not reviewed" (fail closed), never a pass. The fetched temp
+        // dir is returned so it outlives the history comparison below.
+        let deadline = package_deadline(timeout_seconds);
+        let scanned = with_deadline(deadline, async {
+            match &local_pkgbuild {
+                Some(p) => scanner
+                    .scan_pkgbuild(p, registry_ctx)
+                    .await
+                    .map(|r| (r, p.clone(), None)),
+                None => {
+                    let fetched = client.fetch_pkgbuild(&node.name).await?;
+                    let path = fetched.pkgbuild_path.clone();
+                    scanner
+                        .scan_pkgbuild(&path, registry_ctx)
+                        .await
+                        .map(|r| (r, path, Some(fetched)))
+                }
+            }
+        })
+        .await;
+        let result = scanned.map_err(|e| format!("fetch/scan error: {e}"));
         match result {
-            Ok(result) => {
+            Ok((mut result, scanned_path, _keep_alive)) => {
+                // Compare against the last time we saw this package and record
+                // what it looks like now. A first scan is silent -- there is
+                // nothing to compare against, and complaining about a cold
+                // cache is noise. Any failure here is logged and ignored: the
+                // history is an enhancement, never a reason to fail a scan.
+                if let Some(h) = history.as_ref() {
+                    match diff_against_history(
+                        h,
+                        &result,
+                        &scanned_path,
+                        maintainer,
+                        scope,
+                        aur_scanner_core::history::analysis_fingerprint(scanner.min_severity()),
+                    ) {
+                        // Gates see the full set: `min_severity` is display-only.
+                        Ok(diff_findings) => result.findings.extend(diff_findings),
+                        Err(e) => {
+                            tracing::debug!("history comparison for {} failed: {e}", node.name)
+                        }
+                    }
+                }
+                result.findings.sort_by_key(|f| f.severity);
                 let scan = ComponentScan::from_findings(&result.findings);
                 total_critical += scan.critical;
                 total_high += scan.high;
-                if let Some(threshold) = effective_gate {
-                    if result
-                        .findings
-                        .iter()
-                        .any(|f| f.severity.is_at_least(threshold))
-                    {
-                        gate_tripped = true;
-                    }
+                if result
+                    .findings
+                    .iter()
+                    .any(|f| f.severity.is_at_least(effective_gate))
+                {
+                    gate_tripped = true;
                 }
                 if scan.critical > 0 || scan.high > 0 {
                     println!("{}", format!("{}C/{}H", scan.critical, scan.high).red());
@@ -278,6 +540,12 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         }
     }
 
+    // Housekeeping, once per run and after every record for this scan is
+    // written. Failures are ignored: pruning must never affect a scan's outcome.
+    if let Some(h) = history.as_ref() {
+        h.prune(History::DEFAULT_MAX_AGE_DAYS, History::DEFAULT_MAX_RECORDS);
+    }
+
     // 3. Render the reviewable tree.
     println!();
     println!(
@@ -286,6 +554,9 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     );
     print!("{}", sbom::render_tree(&graph, &scans));
     print_orphans(&graph);
+    for note in &graph.notes {
+        println!("  {} {}", "note:".yellow(), note);
+    }
 
     // Loudly call out opaque boundaries: packages that fetch/run external code.
     // The scanner intentionally does NOT follow these, so their real behavior
@@ -357,42 +628,53 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     }
 
     // 6. Decide pass/fail. The gate trips if any finding was at or above the
-    // requested threshold (computed per-finding via `is_at_least` during the
-    // scan, so it honors any threshold -- not just critical/high).
-    let mut failed = gate_tripped;
-    // A package we could not fetch/scan is unreviewed; treat that as a failure
-    // whenever there is a gate (always, for a non-interactive run) rather than
-    // silently passing. "Could not analyze" is not "clean".
-    if effective_gate.is_some() && !fetch_failures.is_empty() {
-        failed = true;
-    }
-
-    if args.interactive && (total_critical > 0 || total_high > 0) {
-        println!();
-        if total_critical > 0 {
-            println!(
-                "{}",
-                "WARNING: Critical security issues in the dependency tree!"
-                    .red()
-                    .bold()
-            );
+    // threshold (computed per-finding via `is_at_least` during the scan, so it
+    // honors any threshold -- not just critical/high). A package that could not
+    // be resolved, fetched or scanned is unreviewed: "could not analyze" is not
+    // "clean", and it cannot be waved through with a prompt.
+    let incomplete = !fetch_failures.is_empty() || !graph_issues.is_empty();
+    match verdict(
+        incomplete,
+        gate_tripped,
+        args.interactive,
+        io::stdin().is_terminal(),
+    ) {
+        Verdict::Pass => Ok(()),
+        Verdict::Deny => {
+            if incomplete {
+                anyhow::bail!("Unreviewed packages in the dependency tree; refusing to pass");
+            }
+            if args.interactive {
+                println!(
+                    "{}",
+                    "Not a terminal: cannot ask for consent, so the gate stays closed.".yellow()
+                );
+            }
+            anyhow::bail!("Security issues detected");
         }
-        print!("{} ", "Proceed with installation? [y/N]:".yellow().bold());
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
-            println!("{}", "Installation aborted by user.".yellow());
-            failed = true;
-        } else {
-            println!("{}", "User accepted risks, proceeding...".dimmed());
+        Verdict::Prompt => {
+            println!();
+            if total_critical > 0 {
+                println!(
+                    "{}",
+                    "WARNING: Critical security issues in the dependency tree!"
+                        .red()
+                        .bold()
+                );
+            }
+            print!("{} ", "Proceed with installation? [y/N]:".yellow().bold());
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            if matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                println!("{}", "User accepted risks, proceeding...".dimmed());
+                Ok(())
+            } else {
+                println!("{}", "Installation aborted by user.".yellow());
+                anyhow::bail!("Security issues detected or user aborted");
+            }
         }
     }
-
-    if failed {
-        anyhow::bail!("Security issues detected or user aborted");
-    }
-    Ok(())
 }
 
 fn print_findings_for(
@@ -436,7 +718,7 @@ fn format_finding_compact(pkg: &str, f: &Finding, display: &OutputConfig) -> Str
         "·".dimmed(),
         pkg.dimmed(),
         f.severity,
-        f.title,
+        aur_scanner_core::textutil::sanitize_for_terminal(&f.title),
         loc
     )
 }
@@ -578,5 +860,33 @@ mod tests {
         // No line captured: show the file, no colon-line.
         assert!(out.contains("(cdu.install)"), "got: {out}");
         assert!(!out.contains("cdu.install:"), "no dangling colon: {out}");
+    }
+
+    // --- gate verdict (fail closed) -------------------------------------------
+
+    #[test]
+    fn gate_tripped_prompts_only_on_a_real_terminal() {
+        // `check --fail-on medium` interactive: a Medium trips the gate and must
+        // prompt (it used to exit 0 silently).
+        assert_eq!(verdict(false, true, true, true), Verdict::Prompt);
+        // `echo y | aur-scan check`: stdin is not a TTY -> never accepted.
+        assert_eq!(verdict(false, true, true, false), Verdict::Deny);
+        // Non-interactive: no prompt exists, deny.
+        assert_eq!(verdict(false, true, false, true), Verdict::Deny);
+        assert_eq!(verdict(false, true, false, false), Verdict::Deny);
+    }
+
+    #[test]
+    fn clean_tree_passes_and_incomplete_never_does() {
+        assert_eq!(verdict(false, false, true, true), Verdict::Pass);
+        assert_eq!(verdict(false, false, false, false), Verdict::Pass);
+        // Unresolved/truncated/unfetchable: denied even with a TTY, even when
+        // interactive, and even though no finding tripped the gate.
+        for tty in [true, false] {
+            for inter in [true, false] {
+                assert_eq!(verdict(true, false, inter, tty), Verdict::Deny);
+                assert_eq!(verdict(true, true, inter, tty), Verdict::Deny);
+            }
+        }
     }
 }

@@ -1,0 +1,8 @@
+pkgname=sidecar-tool
+pkgver=1.0
+pkgrel=1
+arch=('x86_64')
+source=("helper.sh")
+sha256sums=('SKIP')
+. ./helper.sh
+build() { do_build; }

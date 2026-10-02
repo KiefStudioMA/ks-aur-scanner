@@ -1,0 +1,33 @@
+#cloud-config
+hostname: arch-aur-test
+users:
+  - name: tester
+    groups: [wheel]
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPFhR9HpqeJ6X3gpNd+BR44U3uQBpkQW81GN6tgKWQuz aur-scanner-vm-test
+
+ssh_pwauth: false
+disable_root: true
+
+# Grow the root filesystem -- the cloud image ships small and a Rust release
+# build of this workspace needs real room for target/.
+growpart:
+  mode: auto
+  devices: ["/"]
+resize_rootfs: true
+
+runcmd:
+  # Refresh keyring first: the shipped image can be weeks old and a stale
+  # keyring makes every signed package fail to install.
+  - [pacman-key, --init]
+  - [pacman-key, --populate, archlinux]
+  - [pacman, -Sy, --noconfirm, archlinux-keyring]
+  - [pacman, -Syu, --noconfirm]
+  # Every shell the project ships an integration or completion file for, so
+  # those can be exercised in their real interpreter rather than assumed.
+  - [pacman, -S, --noconfirm, --needed, base-devel, git, rust, clang, openssl, pacman-contrib, sudo, rsync, python, bash, zsh, fish, nushell, dash]
+  - [touch, /tmp/cloud-init-done]
+
+final_message: "arch-aur-test ready after $UPTIME seconds"

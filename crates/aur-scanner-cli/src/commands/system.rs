@@ -4,14 +4,17 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::PathBuf;
 
-use aur_scanner_core::aur::{get_installed_aur_packages, AurClient};
-use aur_scanner_core::{ScanConfig, Scanner, Severity};
+use aur_scanner_core::aur::{get_installed_aur_packages, AurClient, PackageInfoSource};
+use aur_scanner_core::registry;
+use aur_scanner_core::{Registry, ScanConfig, Scanner, Severity};
+use std::collections::HashMap;
 
 use super::banner;
 
 /// Run the system scan command
 pub async fn run(
     min_severity: Option<Severity>,
+    fail_on: Severity,
     rescan: bool,
     cache_dir: Option<PathBuf>,
     config: ScanConfig,
@@ -39,7 +42,7 @@ pub async fn run(
     // Cross-reference installed package names against the IOC database FIRST.
     // This catches wholly-malicious packages by name even if their PKGBUILD is
     // not cached locally -- directly answering "am I affected?".
-    let ioc_db = aur_scanner_core::threat_intel::IocDatabase::load();
+    let ioc_db = aur_scanner_core::threat_intel::IocDatabase::try_load()?;
     let name_hits: Vec<(&String, String)> = packages
         .iter()
         .filter_map(|p| {
@@ -99,6 +102,35 @@ pub async fn run(
     let mut total_critical = 0;
     let mut total_high = 0;
     let mut not_found = Vec::new();
+    // Packages that were found but could not be fetched or scanned. They were
+    // never reviewed, so they are listed in the summary and fail the exit code
+    // rather than vanishing from the totals.
+    let mut errored: Vec<(String, String)> = Vec::new();
+    // The gate looks at EVERY finding; `min_severity` only trims the display.
+    let mut gate_tripped = false;
+
+    // Registry inputs for the whole installed set, in one batch. `system`
+    // audits what is already on the machine, so ownership signals (an installed
+    // package that has since been orphaned or adopted) are exactly what this
+    // command is for -- it previously could not emit any of them.
+    let official_names = registry::load_official_names().await;
+    let node_info: HashMap<String, aur_scanner_core::aur::AurPackageInfo> = match &client {
+        Some(c) => {
+            let refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
+            match c.info_batch(&refs).await {
+                Ok(infos) => infos.into_iter().map(|i| (i.name.clone(), i)).collect(),
+                Err(e) => {
+                    eprintln!(
+                        "{} could not load AUR metadata ({e}); ownership and \
+                         name-impersonation checks are disabled for this run",
+                        "note:".yellow()
+                    );
+                    HashMap::new()
+                }
+            }
+        }
+        None => HashMap::new(),
+    };
 
     for package in &packages {
         // Try to find cached PKGBUILD
@@ -113,10 +145,18 @@ pub async fn run(
             // Scan from cache
             print!("{} {} ", "Scanning:".dimmed(), package.white());
 
-            match scanner.scan_pkgbuild(&path).await {
+            let reg = match node_info.get(package.as_str()) {
+                Some(info) if client.is_some() => Registry::From(
+                    registry::context_for(info, official_names.clone(), client.as_ref().unwrap())
+                        .await,
+                ),
+                _ => Registry::None,
+            };
+            match scanner.scan_pkgbuild(&path, reg).await {
                 Ok(result) => Some(result),
                 Err(e) => {
                     println!("{}", format!("error: {}", e).red());
+                    errored.push((package.clone(), format!("scan error: {e}")));
                     None
                 }
             }
@@ -125,15 +165,23 @@ pub async fn run(
             print!("{} {} ", "Fetching:".dimmed(), package.white());
 
             match aur_client.fetch_pkgbuild(package).await {
-                Ok(fetched) => match scanner.scan_pkgbuild(&fetched.pkgbuild_path).await {
-                    Ok(result) => Some(result),
-                    Err(e) => {
-                        println!("{}", format!("scan error: {}", e).red());
-                        None
+                Ok(fetched) => {
+                    let reg = Registry::From(
+                        registry::context_for(&fetched.info, official_names.clone(), aur_client)
+                            .await,
+                    );
+                    match scanner.scan_pkgbuild(&fetched.pkgbuild_path, reg).await {
+                        Ok(result) => Some(result),
+                        Err(e) => {
+                            println!("{}", format!("scan error: {}", e).red());
+                            errored.push((package.clone(), format!("scan error: {e}")));
+                            None
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     println!("{}", format!("fetch error: {}", e).red());
+                    errored.push((package.clone(), format!("fetch error: {e}")));
                     None
                 }
             }
@@ -150,7 +198,12 @@ pub async fn run(
             let combined = result
                 .scanned_files
                 .iter()
-                .filter_map(|p| std::fs::read_to_string(p).ok())
+                // Capped, lossy and never following symlinks: an uncapped
+                // `read_to_string` here loaded every scanned file (committed
+                // binaries included) whole, and failed on a single non-UTF-8
+                // byte, silently skipping the provenance check.
+                .filter_map(|p| aur_scanner_core::pkgfiles::read_capped_lossy(p).ok())
+                .map(|r| r.content.replace('\0', ""))
                 .collect::<Vec<_>>()
                 .join("\n");
             if !combined.is_empty() {
@@ -159,7 +212,15 @@ pub async fn run(
                 result.findings.extend(prov);
             }
 
-            // Filter by severity
+            if result
+                .findings
+                .iter()
+                .any(|f| f.severity.is_at_least(fail_on))
+            {
+                gate_tripped = true;
+            }
+
+            // Filter by severity (display only)
             let findings: Vec<_> = result
                 .findings
                 .iter()
@@ -248,6 +309,18 @@ pub async fn run(
         );
     }
 
+    if !errored.is_empty() {
+        println!();
+        println!(
+            "  {} {} package(s) could not be fetched or scanned and were NOT reviewed:",
+            "Errors:".red().bold(),
+            errored.len()
+        );
+        for (pkg, why) in &errored {
+            println!("    - {}: {}", pkg.red(), why.dimmed());
+        }
+    }
+
     if !not_found.is_empty() {
         println!();
         println!(
@@ -267,6 +340,15 @@ pub async fn run(
             "{}",
             "Run 'aur-scan check <package>' for detailed analysis of specific packages.".dimmed()
         );
+    }
+
+    // Exit status: non-zero when an installed package matches a known-malicious
+    // IOC, when any finding reaches `--fail-on` (default: critical), or when a
+    // package could not be reviewed. `system` used to exit 0 unconditionally,
+    // so a cron job or script could never tell a compromised host from a clean
+    // one.
+    if !name_hits.is_empty() || gate_tripped || !errored.is_empty() {
+        std::process::exit(1);
     }
 
     Ok(())

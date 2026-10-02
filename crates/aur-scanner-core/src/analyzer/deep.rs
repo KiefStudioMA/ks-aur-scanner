@@ -7,12 +7,13 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
-use crate::rules::informational_lines;
+use crate::rules::informational_lines_with;
 use crate::textutil::{deobfuscate_text, logical_lines, SHELLS, SHELL_LAUNCHER, SHELL_PATH};
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use lazy_static::lazy_static;
 use regex::Regex;
+use std::collections::HashSet;
 
 lazy_static! {
     /// A decoding/decompression operation that produces executable text.
@@ -47,7 +48,18 @@ impl DeepAnalyzer {
         Self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn analyze_text(&self, text: &str, file: &std::path::Path) -> Vec<Finding> {
+        let local = crate::rules::ShadowSet::from_text(text).names();
+        self.analyze_text_with(text, file, &local)
+    }
+
+    fn analyze_text_with(
+        &self,
+        text: &str,
+        file: &std::path::Path,
+        shadowed: &HashSet<String>,
+    ) -> Vec<Finding> {
         let mut findings = Vec::new();
 
         // Strip comment lines AND printed/informational lines (a non-redirected
@@ -57,7 +69,7 @@ impl DeepAnalyzer {
         // so a backslash-continued decode/exec is still seen as one command.
         let lines = logical_lines(text);
         let line_strs: Vec<&str> = lines.iter().map(|(_, s)| s.as_str()).collect();
-        let informational = informational_lines(&line_strs);
+        let informational = informational_lines_with(&line_strs, shadowed);
         let code: String = lines
             .iter()
             .enumerate()
@@ -101,6 +113,75 @@ impl DeepAnalyzer {
             });
         }
 
+        // DEEP-003 -- Unicode bidirectional control characters (Trojan Source,
+        // CVE-2021-42574).
+        //
+        // These reorder how text DISPLAYS without changing how it executes, so a
+        // reviewer reading the PKGBUILD in a terminal or on the AUR web page can
+        // see something different from what makepkg runs. There is no legitimate
+        // reason for a bidi override in shell source: real right-to-left text in
+        // a comment or a message needs no explicit override, because terminals
+        // and browsers apply the Unicode bidi algorithm on their own.
+        //
+        // Scanned over the RAW text, not the informational-filtered code: the
+        // whole point is that a reviewer cannot trust which lines are comments.
+        let bidi: Vec<char> = text
+            .chars()
+            .filter(|c| {
+                matches!(
+                    c,
+                    // Explicit directional overrides and embeddings.
+                    '\u{202A}' | '\u{202B}' | '\u{202C}' | '\u{202D}' | '\u{202E}'
+                    // Isolates.
+                    | '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'
+                    // Deprecated but still honoured marks.
+                    | '\u{200E}' | '\u{200F}' | '\u{061C}'
+                )
+            })
+            .collect();
+        if !bidi.is_empty() {
+            let names: Vec<String> = {
+                let mut seen: Vec<char> = Vec::new();
+                for c in &bidi {
+                    if !seen.contains(c) {
+                        seen.push(*c);
+                    }
+                }
+                seen.iter()
+                    .map(|c| format!("U+{:04X}", *c as u32))
+                    .collect()
+            };
+            findings.push(Finding {
+                id: "DEEP-003".to_string(),
+                severity: Severity::Critical,
+                category: Category::Obfuscation,
+                title: "Unicode bidirectional control characters".to_string(),
+                description: format!(
+                    "The file contains {} Unicode bidi control character(s) ({}). These change \
+                     how the text is DISPLAYED without changing what is executed, so the code a \
+                     reviewer reads can differ from the code that runs (Trojan Source, \
+                     CVE-2021-42574). Shell source has no legitimate use for an explicit \
+                     directional override.",
+                    bidi.len(),
+                    names.join(", ")
+                ),
+                location: Location {
+                    file: file.to_path_buf(),
+                    line: None,
+                    column: None,
+                    snippet: None,
+                },
+                recommendation: "Strip the bidi characters and re-read the file before trusting \
+                                 any review of it."
+                    .to_string(),
+                cwe_id: Some("CWE-94".to_string()),
+                metadata: serde_json::json!({
+                    "bidi_count": bidi.len(),
+                    "codepoints": names,
+                }),
+            });
+        }
+
         if let Some(m) = LONG_B64.find(&code) {
             findings.push(Finding {
                 id: "DEEP-002".to_string(),
@@ -141,16 +222,65 @@ impl SecurityAnalyzer for DeepAnalyzer {
         // Analyze PKGBUILD and install script together: a decode in one and an
         // exec in the other is still a single payload.
         let mut combined = context.pkgbuild.raw_content.clone();
+        // One anchor for the combined text, because the analysis is deliberately
+        // cross-file: a decode in the PKGBUILD and the exec in the .install is
+        // one payload, and pinning it to either file alone would misreport it.
+        //
+        // Assigned ONCE. Reassigning inside the loop made every finding point at
+        // the LAST side script, so with several scriptlets the reported file was
+        // whichever one happened to be discovered last -- not where the reader
+        // should start.
         let mut anchor = context.file_path.clone();
+        let pkgbuild_is_empty = context.pkgbuild.raw_content.trim().is_empty();
+        let mut anchored_to_script = false;
         for script in context.all_scripts() {
             combined.push('\n');
             combined.push_str(&script.content);
-            // Prefer a side script as the anchor if the PKGBUILD body is empty.
-            if context.pkgbuild.raw_content.trim().is_empty() {
+            // Only when the PKGBUILD body is empty is a side script the better
+            // starting point, and then it is the FIRST one.
+            if pkgbuild_is_empty && !anchored_to_script {
                 anchor = script.path.clone();
+                anchored_to_script = true;
             }
         }
-        Ok(self.analyze_text(&combined, &anchor))
+        let shadow = context.shadowed_printers();
+        let shadowed = shadow.names();
+        let mut findings = self.analyze_text_with(&combined, &anchor, &shadowed);
+        // Calls to a redefined printer, replaced by what they execute.
+        if let Some(inlined) = shadow.inline_calls(&combined) {
+            for f in self.analyze_text_with(&inlined, &anchor, &shadowed) {
+                if !findings
+                    .iter()
+                    .any(|e| e.id == f.id && e.location.line == f.location.line)
+                {
+                    findings.push(f);
+                }
+            }
+        }
+        // A message function that runs its arguments is a finding in itself,
+        // whether or not the call site shows what it will run.
+        for def in shadow.executing() {
+            findings.push(Finding {
+                id: "OBF-012".to_string(),
+                severity: Severity::Critical,
+                category: Category::Obfuscation,
+                title: format!("Message function '{}' redefined to execute its arguments", def.name),
+                description: format!(
+                    "'{}' is normally a printer, but this package redefines it so that it runs what it is given. Every call that looks like a status message is then a command.",
+                    def.name
+                ),
+                location: Location {
+                    file: def.file.clone(),
+                    line: Some(def.line),
+                    column: None,
+                    snippet: None,
+                },
+                recommendation: "Do not install. A legitimate package has no reason to make a message helper run its arguments.".to_string(),
+                cwe_id: Some("CWE-94".to_string()),
+                metadata: serde_json::json!({ "function": def.name, "alias": def.alias }),
+            });
+        }
+        Ok(findings)
     }
 
     fn name(&self) -> &str {
@@ -208,6 +338,49 @@ mod tests {
             findings.iter().any(|f| f.id == "DEEP-001"),
             "case-variant decode->exec must trip DEEP-001: {findings:?}"
         );
+    }
+
+    #[test]
+    fn flags_bidi_control_characters() {
+        // Trojan Source: what a reviewer sees is not what runs.
+        let a = DeepAnalyzer::new();
+        let text = "build() {\n  echo \"\u{202E}hctap ylppa\u{202C}\"\n  make\n}";
+        let findings = a.analyze_text(text, Path::new("PKGBUILD"));
+        let f = findings
+            .iter()
+            .find(|f| f.id == "DEEP-003")
+            .expect("bidi must be flagged");
+        assert_eq!(f.severity, Severity::Critical);
+        assert!(f.description.contains("U+202E"), "{}", f.description);
+    }
+
+    #[test]
+    fn flags_bidi_even_inside_a_comment() {
+        // The attack hides code as a comment (or vice versa), so the
+        // informational-line filter must not be what decides here.
+        let a = DeepAnalyzer::new();
+        let text = "build() {\n  # \u{2066}safe\u{2069}\n  make\n}";
+        let findings = a.analyze_text(text, Path::new("PKGBUILD"));
+        assert!(findings.iter().any(|f| f.id == "DEEP-003"));
+    }
+
+    #[test]
+    fn ordinary_non_ascii_text_is_not_bidi() {
+        // Accented characters, CJK, emoji in a pkgdesc are all fine. Only
+        // explicit DIRECTIONAL CONTROLS are the signal.
+        let a = DeepAnalyzer::new();
+        for text in [
+            "pkgdesc=\"Herramienta de configuración\"",
+            "pkgdesc=\"日本語のツール\"",
+            "# maintainer: Renée Müller <r@example.com>",
+            "pkgdesc=\"مرحبا\"",
+        ] {
+            let findings = a.analyze_text(text, Path::new("PKGBUILD"));
+            assert!(
+                !findings.iter().any(|f| f.id == "DEEP-003"),
+                "false positive on ordinary text: {text}"
+            );
+        }
     }
 
     #[test]

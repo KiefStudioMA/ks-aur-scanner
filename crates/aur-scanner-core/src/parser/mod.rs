@@ -60,8 +60,15 @@ pub struct ParsedPkgbuild {
     pub source: Vec<SourceEntry>,
     /// Checksums
     pub checksums: Checksums,
-    /// Install script name
+    /// Install script name (the last `install=` seen; kept for callers that
+    /// want a single value). See [`Self::installs`] for every declaration.
     pub install: Option<String>,
+    /// EVERY `install=` value in the file: the global assignment plus any made
+    /// inside `package_foo()` functions of a split package. makepkg lets each
+    /// split package carry its own scriptlet, so keeping only the last one left
+    /// the others unscanned.
+    #[serde(default)]
+    pub installs: Vec<String>,
     /// Changelog file
     pub changelog: Option<String>,
     /// Backup files
@@ -187,6 +194,31 @@ pub enum Protocol {
 }
 
 impl Protocol {
+    /// Whether this source is fetched from somewhere else, as opposed to being
+    /// a file shipped alongside the PKGBUILD.
+    ///
+    /// A `source=()` entry like `0001-fix-build.patch` or `foo.service` lives in
+    /// the package directory and has no upstream at all. Treating one as a
+    /// remote origin is not just imprecise, it inverts the meaning of a finding:
+    /// "now fetches from 0001-fix-build.patch" is both false and alarming.
+    pub fn is_remote(&self) -> bool {
+        match self {
+            Protocol::Https
+            | Protocol::Http
+            | Protocol::Ftps
+            | Protocol::Ftp
+            | Protocol::Git
+            | Protocol::Svn
+            | Protocol::Hg
+            | Protocol::Bzr => true,
+            // A local file has no upstream. `Unknown` is deliberately NOT
+            // treated as remote: if we cannot tell what a source is, claiming
+            // the package "fetches from" it is a guess, and this feeds a High
+            // finding.
+            Protocol::File | Protocol::Unknown(_) => false,
+        }
+    }
+
     /// Determine protocol from URL
     pub fn from_url(url: &str) -> Self {
         let url_lower = url.to_lowercase();
@@ -302,6 +334,11 @@ pub struct ParsedInstallScript {
     pub path: PathBuf,
     /// Detected hooks
     pub hooks: Vec<InstallHook>,
+    /// What kind of file this is, so a finding can describe it accurately.
+    /// `.install` scriptlets and ALPM `.hook` files are `InstallScript`;
+    /// patches and sidecar scripts pulled in from `source=()` or found next to
+    /// the PKGBUILD are `SourceFile`.
+    pub file_type: crate::types::FileType,
 }
 
 /// Hook defined in an install script

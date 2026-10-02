@@ -7,6 +7,7 @@ mod output;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
@@ -164,6 +165,12 @@ enum Commands {
         /// Custom cache directory for PKGBUILDs
         #[arg(long)]
         cache_dir: Option<PathBuf>,
+
+        /// Exit non-zero if any finding is at or above this severity
+        /// (default: critical). IOC name matches and packages that could not
+        /// be scanned always fail the run.
+        #[arg(long, value_enum)]
+        fail_on: Option<SeverityArg>,
     },
 
     /// List available detection rules
@@ -189,9 +196,9 @@ enum Commands {
         #[arg(long)]
         category: Option<String>,
 
-        /// Output format: text, markdown, json
-        #[arg(long, default_value = "text")]
-        format: String,
+        /// Output format
+        #[arg(long, value_enum, default_value = "text")]
+        format: CodesFormat,
     },
 
     /// Show or query the IOC (indicator of compromise) database
@@ -203,6 +210,65 @@ enum Commands {
 
     /// Check scanner version and configuration
     Version,
+
+    /// Compare two versions of a package and report what changed
+    ///
+    /// Scans both sides and reports findings that appeared, findings that were
+    /// resolved, and structural changes (upstream, install scripts, functions)
+    /// that a severity count alone would hide. Keeps no state, so it is safe in
+    /// CI; `check` and `install` do this automatically against your scan history.
+    Diff {
+        /// The older package directory (or PKGBUILD)
+        old: PathBuf,
+
+        /// The newer package directory (or PKGBUILD)
+        new: PathBuf,
+
+        /// Output format
+        #[arg(short, long, value_enum, default_value = "text")]
+        format: DiffFormatArg,
+
+        /// Exit non-zero if a NEWLY ADDED finding is at or above this severity.
+        /// Pre-existing findings never trip this gate.
+        #[arg(long, value_enum)]
+        fail_on: Option<SeverityArg>,
+    },
+
+    /// Generate a shell completion script for aur-scan
+    ///
+    /// Write it to the standard location for your shell, e.g.
+    ///   aur-scan completions bash > /usr/share/bash-completion/completions/aur-scan
+    ///   aur-scan completions zsh  > /usr/share/zsh/site-functions/_aur-scan
+    ///   aur-scan completions fish > /usr/share/fish/vendor_completions.d/aur-scan.fish
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum DiffFormatArg {
+    Text,
+    Json,
+}
+
+impl From<DiffFormatArg> for commands::diff::DiffFormat {
+    fn from(f: DiffFormatArg) -> Self {
+        match f {
+            DiffFormatArg::Text => commands::diff::DiffFormat::Text,
+            DiffFormatArg::Json => commands::diff::DiffFormat::Json,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum CodesFormat {
+    Text,
+    Markdown,
+    /// Alias of `markdown`
+    Md,
+    Json,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -233,13 +299,56 @@ async fn main() -> Result<()> {
         "aur_scanner=warn,aur_scanner_core=warn"
     };
 
+    // Logs go to STDERR, never stdout: stdout carries the report (`--format
+    // json` / `sarif`), and a package can trigger warnings (e.g. a hostile
+    // `install=` path), which must not corrupt the document. ANSI colour only
+    // when stderr is a terminal and colour is not disabled.
+    let ansi =
+        std::io::stderr().is_terminal() && !cli.no_color && std::env::var_os("NO_COLOR").is_none();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)),
         )
+        .with_writer(std::io::stderr)
+        .with_ansi(ansi)
         .with_target(false)
         .without_time()
         .init();
+
+    // Completions are generated from the clap command tree alone. Handle this
+    // BEFORE config resolution: a malformed config file is deliberately a hard
+    // error for every scanning path, but it must not stop a user from
+    // installing their shell completions — that would turn a typo in
+    // config.toml into a broken shell setup.
+    // `version` reports on configuration health, so it must run BEFORE config
+    // resolution -- which is a hard error on an invalid file. Otherwise the one
+    // command whose job is to tell you your config is broken is also unable to
+    // start when your config is broken.
+    if matches!(cli.command, Commands::Version) {
+        let code = commands::version::run(cli.config.as_deref());
+        std::process::exit(code);
+    }
+
+    if let Commands::Completions { shell } = cli.command {
+        let mut cmd = <Cli as clap::CommandFactory>::command();
+        let name = cmd.get_name().to_string();
+        clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+        return Ok(());
+    }
+
+    // The read-only reference commands take no configuration at all, so they
+    // run BEFORE config resolution for the same reason `version` does: a
+    // malformed config.toml is deliberately a hard error on every scanning
+    // path, and it must not also disable the commands you would reach for to
+    // work out what is wrong with it.
+    match &cli.command {
+        Commands::Rules { severity, details } => {
+            return commands::rules::run(severity.clone().map(Into::into), *details, &[]);
+        }
+        Commands::Explain { code } => return commands::explain::run(code),
+        Commands::Ioc { check } => return commands::ioc::run(check.as_deref()),
+        _ => {}
+    }
 
     // Resolve config: explicit -c/--config wins, else the first existing
     // default path ($XDG_CONFIG_HOME/aur-scanner/config.toml, then
@@ -247,11 +356,29 @@ async fn main() -> Result<()> {
     // unreadable or malformed file is a hard error — never silently ignored
     // (issue #25: threat-intel settings in the default path were previously
     // never read unless -c was passed).
-    let (file_config, loaded_config_path) = ScanConfig::resolve(cli.config.as_deref())
-        .with_context(|| match cli.config.as_ref() {
-            Some(p) => format!("failed to load config file {}", p.display()),
-            None => "failed to load aur-scanner config".into(),
-        })?;
+    // `codes` only reads `rules_path`, to list the codes the engine would
+    // actually load. It gates nothing, so a broken config degrades it to the
+    // built-in list with a loud warning instead of killing it -- listing rule
+    // codes is another thing you do while debugging that config. Every scanning
+    // path below still hard-fails.
+    let tolerate_bad_config = matches!(cli.command, Commands::Codes { .. });
+    let resolved = ScanConfig::resolve(cli.config.as_deref());
+    let (file_config, loaded_config_path) = match resolved {
+        Ok(pair) => pair,
+        Err(e) if tolerate_bad_config => {
+            eprintln!(
+                "warning: config could not be loaded ({e}); listing built-in codes only. \
+                 A custom rules_path is NOT reflected below."
+            );
+            (ScanConfig::default(), None)
+        }
+        Err(e) => {
+            return Err(anyhow::Error::new(e)).with_context(|| match cli.config.as_ref() {
+                Some(p) => format!("failed to load config file {}", p.display()),
+                None => "failed to load aur-scanner config".to_string(),
+            });
+        }
+    };
     if let Some(path) = &loaded_config_path {
         tracing::debug!("loaded config from {}", path.display());
     }
@@ -319,32 +446,57 @@ async fn main() -> Result<()> {
                 workspace,
                 sbom_path: sbom,
                 keep_build,
+                config: file_config.clone(),
             })
             .await
         }
-        Commands::System { rescan, cache_dir } => {
+        Commands::System {
+            rescan,
+            cache_dir,
+            fail_on,
+        } => {
             commands::system::run(
                 cli.severity.map(Into::into),
+                fail_on.map(Into::into).unwrap_or(Severity::Critical),
                 rescan,
                 cache_dir,
                 file_config.clone(),
             )
             .await
         }
-        Commands::Rules { severity, details } => {
-            commands::rules::run(severity.map(Into::into), details)
-        }
-        Commands::Explain { code } => commands::explain::run(&code),
+        // Handled before config resolution above; unreachable here.
+        Commands::Rules { .. } => unreachable!("rules handled before config load"),
+        Commands::Explain { .. } => unreachable!("explain handled before config load"),
         Commands::Codes { category, format } => {
             // Honor a config-supplied custom rules dir so `codes` lists rules the
             // scan engine would actually load.
             let extra_dirs: Vec<PathBuf> = file_config.rules_path.clone().into_iter().collect();
-            commands::codes::run(category.as_deref(), &format, &extra_dirs)
+            let format = match format {
+                CodesFormat::Text => commands::codes::CodesFormat::Text,
+                CodesFormat::Markdown | CodesFormat::Md => commands::codes::CodesFormat::Markdown,
+                CodesFormat::Json => commands::codes::CodesFormat::Json,
+            };
+            commands::codes::run(category.as_deref(), format, &extra_dirs)
         }
-        Commands::Ioc { check } => commands::ioc::run(check.as_deref()),
-        Commands::Version => {
-            commands::version::run();
-            Ok(())
+        Commands::Diff {
+            old,
+            new,
+            format,
+            fail_on,
+        } => {
+            commands::diff::run(
+                old,
+                new,
+                format.into(),
+                fail_on.map(Into::into),
+                file_config.clone(),
+            )
+            .await
         }
+        // Handled before config resolution above; unreachable here.
+        Commands::Ioc { .. } => unreachable!("ioc handled before config load"),
+        Commands::Version => unreachable!("version handled before config load"),
+        // Handled before config resolution above; unreachable here.
+        Commands::Completions { .. } => unreachable!("completions handled before config load"),
     }
 }

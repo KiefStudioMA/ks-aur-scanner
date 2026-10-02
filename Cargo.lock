@@ -107,11 +107,12 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aur-scanner-cli"
-version = "2.1.1"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "aur-scanner-core",
  "clap",
+ "clap_complete",
  "colored",
  "dirs 5.0.1",
  "serde",
@@ -123,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "aur-scanner-core"
-version = "2.1.1"
+version = "2.2.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -147,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "aur-scanner-hook"
-version = "2.1.1"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "aur-scanner-core",
@@ -161,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "aur-scanner-plugin"
-version = "2.1.1"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "aur-scanner-core",
@@ -274,6 +275,15 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+]
+
+[[package]]
+name = "clap_complete"
+version = "4.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3be2ad0423bdbbb0e25bc89add796f3559706d4a95e1bc98e4d9662a957b6a19"
+dependencies = [
+ "clap",
 ]
 
 [[package]]

@@ -15,15 +15,24 @@
 #   $env.AUR_SCAN_ENABLED = "0"   # disable scanning entirely
 #   $env.AUR_SCAN_VERBOSE = "1"   # print a banner when this file loads
 
+# Settings are plain environment variables, read by the wrapper itself, so they
+# behave exactly as in the other shells:
+#   $env.AUR_SCAN_SEVERITY = "high"        # gate threshold (critical|high|medium|low|info)
+#   $env.AUR_SCAN_INTERACTIVE = "0"        # never prompt; deny findings
+#   $env.AUR_SCAN_MODE = "install"         # race-free `aur-scan install` for named installs
+#   $env.AUR_SCAN_SCAN_UPGRADES = "0"      # skip scanning the AUR update set on -Syu
+#   $env.AUR_SCAN_SCAN_GETPKGBUILD = "1"   # also scan `-G` downloads
+# Set them with `$env.NAME = "value"` (strings) so they reach the wrapper.
+
 # Route one helper invocation through the scanner's wrapper gate. Honors
-# AUR_SCAN_ENABLED=0 as a bypass, and degrades to running the helper directly
-# (with a warning) if the wrapper binary isn't installed.
+# AUR_SCAN_ENABLED=0 as a bypass. If the wrapper binary isn't installed it
+# REFUSES (running the helper unscanned would be a silent fail-open); use
+# `<helper>-unsafe` to bypass on purpose.
 def _aur_scan_gate [helper: string, ...rest] {
     if (($env.AUR_SCAN_ENABLED? | default "1") == "0") {
         ^$helper ...$rest
     } else if (which aur-scan-wrap | is-empty) {
-        print -e "aur-scan: aur-scan-wrap not found in PATH; running without scanning."
-        ^$helper ...$rest
+        error make --unspanned { msg: $"aur-scan: aur-scan-wrap not found in PATH; refusing to run ($helper) unscanned. Install it, or use ($helper)-unsafe to bypass." }
     } else {
         ^aur-scan-wrap $helper ...$rest
     }
@@ -48,7 +57,9 @@ def --wrapped pakku-unsafe  [...rest] { ^pakku ...$rest }
 def aur-scan-system [...rest] { ^aur-scan system ...$rest }
 
 if (($env.AUR_SCAN_VERBOSE? | default "0") == "1") {
-    print "AUR Security Scanner: Nushell integration loaded."
-    print "  - paru, yay, pikaur, trizen, pakku route installs through aur-scan-wrap"
-    print "  - use '<helper>-unsafe' or set $env.AUR_SCAN_ENABLED = \"0\" to bypass"
+    # `print -e` writes to stderr. Never stdout: this file is sourced from
+    # config.nu, and stdout during shell init breaks scp/rsync/`ssh host cmd`.
+    print -e "AUR Security Scanner: Nushell integration loaded."
+    print -e "  - paru, yay, pikaur, trizen, pakku route installs through aur-scan-wrap"
+    print -e "  - use '<helper>-unsafe' or set $env.AUR_SCAN_ENABLED = \"0\" to bypass"
 }

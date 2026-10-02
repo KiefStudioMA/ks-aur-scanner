@@ -1,23 +1,29 @@
 //! Security analyzers for PKGBUILD analysis
 
+mod binary;
 mod checksum;
 mod deep;
 mod ioc;
 mod metadata;
+mod ownership;
 mod pattern;
 mod privilege;
 mod remote_exec;
 mod source;
+mod squat;
 mod threat_intel;
 
+pub use binary::BinaryAnalyzer;
 pub use checksum::ChecksumAnalyzer;
 pub use deep::DeepAnalyzer;
 pub use ioc::IocAnalyzer;
 pub use metadata::MetadataAnalyzer;
+pub use ownership::OwnershipAnalyzer;
 pub use pattern::PatternAnalyzer;
 pub use privilege::PrivilegeAnalyzer;
 pub use remote_exec::RemoteExecAnalyzer;
 pub use source::SourceAnalyzer;
+pub use squat::{SquatAnalyzer, HIGH_VALUE_TARGETS};
 pub use threat_intel::ThreatIntelAnalyzer;
 
 use crate::error::Result;

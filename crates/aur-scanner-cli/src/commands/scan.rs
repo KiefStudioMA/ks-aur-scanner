@@ -2,7 +2,7 @@
 
 use crate::output::{self, OutputFormat};
 use anyhow::{Context, Result};
-use aur_scanner_core::{ScanConfig, ScanResult, Scanner, Severity};
+use aur_scanner_core::{Registry, ScanConfig, ScanResult, Scanner, Severity};
 use colored::Colorize;
 use std::path::PathBuf;
 
@@ -41,6 +41,10 @@ pub async fn run(
     // Snapshot the display config before `config` is consumed by the scanner;
     // it controls only how the text output is rendered, not what is scanned.
     let display = config.output.clone();
+    // `min_severity` trims what is SHOWN. The scan itself returns every finding
+    // and `--fail-on` evaluates all of them, so a low display threshold (or a
+    // user-writable config) can never switch a gate off.
+    let shown_min = config.min_severity;
 
     // Create scanner
     let scanner = Scanner::new(config).context("Failed to create scanner")?;
@@ -48,7 +52,10 @@ pub async fn run(
     // Run scan
     tracing::info!("Scanning: {}", scan_path.display());
     let result = scanner
-        .scan_pkgbuild(&scan_path)
+        // Deliberate: `scan <path>` is a local file scan with no package
+        // identity to look up, so ownership and name-impersonation analysis
+        // cannot run and must not guess.
+        .scan_pkgbuild(&scan_path, Registry::None)
         .await
         .context("Scan failed")?;
 
@@ -59,7 +66,16 @@ pub async fn run(
         crate::OutputFormat::Sarif => OutputFormat::Sarif,
     };
 
-    let output_str = output::format_result(&result, format, &display)?;
+    let shown = result.visible(shown_min);
+    let gate_note = hidden_note(&result, &shown, shown_min, fail_on);
+    // JSON and SARIF are the complete record: every finding, whatever the
+    // display floor. Only the human text output is narrowed.
+    let output_str = match format {
+        OutputFormat::Text => {
+            output::format_result(&shown, format, &display, gate_note.as_deref())?
+        }
+        _ => output::format_result(&result, format, &display, None)?,
+    };
 
     // Write output
     let wrote_to_file = output_path.is_some();
@@ -79,9 +95,9 @@ pub async fn run(
     if !quiet {
         let machine_format = !matches!(format, OutputFormat::Text);
         if machine_format && !wrote_to_file {
-            print_summary(&result, &mut std::io::stderr());
+            print_summary(&shown, gate_note.is_some(), &mut std::io::stderr());
         } else {
-            print_summary(&result, &mut std::io::stdout());
+            print_summary(&shown, gate_note.is_some(), &mut std::io::stdout());
         }
     }
 
@@ -95,12 +111,46 @@ pub async fn run(
     Ok(())
 }
 
-fn print_summary<W: std::io::Write>(result: &ScanResult, w: &mut W) {
-    // Best-effort: a broken pipe / closed stderr must not crash the scan.
-    let _ = write_summary(result, w);
+/// Explain findings the severity floor removed from the text view. When the
+/// hidden findings are what trips `--fail-on`, say so: otherwise the output
+/// reads "clean" while the exit code is 1.
+fn hidden_note(
+    full: &ScanResult,
+    shown: &ScanResult,
+    floor: Severity,
+    fail_on: Option<Severity>,
+) -> Option<String> {
+    let hidden = full.findings.len() - shown.findings.len();
+    if hidden == 0 {
+        return None;
+    }
+    if let Some(gate) = fail_on {
+        let gated = full
+            .findings
+            .iter()
+            .filter(|f| !f.severity.is_at_least(floor) && f.severity.is_at_least(gate))
+            .count();
+        if gated > 0 {
+            return Some(format!(
+                "{gated} finding(s) at or above {gate} are hidden by --severity/min_severity; the gate tripped. Use --format json for the complete record."
+            ));
+        }
+    }
+    Some(format!(
+        "{hidden} finding(s) below {floor} are hidden by --severity/min_severity."
+    ))
 }
 
-fn write_summary<W: std::io::Write>(result: &ScanResult, w: &mut W) -> std::io::Result<()> {
+fn print_summary<W: std::io::Write>(result: &ScanResult, filtered: bool, w: &mut W) {
+    // Best-effort: a broken pipe / closed stderr must not crash the scan.
+    let _ = write_summary(result, filtered, w);
+}
+
+fn write_summary<W: std::io::Write>(
+    result: &ScanResult,
+    filtered: bool,
+    w: &mut W,
+) -> std::io::Result<()> {
     let counts = result.count_by_severity();
 
     let critical = counts.get(&Severity::Critical).unwrap_or(&0);
@@ -120,7 +170,11 @@ fn write_summary<W: std::io::Write>(result: &ScanResult, w: &mut W) -> std::io::
     writeln!(w)?;
 
     if result.findings.is_empty() {
-        writeln!(w, "{}", "No security issues found.".green().bold())?;
+        if filtered {
+            writeln!(w, "No findings at the displayed severity (see above).")?;
+        } else {
+            writeln!(w, "{}", "No security issues found.".green().bold())?;
+        }
     } else {
         writeln!(
             w,

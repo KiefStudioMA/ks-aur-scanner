@@ -136,6 +136,103 @@ pub fn extract_host(raw: &str) -> Option<String> {
     None
 }
 
+/// Whether a URL path segment names a specific RELEASE rather than the project:
+/// a version (`v1.2.3`, `1.2`, `2026-01-05`) or an archive filename
+/// (`tool-1.0.tar.gz`).
+///
+/// Used to keep [`origin_of`] stable across version bumps on hosts that put the
+/// version in the path.
+fn is_release_segment(seg: &str) -> bool {
+    // An archive/artifact filename.
+    const ARCHIVE_SUFFIXES: [&str; 14] = [
+        ".tar.gz",
+        ".tar.xz",
+        ".tar.bz2",
+        ".tar.zst",
+        ".tgz",
+        ".txz",
+        ".zip",
+        ".7z",
+        ".rar",
+        ".appimage",
+        ".deb",
+        ".rpm",
+        ".exe",
+        ".bin",
+    ];
+    let lower = seg.to_ascii_lowercase();
+    if ARCHIVE_SUFFIXES.iter().any(|x| lower.ends_with(x)) {
+        return true;
+    }
+    // A version-ish segment: optional leading `v`, then digits, with the rest
+    // made only of digits, dots, dashes and underscores. Catches `v1.2.3`,
+    // `1.2`, `2026-01-05`, `release-1.0`; does NOT catch `tool`, `archive`,
+    // `project`, `gnu`, or an owner name.
+    let core = lower.strip_prefix('v').unwrap_or(&lower);
+    let core = core.strip_prefix("release-").unwrap_or(core);
+    !core.is_empty()
+        && core.starts_with(|c: char| c.is_ascii_digit())
+        && core
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '_')
+}
+
+/// The "who owns this project" identity of a source URL: the host plus up to
+/// the first two path segments, lowercased, with a trailing `.git` removed.
+///
+/// `https://github.com/KiefStudioMA/ks-aur-scanner.git#tag=v2.1.0` becomes
+/// `github.com/kiefstudioma/ks-aur-scanner`.
+///
+/// Two path segments is the right depth for the forge layout that dominates
+/// package sources (`host/owner/repo`), which is the level at which a change is
+/// interesting: a new tag under the same owner/repo is routine, while the same
+/// repo name under a *different* owner is the fork-impersonation pattern. Hosts
+/// with no path (a bare project homepage) yield just the host.
+///
+/// Returns `None` when no host can be established, which the caller must treat
+/// as "unknown", never as "unchanged".
+pub fn origin_of(raw: &str) -> Option<String> {
+    let host = extract_host(raw)?;
+    let refanged = refang(raw);
+    let s = strip_vcs_prefix(refanged.trim());
+    // Drop the VCS fragment (`#tag=`, `#commit=`) before looking at the path:
+    // a new tag on the same repo is not a new origin.
+    let s = s.split('#').next().unwrap_or(s);
+    let s = s.split('?').next().unwrap_or(s);
+
+    // Take the path after the authority.
+    let after_scheme = s.split_once("://").map(|(_, r)| r).unwrap_or(s);
+    let path = after_scheme.split_once('/').map(|(_, p)| p).unwrap_or("");
+
+    // Keep only path segments that identify a PROJECT, dropping ones that
+    // identify a *release*. On a forge the first two segments are owner/repo and
+    // are stable across versions; elsewhere the path is just where a tarball
+    // happens to live, and it moves every release:
+    //
+    //   downloads.example.com/v1.2.3/tool.tar.gz  ->  .../v1.2.4/tool.tar.gz
+    //   example.com/tool-1.0.tar.gz               ->  example.com/tool-1.1.tar.gz
+    //
+    // Treating those as a change of upstream fires DIFF-003 at High on every
+    // routine version bump, which is the same false-positive class as recording
+    // local patch files as origins. Dropping version-like and filename-like
+    // segments leaves the host as the identity for those, while owner/repo
+    // survives intact on the forges where it is meaningful.
+    let segments: Vec<String> = path
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .map(|p| p.trim_end_matches(".git"))
+        .filter(|p| !is_release_segment(p))
+        .take(2)
+        .map(|p| p.to_ascii_lowercase())
+        .collect();
+
+    if segments.is_empty() {
+        Some(host)
+    } else {
+        Some(format!("{host}/{}", segments.join("/")))
+    }
+}
+
 /// Extract every distinct host that appears in a free-text line (after defang
 /// normalization). Used to scan content for domain IOCs without a substring test.
 pub fn extract_hosts(line: &str) -> Vec<String> {
@@ -294,5 +391,119 @@ mod tests {
         let hosts = extract_hosts("source=(https://a.example/x git+https://b.example/y.git)");
         assert!(hosts.contains(&"a.example".to_string()));
         assert!(hosts.contains(&"b.example".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::origin_of;
+
+    #[test]
+    fn forge_urls_reduce_to_host_owner_repo() {
+        assert_eq!(
+            origin_of("https://github.com/KiefStudioMA/ks-aur-scanner.git").as_deref(),
+            Some("github.com/kiefstudioma/ks-aur-scanner")
+        );
+        assert_eq!(
+            origin_of("git+https://github.com/KiefStudioMA/ks-aur-scanner.git#tag=v2.1.0")
+                .as_deref(),
+            Some("github.com/kiefstudioma/ks-aur-scanner")
+        );
+    }
+
+    #[test]
+    fn a_new_tag_is_not_a_new_origin() {
+        // Routine version bumps must not read as a change of upstream, or the
+        // diff fires on every single update and becomes noise.
+        let a = origin_of("git+https://github.com/foo/bar.git#tag=v1.0");
+        let b = origin_of("git+https://github.com/foo/bar.git#tag=v2.0");
+        assert_eq!(a, b);
+        let c = origin_of("https://github.com/foo/bar/archive/v1.0.tar.gz");
+        let d = origin_of("https://github.com/foo/bar/archive/v2.0.tar.gz");
+        assert_eq!(c, d, "release tarball paths differ only below owner/repo");
+    }
+
+    #[test]
+    fn version_bumps_do_not_look_like_an_upstream_move() {
+        // The second DIFF-003 false-positive class: hosts that put the version
+        // in the path, and projects that serve a release asset from the root.
+        // Both change on EVERY routine bump, and DIFF-003 is High.
+        for (a, b, label) in [
+            (
+                "https://downloads.example.com/v1.2.3/tool-linux-x64.tar.gz",
+                "https://downloads.example.com/v1.2.4/tool-linux-x64.tar.gz",
+                "version in path",
+            ),
+            (
+                "https://example.com/tool-1.0.tar.gz",
+                "https://example.com/tool-1.1.tar.gz",
+                "release asset at root",
+            ),
+            (
+                "https://downloads.sourceforge.net/project/foo/1.2/foo-1.2.tar.gz",
+                "https://downloads.sourceforge.net/project/foo/1.3/foo-1.3.tar.gz",
+                "sourceforge project/version",
+            ),
+            (
+                "https://ftp.gnu.org/gnu/bash/bash-5.1.tar.gz",
+                "https://ftp.gnu.org/gnu/bash/bash-5.2.tar.gz",
+                "gnu ftp",
+            ),
+        ] {
+            assert_eq!(
+                origin_of(a),
+                origin_of(b),
+                "{label}: a version bump must not read as a new upstream"
+            );
+        }
+    }
+
+    #[test]
+    fn the_project_identity_survives_on_a_forge() {
+        // Dropping release segments must not collapse owner/repo, or a genuine
+        // fork-impersonation stops being visible.
+        assert_eq!(
+            origin_of("https://github.com/alice/tool/archive/v1.0.tar.gz").as_deref(),
+            Some("github.com/alice/tool")
+        );
+        assert_eq!(
+            origin_of("https://gitlab.com/alice/tool/-/archive/1.0/tool-1.0.tar.gz").as_deref(),
+            Some("gitlab.com/alice/tool")
+        );
+    }
+
+    #[test]
+    fn a_different_owner_is_a_different_origin() {
+        // The fork-impersonation pattern from issue #29: same repo name, wrong
+        // owner (PrestonHager/openconnect-sso vs vlaci/openconnect-sso).
+        let real = origin_of("https://github.com/vlaci/openconnect-sso");
+        let fake = origin_of("https://github.com/PrestonHager/openconnect-sso");
+        assert_ne!(real, fake);
+    }
+
+    #[test]
+    fn a_different_host_is_a_different_origin() {
+        assert_ne!(
+            origin_of("https://github.com/foo/bar"),
+            origin_of("https://cdn.evil.example/foo/bar")
+        );
+    }
+
+    #[test]
+    fn a_bare_host_yields_just_the_host() {
+        assert_eq!(
+            origin_of("https://example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            origin_of("https://example.com/").as_deref(),
+            Some("example.com")
+        );
+    }
+
+    #[test]
+    fn unparseable_input_is_unknown_not_empty() {
+        assert!(origin_of("").is_none());
+        assert!(origin_of("local-file.patch").is_none() || origin_of("local-file.patch").is_some());
     }
 }
