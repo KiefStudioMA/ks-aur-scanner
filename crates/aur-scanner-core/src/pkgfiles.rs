@@ -481,13 +481,21 @@ pub fn collect(dir: &Path, pkg: &ParsedPkgbuild) -> PackageFiles {
             continue;
         }
         match safe_join(dir, &ex.text) {
-            Ok(p) => {
-                if Collector::exists(&p) {
+            Ok(p) => match std::fs::symlink_metadata(&p) {
+                Err(_) => c.findings.push(unanalyzable_finding(
+                    &p,
+                    "is declared by install= but does not exist; makepkg would refuse it, and the declared scriptlet could not be reviewed",
+                )),
+                Ok(m) if m.is_dir() => c.findings.push(unanalyzable_finding(
+                    &p,
+                    "is declared by install= but is a directory, not a scriptlet; makepkg would refuse it, and the declared scriptlet could not be reviewed",
+                )),
+                Ok(_) => {
                     if let Some(s) = c.load(&p, FileType::InstallScript, false) {
                         installs.push(s);
                     }
                 }
-            }
+            },
             Err(reason) => c.findings.push(unanalyzable_finding(
                 &dir.join(&ex.text),
                 &format!("is declared by install= but {reason}"),

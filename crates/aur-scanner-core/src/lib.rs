@@ -736,6 +736,26 @@ mod tests {
     }
 
     #[test]
+    fn declared_install_missing_or_directory_is_unanalyzable() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "install=gone.install");
+        let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
+        assert!(files.findings.iter().any(|f| f.id == UNANALYZABLE_CODE));
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "install=sub.install");
+        std::fs::create_dir(d.path().join("sub.install")).unwrap();
+        let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
+        assert!(files.findings.iter().any(|f| f.id == UNANALYZABLE_CODE));
+        // Benign: a present, declared scriptlet raises nothing.
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "install=ok.install");
+        std::fs::write(d.path().join("ok.install"), "post_install() { true; }\n").unwrap();
+        let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
+        assert!(files.findings.is_empty());
+        assert!(files.install.is_some());
+    }
+
+    #[test]
     fn install_traversal_is_unanalyzable_not_silent() {
         let d = tempfile::tempdir().unwrap();
         write_pkg(d.path(), "install=../../../../etc/passwd");
