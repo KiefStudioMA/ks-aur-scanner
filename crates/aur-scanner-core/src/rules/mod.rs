@@ -745,7 +745,10 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: format!(r"curl\s+[^|]+\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
+                // `curl URL [| filter]* | sh`: any filter chain (`| rev |`,
+                // `| base64 -d |`, `| tee x |`) between the fetch and the shell.
+                // Segments are `[^|]+` so a `||` fallback is not a pipe.
+                pattern: format!(r"curl\s+[^|]+(?:\|[^|]+)*\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
@@ -760,7 +763,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: format!(r"wget\s+[^|]+\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
+                pattern: format!(r"wget\s+[^|]+(?:\|[^|]+)*\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
@@ -775,11 +778,15 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![
+                // `curl ... -o FILE ... ; sh FILE` -- download, then run (the
+                // separator may be `&&` or `;`, and the URL may follow the
+                // output flag). The file-tied multi-line form is handled by the
+                // remote_exec analyzer.
                 Pattern::Regex {
-                    pattern: r"curl\s+.*-o\s+[^\s]+\s*&&.*\b(ba)?sh\s+".to_string(),
+                    pattern: format!(r"curl\b[^\n]*?(?:\s-[A-Za-z]*o|\s--output)(?:\s+|=)\S+[^\n]*?(?:&&|;)[^\n]*?(?:{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s+\S|\bsource\s+\S)"),
                 },
                 Pattern::Regex {
-                    pattern: r"curl\s+.*-O\s+.*&&.*\./".to_string(),
+                    pattern: r"curl\s+.*-O\s+.*(?:&&|;).*\./".to_string(),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -1160,7 +1167,10 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             category: Category::Persistence,
             patterns: vec![
                 Pattern::Regex {
-                    pattern: r"systemctl\s+(enable|start|daemon-reload)".to_string(),
+                    // Enabling/starting a unit is persistence; `daemon-reload` only
+                    // re-reads unit files (every package that ships a unit runs it
+                    // in post_install/post_upgrade) and is not service creation.
+                    pattern: r"systemctl\s+(?:-\S+\s+)*(?:enable|start)\b".to_string(),
                 },
                 Pattern::Regex {
                     pattern: r"/etc/systemd/system/".to_string(),
@@ -1268,8 +1278,12 @@ pub fn get_builtin_rules() -> Vec<Rule> {
                 // `crontab -u root -` variant. End-of-argument only, so `-l`
                 // and `-r` still cannot match.
                 Pattern::Regex {
-                    pattern: r"\bcrontab[ \t]+(?:-u[ \t]+\S+[ \t]+)?-[ \t]*(?:$|[\n;&|])"
+                    pattern: r"\bcrontab[ \t]+(?:-u[ \t]+\S+[ \t]+)?-[ \t]*(?:$|[\n;&|<])"
                         .to_string(),
+                },
+                // crontab -u USER PATH (install a schedule from a file).
+                Pattern::Regex {
+                    pattern: r"\bcrontab[ \t]+-u[ \t]+\S+[ \t]+(?:/|\./|\.\./|~|\$)".to_string(),
                 },
                 // crontab PATH / var (not a dash-flag). A path-shaped argument
                 // is unambiguous, so it can appear anywhere on the line.
@@ -1686,12 +1700,28 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             description: "Creating hidden files in user home directory".to_string(),
             severity: Severity::High,
             category: Category::MaliciousCode,
+            // WRITES only: a redirection into, or a write command targeting, a
+            // dotfile/dotdir under the home directory. Merely READING or
+            // referencing a config dir (`${XDG_CONFIG_HOME:-~/.config}`,
+            // `[ -f ~/.config/x ]`, `cat ~/.config/x`) is not hidden-file creation.
+            // The home token must start a word (preceded by whitespace, a quote,
+            // `=` or `>`), so a `:-`/`:=` default-value form never matches.
             patterns: vec![
+                // echo/cat/printf ... > ~/.x   /   >> $HOME/.x
                 Pattern::Regex {
-                    pattern: r"~/\.[^/]+".to_string(),
+                    pattern: r#">>?\s*["']?(?:~|\$HOME|\$\{HOME\})/\.[^/\s"']+"#.to_string(),
                 },
+                // touch / mkdir / tee / install / ln / dd / truncate / sed -i ... ~/.x
                 Pattern::Regex {
-                    pattern: r"\$HOME/\.[^/]+".to_string(),
+                    pattern: r#"\b(?:touch|mkdir|tee|install|ln|dd|truncate|sed\s+-i\S*)\b[^;&|\n]*?[\s"'=](?:~|\$HOME|\$\{HOME\})/\.[^/\s"']+"#.to_string(),
+                },
+                // cp / mv / rsync with the dotfile as the DESTINATION (last word)
+                Pattern::Regex {
+                    pattern: r#"\b(?:cp|mv|rsync)\b[^;&|\n]*\s["']?(?:~|\$HOME|\$\{HOME\})/\.[^\s;&|]*\s*(?:$|[;&|])"#.to_string(),
+                },
+                // curl -o ~/.x / wget -O ~/.x
+                Pattern::Regex {
+                    pattern: r#"(?:\s-[A-Za-z]*[oO]|\s--output(?:-document)?)(?:\s+|=)["']?(?:~|\$HOME|\$\{HOME\})/\.[^/\s"']+"#.to_string(),
                 },
             ],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
