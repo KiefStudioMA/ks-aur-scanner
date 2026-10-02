@@ -84,6 +84,8 @@ function _aur_scan_classify
                 set op "$op"P
             case '--build'
                 set op "$op"B
+            case '--version'
+                set op "$op"V
             case '--yay'
                 set op "$op"Y
             case '--files'
@@ -145,6 +147,14 @@ function _aur_scan_classify
     # Read-only sync sub-operations: search/info/list/groups/clean/print.
     string match -qr '[silgcp]' -- $mods; and set readonly_sync 1
 
+    # Help prints usage and installs nothing, but ONLY when there is nothing to
+    # install: `paru -S evil --help` must still be classified as an install.
+    if test $npk -eq 0
+        if string match -q '*h*' -- $mods; or string match -q '* --help *' -- $longs
+            return
+        end
+    end
+
     # -G/--getpkgbuild only downloads a PKGBUILD to inspect -- not an install.
     # Scanned ONLY on opt-in (AUR_SCAN_SCAN_GETPKGBUILD=1).
     if string match -q '*G*' -- $op
@@ -176,10 +186,11 @@ function _aur_scan_classify
     if test "$is_sync" = "1" -a "$readonly_sync" = "1"
         return
     end
-    if string match -q '*h*' -- $mods
-        return
-    end
-    if string match -qr ' --(help|version|gendb|stats|news|order|comments) ' -- $longs
+    # A report flag (--stats, --gendb, ...) is read-only only when no install,
+    # upgrade or build operation and no operand is present; otherwise the
+    # invocation is classified exactly as if the flag were absent.
+    if string match -qr ' --(gendb|stats|news|order|comments) ' -- $longs
+        and test $npk -eq 0 -a "$sysupgrade" = "0" -a "$is_upfile" = "0"
         return
     end
 

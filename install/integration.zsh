@@ -58,6 +58,7 @@ _aur_scan_classify() {
             --getpkgbuild) op="${op}G" ;;
             --show) op="${op}P" ;;
             --build) op="${op}B" ;;
+            --version) op="${op}V" ;;
             --yay) op="${op}Y" ;;
             --files) op="${op}F" ;;
             --database) op="${op}D" ;;
@@ -99,6 +100,10 @@ _aur_scan_classify() {
     # Read-only sync sub-operations: search/info/list/groups/clean/print.
     [[ "$mods" == *[silgcp]* ]] && readonly_sync=1
 
+    # Help prints usage and installs nothing, but ONLY when there is nothing to
+    # install: `paru -S evil --help` must still be classified as an install.
+    if [[ ( "$mods" == *h* || "$longs" == *" --help "* ) && $npk -eq 0 ]]; then return; fi
+
     # -G/--getpkgbuild only downloads a PKGBUILD to inspect -- not an install.
     # Scanned ONLY on opt-in (AUR_SCAN_SCAN_GETPKGBUILD=1).
     if [[ "$op" == *G* ]]; then
@@ -120,8 +125,11 @@ _aur_scan_classify() {
     # sync sub-op, or a help/version-style invocation.
     if [[ "$non_install" == "1" && "$is_sync" == "0" && "$is_upfile" == "0" ]]; then return; fi
     if [[ "$is_sync" == "1" && "$readonly_sync" == "1" ]]; then return; fi
-    local benign_re=' --(help|version|gendb|stats|news|order|comments) '
-    if [[ "$mods" == *h* || "$longs" =~ $benign_re ]]; then return; fi
+    # A report flag (--stats, --gendb, ...) is read-only only when no install,
+    # upgrade or build operation and no operand is present; otherwise the
+    # invocation is classified exactly as if the flag were absent.
+    local report_re=' --(gendb|stats|news|order|comments) '
+    if [[ "$longs" =~ $report_re && $npk -eq 0 && "$sysupgrade" == "0" && "$is_upfile" == "0" ]]; then return; fi
 
     # -U / -Ui: install a local file, or build a local PKGBUILD directory.
     if [[ "$is_upfile" == "1" && "$is_sync" == "0" ]]; then

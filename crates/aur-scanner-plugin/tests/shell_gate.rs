@@ -100,6 +100,75 @@ fn cases() -> Vec<Case> {
             &[],
             Ran(Some((&["foo"], &[]))),
         ),
+        // --- report/help flags never short-circuit the classification -------
+        // Regression: any of these anywhere on the line returned an empty plan,
+        // so `paru -S evil --stats` installed `evil` unscanned.
+        case(
+            "-S evil --stats is still scanned",
+            &["-S", "evil", "--stats"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "--order before the operation is still scanned",
+            &["--order", "-S", "evil"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "-S evil --comments is still scanned",
+            &["-S", "evil", "--comments"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "-S evil --news is still scanned",
+            &["-S", "evil", "--news"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "-S evil --gendb is still scanned",
+            &["-S", "evil", "--gendb"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "-S evil --help is still scanned",
+            &["-S", "evil", "--help"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "-S evil -h is still scanned",
+            &["-S", "evil", "-h"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "-Syu --stats still scans the update set",
+            &["-Syu", "--stats"],
+            &[UPD],
+            Ran(Some((&["foo", "bar"], &[]))),
+        ),
+        case(
+            "-B dir --stats still scans the dir",
+            &["-B", "mydir", "--stats"],
+            &[],
+            Ran(Some((&[], &["mydir"]))),
+        ),
+        case("-P --stats passes", &["-P", "--stats"], &[], Ran(None)),
+        case("--gendb alone passes", &["--gendb"], &[], Ran(None)),
+        case("-Y --gendb passes", &["-Y", "--gendb"], &[], Ran(None)),
+        case("--help alone passes", &["--help"], &[], Ran(None)),
+        case("-h alone passes", &["-h"], &[], Ran(None)),
+        case(
+            "-S --help (no operand) passes",
+            &["-S", "--help"],
+            &[],
+            Ran(None),
+        ),
+        case("--version passes", &["--version"], &[], Ran(None)),
         // --- upgrades -------------------------------------------------------
         // Regression: -Syu / -Sua / bare helper used to pass through unscanned.
         case(

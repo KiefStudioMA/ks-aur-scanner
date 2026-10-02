@@ -83,10 +83,12 @@ const VALUE_LONG_OPTS: &[&str] = &[
     "completioninterval",
 ];
 
-/// Long options that mean "this is not an install/upgrade at all".
-const BENIGN_LONG_OPTS: &[&str] = &[
-    "help", "version", "gendb", "stats", "news", "order", "comments",
-];
+/// Long options that select a read-only report (paru/yay `--stats`, `--news`,
+/// `--order`, `--comments`, `--gendb`). They NEVER short-circuit the
+/// classification on their own: `paru -S evil --stats` still installs `evil`,
+/// so the invocation is read-only only when no install, upgrade or build
+/// operation (and no operand) accompanies them.
+const REPORT_LONG_OPTS: &[&str] = &["gendb", "stats", "news", "order", "comments"];
 
 /// How one `-S`-style operand is to be treated.
 #[derive(Debug, PartialEq, Eq)]
@@ -186,6 +188,7 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
                 "getpkgbuild" => op.push('G'),
                 "show" => op.push('P'),
                 "build" => op.push('B'),
+                "version" => op.push('V'),
                 "yay" => op.push('Y'),
                 "sysupgrade" => mods.push('u'),
                 "search" => mods.push('s'),
@@ -225,6 +228,13 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
         .chars()
         .any(|m| matches!(m, 's' | 'i' | 'l' | 'g' | 'c' | 'p'));
 
+    // Help prints usage and installs nothing, but ONLY when there is nothing to
+    // install: `-S evil --help` must still be classified as an install.
+    let help = mods.contains('h') || long_opts.contains(&"help");
+    if help && operands.is_empty() {
+        return plan;
+    }
+
     // -G only downloads a PKGBUILD for review: recorded, scanned on opt-in.
     if has('G') {
         plan.getpkgbuild = operands;
@@ -255,7 +265,11 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
     if is_sync && readonly_sync {
         return plan;
     }
-    if mods.contains('h') || long_opts.iter().any(|o| BENIGN_LONG_OPTS.contains(o)) {
+    // A report flag (`--stats`, `--gendb`, ...) is read-only only when no
+    // install, upgrade or build operation and no operand is present; otherwise
+    // the invocation is classified exactly as if the flag were absent.
+    let report = long_opts.iter().any(|o| REPORT_LONG_OPTS.contains(o));
+    if report && operands.is_empty() && !sysupgrade && !is_upfile {
         return plan;
     }
 
@@ -619,6 +633,43 @@ mod tests {
         let g = plan(&["-G", "firefox"]);
         assert!(!g.upgrade && g.names.is_empty() && g.blocked.is_empty());
         assert_eq!(g.getpkgbuild, s(&["firefox"]));
+    }
+
+    // Regression: --stats/--order/--comments/--news/--gendb/--help anywhere on
+    // the line used to return an empty plan, so `paru -S evil --stats` ran the
+    // helper unscanned.
+    #[test]
+    fn report_and_help_flags_never_short_circuit() {
+        for flag in [
+            "--stats",
+            "--order",
+            "--comments",
+            "--news",
+            "--gendb",
+            "--help",
+            "-h",
+        ] {
+            assert_eq!(names(&["-S", "evil", flag]), s(&["evil"]), "{flag} after");
+            assert_eq!(names(&[flag, "-S", "evil"]), s(&["evil"]), "{flag} before");
+            if !matches!(flag, "--help" | "-h") {
+                assert!(plan(&["-Syu", flag]).upgrade, "{flag} must not hide -Syu");
+            }
+        }
+        let dirs = |p: &str| p == "d";
+        let p = classify(&["-B", "d", "--stats"], &dirs);
+        assert_eq!(p.local_dirs, vec![PathBuf::from("d")]);
+        // Read-only forms still pass.
+        for args in [
+            &["-P", "--stats"][..],
+            &["--gendb"],
+            &["-Y", "--gendb"],
+            &["--news"],
+            &["-S", "--help"],
+            &["--help"],
+            &["-h"],
+        ] {
+            assert_eq!(plan(args), Plan::default(), "{args:?} must pass through");
+        }
     }
 
     #[test]
