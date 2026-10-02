@@ -619,3 +619,36 @@ fn wrapper_rejects_bogus_severity() {
     );
     assert!(!ok && !log.iter().any(|l| l.starts_with("RAN ")));
 }
+
+/// `AUR_SCAN_MODE=install` must hand `aur-scan install` the same threshold the
+/// gate path uses (its own default is `critical`, which would raise the bar),
+/// and the gate path must always carry a blocking `--fail-on`.
+#[test]
+fn install_mode_and_gate_pass_the_configured_threshold() {
+    for gate in [Gate::Bash, Gate::Zsh, Gate::Fish, Gate::Wrapper] {
+        let bin = match gate {
+            Gate::Bash => "bash",
+            Gate::Zsh => "zsh",
+            Gate::Fish => "fish",
+            _ => "sh",
+        };
+        if which(bin).is_none() {
+            continue;
+        }
+        let sb = Sandbox::new(true);
+        let env = [
+            ("AUR_SCAN_MODE", "install"),
+            ("AUR_SCAN_SEVERITY", "medium"),
+        ];
+        let (_, log, text) = run_gate(gate, &sb, "paru", &["-S", "foo"], &env);
+        assert!(
+            log.contains(&"SCAN install --gate medium foo".to_string()),
+            "[{gate:?}] {log:?}\n{text}"
+        );
+        let sb = Sandbox::new(true);
+        let env = [("AUR_SCAN_SEVERITY", "medium")];
+        let (_, log, _) = run_gate(gate, &sb, "paru", &["-S", "foo"], &env);
+        let scan = log.iter().find(|l| l.starts_with("SCAN ")).unwrap();
+        assert!(scan.contains("--fail-on medium"), "[{gate:?}] {scan}");
+    }
+}

@@ -357,17 +357,23 @@ fn valid_severity(s: &str) -> bool {
 
 /// Build the argv (after `aur-scan`) for the dependency-tree check.
 ///
-/// Interactive runs let `check` prompt on findings (no `--fail-on`: with a
-/// threshold set the prompt could not override it). Non-interactive runs deny.
+/// Always carries `--fail-on <severity>` (a blocking threshold, not just a
+/// display floor); non-interactive runs add `--no-confirm` so there is no prompt.
 fn check_argv(
     names: &[String],
     local_dirs: &[PathBuf],
     severity: &str,
     interactive: bool,
 ) -> Vec<String> {
-    let mut a: Vec<String> = vec!["--severity".into(), severity.into(), "check".into()];
+    let mut a: Vec<String> = vec![
+        "--severity".into(),
+        severity.into(),
+        "check".into(),
+        "--fail-on".into(),
+        severity.into(),
+    ];
     if !interactive {
-        a.extend(["--no-confirm".into(), "--fail-on".into(), severity.into()]);
+        a.push("--no-confirm".into());
     }
     for d in local_dirs {
         a.push("--local".into());
@@ -443,7 +449,9 @@ fn main() -> ExitCode {
         && !plan.upgrade
         && plan.local_dirs.is_empty()
     {
-        let mut argv = vec!["install".to_string()];
+        // Same threshold as the gate path (install defaults its own gate to
+        // `critical`, which would silently raise the bar).
+        let mut argv = vec!["install".to_string(), "--gate".into(), severity.clone()];
         argv.extend(plan.names.iter().cloned());
         return match run_aur_scan(&argv) {
             Ok(true) => ExitCode::SUCCESS,
@@ -754,16 +762,19 @@ mod tests {
                 "--severity",
                 "medium",
                 "check",
-                "--no-confirm",
                 "--fail-on",
                 "medium",
+                "--no-confirm",
                 "--local",
                 "d",
                 "p"
             ])
         );
         let a = check_argv(&s(&["p"]), &[], "high", true);
-        assert_eq!(a, s(&["--severity", "high", "check", "p"]));
+        assert_eq!(
+            a,
+            s(&["--severity", "high", "check", "--fail-on", "high", "p"])
+        );
         assert!(valid_severity("critical") && !valid_severity("hgih"));
     }
 }

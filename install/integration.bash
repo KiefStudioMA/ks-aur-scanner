@@ -240,7 +240,7 @@ _aur_scan_gate() {
     # scan the exact bytes and build them in dependency order via `aur-scan install`.
     if [[ ${#_AUR_SCAN_NAMES[@]} -gt 0 && "$_AUR_SCAN_IS_UPGRADE" == "0" && ${#_AUR_SCAN_LOCAL[@]} -eq 0 \
        && "${AUR_SCAN_MODE:-gate}" == "install" ]]; then
-        aur-scan install "${_AUR_SCAN_NAMES[@]}"
+        aur-scan install --gate "$AUR_SCAN_SEVERITY" "${_AUR_SCAN_NAMES[@]}"
         return $?
     fi
 
@@ -262,10 +262,10 @@ _aur_scan_gate() {
             [[ -n "$_p" && -z "${_seen[$_p]:-}" ]] && { _uniq+=("$_p"); _seen[$_p]=1; }
         done
         echo "AUR Security Scanner: pre-checking ${#_uniq[@]} package(s), ${#_AUR_SCAN_LOCAL[@]} local dir(s)..."
-        local scan_args=("--severity" "$AUR_SCAN_SEVERITY")
+        local scan_args=("--severity" "$AUR_SCAN_SEVERITY" "--fail-on" "$AUR_SCAN_SEVERITY")
         # No TTY (pipe/cron/CI) cannot answer a prompt: deny rather than guess.
         if [[ "$AUR_SCAN_INTERACTIVE" != "1" || ! -t 0 ]]; then
-            scan_args+=("--no-confirm" "--fail-on" "$AUR_SCAN_SEVERITY")
+            scan_args+=("--no-confirm")
         fi
         local _d
         for _d in "${_AUR_SCAN_LOCAL[@]}"; do scan_args+=("--local" "$_d"); done
@@ -308,10 +308,10 @@ aur-scan-system() {
 }
 
 if [[ "$AUR_SCAN_VERBOSE" == "1" ]]; then
-    echo "AUR Security Scanner: Shell integration loaded."
-    echo "  - paru, yay, pikaur, trizen, pakku auto-scan before installing AUR packages"
-    echo "  - AUR_SCAN_MODE=install : race-free (scan the exact bytes, then build)"
-    echo "  - AUR_SCAN_MODE=gate (default) : scan, then hand off to the helper"
-    echo "  - Use 'paru-unsafe' or 'yay-unsafe' to bypass scanning"
-    echo "  - Set AUR_SCAN_ENABLED=0 to disable globally"
+    echo "AUR Security Scanner: Shell integration loaded." >&2
+    echo "  - paru, yay, pikaur, trizen, pakku auto-scan before installing AUR packages" >&2
+    echo "  - AUR_SCAN_MODE=install : race-free (scan the exact bytes, then build)" >&2
+    echo "  - AUR_SCAN_MODE=gate (default) : scan, then hand off to the helper" >&2
+    echo "  - Use 'paru-unsafe' or 'yay-unsafe' to bypass scanning" >&2
+    echo "  - Set AUR_SCAN_ENABLED=0 to disable globally" >&2
 fi
