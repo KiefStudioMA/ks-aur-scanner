@@ -3,7 +3,7 @@
 use super::SecurityAnalyzer;
 use crate::error::Result;
 use crate::rules::informational_lines;
-use crate::textutil::logical_lines;
+use crate::textutil::{logical_lines, normalize_shell_quoting, split_statements, split_words};
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use regex::Regex;
@@ -31,8 +31,54 @@ fn executable_body(content: &str) -> String {
         .join("\n")
 }
 
+/// Whether one shell statement sets a setuid/setgid bit ONLY on files named
+/// `chrome-sandbox` inside `$pkgdir` -- the standard, expected install step of
+/// every Electron/Chromium `-bin` package (the sandbox helper must be setuid
+/// root to create user namespaces on kernels that restrict them). Every path
+/// operand must be exactly a `chrome-sandbox` file and at least one must live
+/// under `$pkgdir`; a statement that also touches any other file is NOT exempt,
+/// so `chmod 4755 "$pkgdir/opt/x/chrome-sandbox" "$pkgdir/usr/bin/y"` stays
+/// Critical.
+fn is_pkgdir_chrome_sandbox_suid(stmt: &str) -> bool {
+    let words = split_words(stmt);
+    let Some(cmd_idx) = words.iter().position(|w| {
+        let w = normalize_shell_quoting(w);
+        let base = w.rsplit('/').next().unwrap_or("");
+        base == "chmod" || base == "install"
+    }) else {
+        return false;
+    };
+    // Everything before the command may only be a harmless launcher.
+    if words[..cmd_idx]
+        .iter()
+        .any(|w| !matches!(w.as_str(), "sudo" | "command" | "exec" | "env"))
+    {
+        return false;
+    }
+    let is_mode = |w: &str| {
+        let digits = w.len() >= 3 && w.chars().all(|c| c.is_ascii_digit());
+        let symbolic = w.chars().any(|c| matches!(c, '+' | '='))
+            && w.chars().all(|c| "ugoa+-=rwxXst".contains(c));
+        digits || symbolic
+    };
+    let mut paths = Vec::new();
+    for w in &words[cmd_idx + 1..] {
+        let n = normalize_shell_quoting(w);
+        if n.starts_with('-') || is_mode(&n) {
+            continue;
+        }
+        paths.push(n);
+    }
+    !paths.is_empty()
+        && paths
+            .iter()
+            .all(|p| p.rsplit('/').next() == Some("chrome-sandbox"))
+        && paths.iter().any(|p| p.contains("pkgdir"))
+}
+
 /// Analyzer for privilege escalation patterns
 pub struct PrivilegeAnalyzer {
+    module_pattern: Regex,
     sudo_pattern: Regex,
     suid_pattern: Regex,
     sudoers_pattern: Regex,
@@ -71,6 +117,14 @@ impl PrivilegeAnalyzer {
             // stripped by `executable_body()` so this adds no false positives.
             sudoers_pattern: Regex::new(r"(?i)/etc/sudoers").unwrap(),
             capabilities_pattern: Regex::new(r"(?i)setcap\s+").unwrap(),
+            // A kernel-module COMMAND (`modprobe`, `insmod`, `rmmod`, optionally
+            // path-prefixed or behind a launcher). A path that merely CONTAINS the
+            // word -- installing `$pkgdir/usr/lib/modprobe.d/foo.conf` -- is a
+            // config file, not a module operation.
+            module_pattern: Regex::new(
+                r#"(?i)(?:^|[\s;&|(`'"])(?:\S*/)?(?:insmod|rmmod|modprobe)(?:\s|$|;|&|\||\)|`|'|")"#,
+            )
+            .unwrap(),
         }
     }
 }
@@ -124,8 +178,51 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
                 });
             }
 
-            // Check for SUID bit setting
-            if self.suid_pattern.is_match(&body) {
+            // Check for SUID bit setting. Judge each statement: the Electron
+            // `chmod 4755 "$pkgdir/opt/<app>/chrome-sandbox"` step is an expected,
+            // known pattern (Low); anything else stays Critical.
+            let (mut suid_real, mut suid_sandbox) = (0usize, 0usize);
+            for line in body.lines() {
+                for (stmt, _) in split_statements(line) {
+                    if self.suid_pattern.is_match(&stmt) {
+                        if is_pkgdir_chrome_sandbox_suid(&stmt) {
+                            suid_sandbox += 1;
+                        } else {
+                            suid_real += 1;
+                        }
+                    }
+                }
+            }
+            // A multi-line match the per-statement walk could not attribute is
+            // treated as real (never weaker than the whole-body match).
+            if suid_real == 0 && suid_sandbox == 0 && self.suid_pattern.is_match(&body) {
+                suid_real = 1;
+            }
+            if suid_real == 0 && suid_sandbox > 0 {
+                findings.push(Finding {
+                    id: "PRIV-002".to_string(),
+                    severity: Severity::Low,
+                    category: Category::PrivilegeEscalation,
+                    title: format!("Expected SUID chrome-sandbox in {}()", func_name),
+                    description: format!(
+                        "Function '{}' sets the setuid bit on a `chrome-sandbox` helper under $pkgdir. This is the standard step for Electron/Chromium-based packages and is expected; verify the package really bundles that runtime.",
+                        func_name
+                    ),
+                    location: Location {
+                        file: context.file_path.clone(),
+                        line: Some(func_body.line_start),
+                        column: None,
+                        snippet: None,
+                    },
+                    recommendation: "No action needed for a genuine Electron/Chromium bundle; no other file is made setuid".to_string(),
+                    cwe_id: Some("CWE-732".to_string()),
+                    metadata: serde_json::json!({
+                        "function": func_name,
+                        "known_pattern": "chrome-sandbox",
+                    }),
+                });
+            }
+            if suid_real > 0 {
                 findings.push(Finding {
                     id: "PRIV-002".to_string(),
                     severity: Severity::Critical,
@@ -201,8 +298,7 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
             }
 
             // Check for kernel module loading
-            if body.contains("insmod") || body.contains("modprobe") || body.contains("/lib/modules")
-            {
+            if self.module_pattern.is_match(&body) || body.contains("/lib/modules") {
                 findings.push(Finding {
                     id: "PRIV-005".to_string(),
                     severity: Severity::High,
