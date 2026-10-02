@@ -714,9 +714,25 @@ mod tests {
         write_pkg(d.path(), "");
         std::fs::write(d.path().join("run"), "#!/bin/sh\necho hi\n").unwrap();
         std::fs::write(d.path().join("notes.txt"), "plain\n").unwrap();
+        std::fs::write(
+            d.path().join("blob"),
+            [0u8, 0x80, 0x81, 0, 0xff, 0xfe, 0, 0x90],
+        )
+        .unwrap();
         let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
-        assert_eq!(files.side.len(), 1);
-        assert_eq!(files.side[0].file_type, FileType::SourceFile);
+        // Every text-like file is read (a shell can run or source any of them
+        // via $startdir); a binary blob is left to the BIN-* checks.
+        let mut names: Vec<String> = files
+            .side
+            .iter()
+            .filter_map(|s| s.path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["notes.txt", "run"]);
+        assert!(files
+            .side
+            .iter()
+            .all(|s| s.file_type == FileType::SourceFile));
     }
 
     #[test]

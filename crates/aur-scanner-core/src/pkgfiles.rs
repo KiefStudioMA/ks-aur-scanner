@@ -47,6 +47,14 @@ const SCRIPT_EXTENSIONS: &[&str] = &[
 /// Names that are never treated as sidecars.
 const IGNORED_NAMES: &[&str] = &["PKGBUILD", ".SRCINFO", ".gitignore", ".git", ".AURINFO"];
 
+/// Entries in the package directory that are never read as package content.
+/// Everything else -- dotfiles included -- is a candidate, because anything in
+/// the directory is reachable from the build via `$startdir`.
+const NEVER_SCANNED: &[&str] = &["PKGBUILD", ".SRCINFO", ".git"];
+
+/// How much of a file is sampled to decide whether it is text.
+const TEXT_SAMPLE_BYTES: usize = 8 * 1024;
+
 /// A file read, possibly truncated at the cap.
 #[derive(Debug)]
 pub struct CappedRead {
@@ -436,6 +444,67 @@ fn has_shebang(path: &Path) -> bool {
     f.read_exact(&mut b).is_ok() && &b == b"#!"
 }
 
+/// Whether the first 8 KiB of a regular file look like text: no NUL bytes, or,
+/// when there are some (bash discards NULs, so `cu\0rl` still runs), mostly
+/// printable once decoded lossily. Binaries (ELF, archives, images) fail this and
+/// are left to the `BIN-*` checks. Unreadable files count as not text; they are
+/// reported separately.
+fn looks_like_text(path: &Path) -> bool {
+    let Ok(f) = open_regular(path) else {
+        return false;
+    };
+    let mut buf = Vec::new();
+    if f.take(TEXT_SAMPLE_BYTES as u64)
+        .read_to_end(&mut buf)
+        .is_err()
+    {
+        return false;
+    }
+    if buf.is_empty() || !buf.contains(&0) {
+        return true;
+    }
+    let decoded = String::from_utf8_lossy(&buf);
+    let (mut total, mut printable) = (0usize, 0usize);
+    for c in decoded.chars().filter(|&c| c != '\0') {
+        total += 1;
+        if c != '\u{FFFD}' && (!c.is_control() || matches!(c, '\t' | '\n' | '\r')) {
+            printable += 1;
+        }
+    }
+    total > 0 && printable * 100 >= total * 85
+}
+
+/// Paths the package text reaches through `$startdir` / `$srcdir` (braced or
+/// not), with known variables expanded. `$srcdir` is tried both as the package
+/// directory and as its `src/` subdirectory.
+fn startdir_references(text: &str, pkg: &ParsedPkgbuild) -> Vec<String> {
+    lazy_static::lazy_static! {
+        static ref REF: regex::Regex = regex::Regex::new(
+            r#"\$(?:\{(startdir|srcdir)\}|(startdir|srcdir))/([^\s"'`;|&)<>(]+)"#
+        ).unwrap();
+    }
+    let mut out = Vec::new();
+    for c in REF.captures_iter(text) {
+        let rest = &c[3];
+        let ex = expand_vars(rest, pkg);
+        if !ex.complete {
+            continue;
+        }
+        let rel = ex.text.trim_end_matches('/').to_string();
+        if rel.is_empty() {
+            continue;
+        }
+        if c.get(1)
+            .or_else(|| c.get(2))
+            .is_some_and(|m| m.as_str() == "srcdir")
+        {
+            out.push(format!("src/{rel}"));
+        }
+        out.push(rel);
+    }
+    out
+}
+
 /// Collect and read everything the package ships beside its PKGBUILD.
 pub fn collect(dir: &Path, pkg: &ParsedPkgbuild) -> PackageFiles {
     let mut c = Collector {
@@ -570,33 +639,76 @@ pub fn collect(dir: &Path, pkg: &ParsedPkgbuild) -> PackageFiles {
         }
     }
 
-    // 5. Script-like files nobody declared: makepkg can still reach them via
-    //    $startdir, and an extension-less file with a shebang is a script.
+    // 5. Every other file in the directory. makepkg can reach any of them via
+    //    `$startdir` (`bash "$startdir/build.cfg"`, `. "$startdir/.cfg"`), and a
+    //    name or extension says nothing about what a shell will do with the
+    //    content, so dotfiles and extension-less files are read too. Binaries
+    //    (NUL-heavy, non-printable) are left to the BIN-* checks. Links, FIFOs
+    //    and the like are never opened; they are reported when a script-like
+    //    name or the package's own text points at them.
+    let mut all_text = pkg.raw_content.clone();
+    for s in installs.iter().chain(out.side.iter()) {
+        all_text.push('\n');
+        all_text.push_str(&s.content);
+    }
     for (name, path, ft) in &entries {
-        if IGNORED_NAMES.contains(&name.as_str()) || c.seen.contains(path) {
+        if NEVER_SCANNED.contains(&name.as_str()) || c.seen.contains(path) || ft.is_dir() {
             continue;
         }
-        let script_named = is_script_name(name);
-        let script_like = if ft.is_file() {
-            script_named || has_shebang(path)
+        let wanted = if ft.is_file() {
+            is_script_name(name) || has_shebang(path) || looks_like_text(path)
         } else {
-            // Symlink or special file: never opened here, only reported when
-            // the name says it is a script. Directories are not files.
-            script_named && !ft.is_dir()
+            is_script_name(name) || all_text.contains(name.as_str())
         };
-        if !script_like {
+        if !wanted {
             continue;
         }
         if c.discovered >= MAX_DISCOVERED_FILES {
             c.findings.push(unanalyzable_finding(
                 path,
-                "was not read because the package directory holds too many script files",
+                "was not read because the package directory holds too many files",
             ));
             continue;
         }
         c.discovered += 1;
         if let Some(s) = c.load(path, FileType::SourceFile, false) {
             out.side.push(s);
+        }
+    }
+
+    // 6. Paths the package reaches through `$startdir` / `$srcdir` that live
+    //    below the top level (`$startdir/conf/build.cfg`). Followed to a fixed
+    //    point: a file read here can name the next one.
+    let mut queue: Vec<String> = vec![pkg.raw_content.clone()];
+    queue.extend(installs.iter().map(|s| s.content.clone()));
+    queue.extend(out.side.iter().map(|s| s.content.clone()));
+    while let Some(text) = queue.pop() {
+        for rel in startdir_references(&text, pkg) {
+            let Ok(p) = safe_join(dir, &rel) else {
+                continue;
+            };
+            if c.seen.contains(&p) {
+                continue;
+            }
+            let Ok(meta) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
+            let ft = meta.file_type();
+            if ft.is_dir() || (ft.is_file() && !looks_like_text(&p) && !has_shebang(&p)) {
+                continue;
+            }
+            if c.discovered >= MAX_DISCOVERED_FILES {
+                c.findings.push(unanalyzable_finding(
+                    &p,
+                    "was not read because the package directory holds too many files",
+                ));
+                continue;
+            }
+            c.discovered += 1;
+            if let Some(s) = c.load(&p, FileType::SourceFile, false) {
+                queue.push(s.content.clone());
+                out.side.push(s);
+            }
         }
     }
 
