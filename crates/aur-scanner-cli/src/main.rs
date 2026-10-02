@@ -164,6 +164,12 @@ enum Commands {
         /// Custom cache directory for PKGBUILDs
         #[arg(long)]
         cache_dir: Option<PathBuf>,
+
+        /// Exit non-zero if any finding is at or above this severity
+        /// (default: critical). IOC name matches and packages that could not
+        /// be scanned always fail the run.
+        #[arg(long, value_enum)]
+        fail_on: Option<SeverityArg>,
     },
 
     /// List available detection rules
@@ -426,9 +432,14 @@ async fn main() -> Result<()> {
             })
             .await
         }
-        Commands::System { rescan, cache_dir } => {
+        Commands::System {
+            rescan,
+            cache_dir,
+            fail_on,
+        } => {
             commands::system::run(
                 cli.severity.map(Into::into),
+                fail_on.map(Into::into).unwrap_or(Severity::Critical),
                 rescan,
                 cache_dir,
                 file_config.clone(),

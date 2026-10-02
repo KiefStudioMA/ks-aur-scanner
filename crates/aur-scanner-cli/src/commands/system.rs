@@ -14,6 +14,7 @@ use super::banner;
 /// Run the system scan command
 pub async fn run(
     min_severity: Option<Severity>,
+    fail_on: Severity,
     rescan: bool,
     cache_dir: Option<PathBuf>,
     config: ScanConfig,
@@ -101,6 +102,12 @@ pub async fn run(
     let mut total_critical = 0;
     let mut total_high = 0;
     let mut not_found = Vec::new();
+    // Packages that were found but could not be fetched or scanned. They were
+    // never reviewed, so they are listed in the summary and fail the exit code
+    // rather than vanishing from the totals.
+    let mut errored: Vec<(String, String)> = Vec::new();
+    // The gate looks at EVERY finding; `min_severity` only trims the display.
+    let mut gate_tripped = false;
 
     // Registry inputs for the whole installed set, in one batch. `system`
     // audits what is already on the machine, so ownership signals (an installed
@@ -149,6 +156,7 @@ pub async fn run(
                 Ok(result) => Some(result),
                 Err(e) => {
                     println!("{}", format!("error: {}", e).red());
+                    errored.push((package.clone(), format!("scan error: {e}")));
                     None
                 }
             }
@@ -166,12 +174,14 @@ pub async fn run(
                         Ok(result) => Some(result),
                         Err(e) => {
                             println!("{}", format!("scan error: {}", e).red());
+                            errored.push((package.clone(), format!("scan error: {e}")));
                             None
                         }
                     }
                 }
                 Err(e) => {
                     println!("{}", format!("fetch error: {}", e).red());
+                    errored.push((package.clone(), format!("fetch error: {e}")));
                     None
                 }
             }
@@ -188,7 +198,12 @@ pub async fn run(
             let combined = result
                 .scanned_files
                 .iter()
-                .filter_map(|p| std::fs::read_to_string(p).ok())
+                // Capped, lossy and never following symlinks: an uncapped
+                // `read_to_string` here loaded every scanned file (committed
+                // binaries included) whole, and failed on a single non-UTF-8
+                // byte, silently skipping the provenance check.
+                .filter_map(|p| aur_scanner_core::pkgfiles::read_capped_lossy(p).ok())
+                .map(|r| r.content.replace('\0', ""))
                 .collect::<Vec<_>>()
                 .join("\n");
             if !combined.is_empty() {
@@ -197,7 +212,15 @@ pub async fn run(
                 result.findings.extend(prov);
             }
 
-            // Filter by severity
+            if result
+                .findings
+                .iter()
+                .any(|f| f.severity.is_at_least(fail_on))
+            {
+                gate_tripped = true;
+            }
+
+            // Filter by severity (display only)
             let findings: Vec<_> = result
                 .findings
                 .iter()
@@ -286,6 +309,18 @@ pub async fn run(
         );
     }
 
+    if !errored.is_empty() {
+        println!();
+        println!(
+            "  {} {} package(s) could not be fetched or scanned and were NOT reviewed:",
+            "Errors:".red().bold(),
+            errored.len()
+        );
+        for (pkg, why) in &errored {
+            println!("    - {}: {}", pkg.red(), why.dimmed());
+        }
+    }
+
     if !not_found.is_empty() {
         println!();
         println!(
@@ -305,6 +340,15 @@ pub async fn run(
             "{}",
             "Run 'aur-scan check <package>' for detailed analysis of specific packages.".dimmed()
         );
+    }
+
+    // Exit status: non-zero when an installed package matches a known-malicious
+    // IOC, when any finding reaches `--fail-on` (default: critical), or when a
+    // package could not be reviewed. `system` used to exit 0 unconditionally,
+    // so a cron job or script could never tell a compromised host from a clean
+    // one.
+    if !name_hits.is_empty() || gate_tripped || !errored.is_empty() {
+        std::process::exit(1);
     }
 
     Ok(())
