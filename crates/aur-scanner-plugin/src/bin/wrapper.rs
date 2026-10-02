@@ -353,11 +353,9 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
     //    that (only `--gendb` and `-c` do).
     // Either way the installed set is picked after the gate ran.
     let interactive = long_opts.contains(&"interactive");
-    let yay_menu = has('Y')
-        && !is_sync
-        && !is_upfile
-        && !operands.is_empty()
-        && !(mods.contains('c') || long_opts.contains(&"gendb") || long_opts.contains(&"clean"));
+    let yay_no_menu =
+        mods.contains('c') || long_opts.contains(&"gendb") || long_opts.contains(&"clean");
+    let yay_menu = has('Y') && !is_sync && !is_upfile && !operands.is_empty() && !yay_no_menu;
     let bare_menu = op.is_empty() && !operands.is_empty() && !readonly_sync;
     let sync_menu = is_sync && interactive && !readonly_sync;
     plan.menu = yay_menu || bare_menu || sync_menu;
@@ -959,8 +957,8 @@ mod tests {
                 .find(|l| l.contains("--root") && l.contains("--dbpath"))
                 .unwrap_or_else(|| panic!("{file}: value-option line not found"));
             let got: std::collections::BTreeSet<String> = line
-                .split(|c: char| c == '|' || c == ' ' || c == ')' || c == '\'')
-                .map(|t| t.trim_matches(|c| c == '\'' || c == ')').to_string())
+                .split(['|', ' ', ')', '\''])
+                .map(|t| t.trim_matches(['\'', ')']).to_string())
                 .filter(|t| t.starts_with("--"))
                 .collect();
             assert_eq!(got, want, "{file} value-option list drifted");
