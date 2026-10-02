@@ -239,10 +239,17 @@ OPTIONS:
     --include-optional   Also follow optdepends when resolving the tree
     --sbom <FILE>        Write a CycloneDX 1.5 SBOM of the whole tree to FILE
     --local <DIR>        Scan an already-fetched package dir from disk (repeatable)
-    --fail-on <LEVEL>    Exit non-zero if findings at this level or above
+    --fail-on <LEVEL>    Gate: findings at this level or above fail the run
                          (critical, high, medium, low, info)
-    --no-confirm         Don't prompt; just report (for wrappers/CI)
+    --no-confirm         Don't prompt (for wrappers/CI); still gates, on
+                         Critical unless --fail-on says otherwise
 ```
+
+**Gate and prompt.** With `--no-confirm` the run fails at `--fail-on` (default
+Critical). Interactively, a tripped gate (default High) asks before passing;
+that question needs a real terminal, so piped or redirected input is a denial,
+never a yes. Packages that could not be fully analyzed (`SCAN-001`), fetched, or
+resolved are never offered a prompt: they fail the run.
 
 **Race-free (TOCTOU-safe) workflow.** By default `check` fetches its own copy of
 each PKGBUILD; the helper then re-clones and builds its own copy, so the bytes
@@ -261,8 +268,16 @@ fully race-free tree).
 
 The dependency tree is printed for review, marking each node `[AUR]` (scanned)
 or `[repo]` (official, trusted), flagging orphaned AUR packages, and annotating
-findings per node (`!! 2C/1H`). AUR packages are resolved recursively; official
-repository dependencies are signed and treated as trusted leaves.
+findings per node (`!! 2C/1H`). AUR packages are resolved recursively.
+
+A dependency counts as `[repo]` only when **pacman** says a sync repository
+satisfies it (provides and version constraints included). A name that only an
+AUR package `provides` (common for `-git`/`-bin`) is resolved through the AUR
+and every provider is scanned. Anything neither can satisfy is shown
+`[UNRESOLVED]` and fails the run, as does a tree cut short by the depth or size
+cap: an unscanned package is never reported as clean. Version constraints the
+AUR version doesn't meet are printed as notes. `timeout_seconds` bounds each
+package's fetch and scan; a timeout fails closed.
 
 **Examples:**
 
@@ -290,8 +305,15 @@ aur-scan check some-tool --no-deps
 Resolve the tree, fetch every AUR package **once** into a workspace, scan those
 exact directories, and — only if the scan gate passes — build them in
 dependency order with `makepkg`, **from the same directories that were
-scanned**. This eliminates the time-of-check/time-of-use gap entirely: there is
-no second fetch between scanning and building.
+scanned**. There is no second fetch between scanning and building, and every
+scanned file is hashed again immediately before `makepkg` runs; any change
+aborts the build.
+
+What this does **not** cover: `makepkg` itself still downloads `source=` files,
+checks out VCS sources, and runs `pkgver()` after the scan. Pinned checksums
+protect the downloads; `SKIP` checksums and unpinned VCS sources do not. Before
+building, `install` lists every package that relies on those, so you can see
+the part the scan could not reach.
 
 ```bash
 aur-scan install <package>... [OPTIONS]
@@ -306,10 +328,15 @@ OPTIONS:
 ```
 
 Dependency ordering comes from the resolved graph (deps built before
-dependents); `makepkg` itself does all the building, so no PKGBUILD logic is
-reimplemented. Enable it as the default for the shell integration with
-`export AUR_SCAN_MODE=install`. It targets AUR packages; install official-repo
-packages with `pacman` as usual.
+dependents, AUR dependencies installed `--asdeps`); `makepkg` itself does all
+the building, so no PKGBUILD logic is reimplemented. Enable it as the default
+for the shell integration with `export AUR_SCAN_MODE=install`.
+
+It installs AUR packages only: a named package that lives in the official repos
+is refused with a pointer to `pacman -S`, never silently skipped. Unresolved or
+ambiguous dependencies and files that could not be analyzed (`SCAN-001`) block
+the build even with `--force`. Declining the prompt, or running without a
+terminal and without `--noconfirm`, exits non-zero.
 
 > **Scope:** builds each AUR `pkgbase` with `makepkg -si` in dependency order.
 > It does not (yet) cover paru-specific features like split-package selection or
@@ -355,7 +382,13 @@ aur-scan system [OPTIONS]
 OPTIONS:
     --rescan             Re-fetch PKGBUILDs from the AUR instead of using the local cache
     --cache-dir <DIR>    Custom cache directory for PKGBUILDs
+    --fail-on <LEVEL>    Exit non-zero at this severity or above [default: critical]
 ```
+
+Exit status is non-zero when a finding reaches `--fail-on`, an installed package
+matches the IOC database, or a package could not be scanned. Packages that
+failed are listed under **Errors** in the summary; packages with no cached
+PKGBUILD are listed as skipped.
 
 This command:
 1. Queries pacman for foreign (non-repo) packages
@@ -557,10 +590,11 @@ script routes installs through the `aur-scan-wrap` binary (same scan-then-handof
 gate), so it requires `aur-scan-wrap` on `PATH` (shipped with every package).
 
 This creates wrapper functions for `paru` and `yay` that:
-1. Detect AUR package installations
-2. Pre-scan packages before proceeding
-3. Prompt for confirmation on findings
-4. Provide `paru-unsafe` and `yay-unsafe` aliases to bypass scanning
+1. Detect AUR installs, upgrades, and local builds (`-B`, `-Ui`, `-U <dir>`)
+2. Scan the full AUR dependency tree before anything builds
+3. Prompt on findings at `AUR_SCAN_SEVERITY` (no terminal means no)
+4. Refuse to run unscanned when `aur-scan` is missing or the upgrade query fails
+5. Provide `paru-unsafe` and `yay-unsafe` functions to bypass scanning deliberately
 
 **Example workflow:**
 
@@ -586,12 +620,19 @@ alias paru='aur-scan-wrap paru'
 alias yay='aur-scan-wrap yay'
 ```
 
-The wrapper:
-- Detects sync operations (`-S`, `--sync`)
-- Filters to only AUR packages (skips official repo packages)
-- Scans each AUR package before proceeding
-- Prompts on critical/high findings
-- Passes through non-install operations unchanged
+The wrapper hands the decision to `aur-scan check` (or `aur-scan install` with
+`AUR_SCAN_MODE=install`), so it gets the same dependency-tree scan and gate as
+the shell integration:
+- Installs (`-S`, `--sync`, `aur/name`) are scanned with their full AUR
+  dependency tree; `core/name` and other repo prefixes pass
+- Upgrades (`-Syu`, `-Sua`, bare `paru`/`yay`) scan the pending AUR updates
+  from the helper's `-Quaq`; if that query fails, the upgrade is refused
+- Local builds are scanned from disk: `-B <dir>`, `-Ui` (current directory),
+  `-U <dir>`; installing an already built `*.pkg.tar.zst` passes with a notice
+- An operand it cannot validate, or a missing `aur-scan`, blocks rather than
+  passing through unscanned
+- Honors `AUR_SCAN_SEVERITY` and the other `AUR_SCAN_*` settings
+- Passes read-only operations through unchanged
 
 ### Level 4: Pacman Hook (backstop only — runs *after* the build)
 
@@ -613,8 +654,19 @@ sudo install -Dm644 /usr/share/aur-scan/aur-scan.hook.example /etc/pacman.d/hook
 
 **Hook behavior:**
 - Triggers before the *install transaction* (after the build)
+- Finds the invoking user through sudo, doas, pkexec, or the login uid, and
+  looks in that user's helper caches (including paru `CloneDir` and yay
+  `buildDir`); split packages are matched through `.SRCINFO`
 - **Aborts the transaction on CRITICAL findings** (anywhere in the scanned PKGBUILD or its resolved `.install` scriptlet), and aborts fail-closed if a located PKGBUILD cannot be analyzed
 - Warns on HIGH severity findings
+- Warns, per package, when a foreign package has no PKGBUILD to scan or the
+  cached PKGBUILD's version differs from the one being installed
+
+**Strict mode.** By default an unscanned foreign package is a warning, because
+aborting would break every `pacman -U` of a locally built package. Set
+`AUR_SCAN_HOOK_STRICT=1` or create `/etc/aur-scanner/hook-strict` to abort the
+transaction instead whenever a foreign package can't be scanned, its version
+doesn't match, or no invoking user can be found.
 
 **Hook configuration** (`/etc/pacman.d/hooks/aur-scan.hook`, the admin hook directory; `/usr/share/libalpm/hooks/` belongs to packages):
 
@@ -838,10 +890,16 @@ type = "regex"
 pattern = "acme_backdoor_[0-9a-f]{8}"
 ```
 
-The loader skips malformed files with a warning (it never breaks the engine),
-and `aur-scan codes` surfaces a loud warning if any ID collides. A shipped example lives at
-`/usr/share/aur-scanner/rules.d/example.toml`. Use an org-specific prefix to
-avoid collisions.
+Built-in detections can't be replaced or weakened. A rule whose `id` is already
+used by a built-in, an analyzer code, or an earlier file is **rejected** with a
+warning, so a file dropped into `rules.d/` can add detections but never lower
+one. The loader also rejects, one rule or file at a time, unknown keys, rules
+with no patterns, and patterns that don't compile; the rest of the directory
+still loads. When running as root (the pacman hook), only the `/usr/share` and
+`/etc` directories are read. `file_types` accepts `pkgbuild`,
+`install_script`, and `source_file` (local scripts shipped next to the
+PKGBUILD). A shipped example lives at
+`/usr/share/aur-scanner/rules.d/example.toml`. Use an org-specific prefix.
 
 ## Change Detection
 
@@ -1032,8 +1090,11 @@ SARIF output is compatible with:
 | `AUR_SCAN_INTERACTIVE` | `1` | Prompt before proceeding |
 | `AUR_SCAN_SCAN_UPGRADES` | `1` | On a system upgrade (`-Syu`/`-Syyu`/bare `yay`), scan **each** AUR package that has a pending update (resolved via the helper's `-Quaq`). A hijacked *update* is the primary AUR threat, so this is on by default; set `0` to skip it. |
 | `AUR_SCAN_SCAN_GETPKGBUILD` | `0` | Also scan the package(s) on `-G`/`--getpkgbuild` (which only downloads a PKGBUILD to review). Off by default; set `1` to opt in. |
+| `AUR_SCAN_MODE` | `gate` | `install` routes installs through `aur-scan install` (race-free build) instead of handing off to the helper |
+| `AUR_SCAN_HOOK_STRICT` | `0` | Pacman hook: abort instead of warn when a foreign package can't be scanned (see Level 4) |
+| `AUR_SCAN_VT_MAX_LOOKUPS` | `4` | VirusTotal lookups per scan when threat intel is on (config key `vt_max_lookups` wins) |
 
-The shell integration scans what's **named** on the command line — `-S pkg`, a bare `helper pkg`, `yay -Y pkg`, and (above) the upgrade set. It cannot see the package chosen *after* an interactive search-and-select menu (`yay`'s default `-Y` mode resolves it at runtime); for that — and for any helper or path the shell functions don't wrap — enable the opt-in **pacman hook**, which fires on the exact package set of every transaction. `paru`, `yay`, `pikaur`, `trizen`, and `pakku` are wrapped as shell functions (they share pacman's `-S`/`-Syu` grammar); `aura` (installs via `-A`) and the subcommand-grammar tools (`aurutils`, `rua`, `pat-aur`) are covered by the pacman hook instead, which fires on every transaction regardless of helper.
+All four shell integrations (bash, zsh, fish, Nushell) and `aur-scan-wrap` honor these. The shell integration scans what's **named** on the command line — `-S pkg`, a bare `helper pkg`, `yay -Y pkg`, local build directories, and (above) the upgrade set. It cannot see the package chosen *after* an interactive search-and-select menu (`yay`'s default `-Y` mode resolves it at runtime); for that — and for any helper or path the shell functions don't wrap — enable the opt-in **pacman hook**, which fires on the exact package set of every transaction. `paru`, `yay`, `pikaur`, `trizen`, and `pakku` are wrapped as shell functions (they share pacman's `-S`/`-Syu` grammar); `aura` (installs via `-A`) and the subcommand-grammar tools (`aurutils`, `rua`, `pat-aur`) are covered by the pacman hook instead, which fires on every transaction regardless of helper.
 
 **Color output** is on when writing to a terminal and automatically off when piped or redirected. Force it off with the global `--no-color` flag or by setting `NO_COLOR=1`.
 
@@ -1053,10 +1114,12 @@ force a specific file.
 Example (`/etc/aur-scanner/config.toml` or the user path above):
 
 ```toml
-# Minimum severity to report
+# Minimum severity to DISPLAY. Display only: gates, exit codes, and JSON/SARIF
+# always see every finding.
 min_severity = "low"
 
-# Scan timeout in seconds
+# Per-package network timeout in seconds (AUR RPC and git clone); check and
+# install allow twice this for fetch + scan. A timeout fails closed.
 timeout_seconds = 30
 
 # Opt-in threat intelligence — OFF by default (see "Threat Intelligence" below)
@@ -1069,6 +1132,9 @@ urlhaus_enabled = false
 # URLhaus Auth-Key — now mandatory at abuse.ch (or env URLHAUS_AUTH_KEY)
 # urlhaus_auth_key = "..."
 cache_duration_hours = 24
+# VirusTotal lookups per scan (public API: 4/minute). Hashes past the cap, or
+# after a rate-limit reply, are reported as TI-UNCHECKED-001, never dropped.
+# vt_max_lookups = 4
 
 # Cache settings
 [cache]
@@ -1132,16 +1198,21 @@ Guarantees:
 
 - **Off by default, bring-your-own-key** — no key, no lookups, no egress.
 - **Least disclosure** — only public source hashes and URLs leave your machine;
-  never file contents or anything about you.
+  never file contents or anything about you. Credentials embedded in a URL
+  (`user:pass@`) and fragments are stripped before lookup.
 - **Fail-open** — a provider error, quota limit, or outage never fails or blocks
   a scan.
-- **Auditable egress** — every external call lives in one file
+- **Auditable egress** — every threat-intel call lives in one file
   (`crates/aur-scanner-core/src/threat_intel/remote.rs`): HTTPS-only,
-  no-redirect, time-bounded.
+  no-redirect, time-bounded, with capped response bodies. The only other
+  network access is the AUR itself (RPC in `aur.rs` and the hardened
+  `git clone`), held to the same rules.
 - **Cached & capped** — verdicts are cached in your private (0700) cache
   directory with an integrity check that rejects corrupted entries, and
-  lookups are bounded per scan to respect VirusTotal's 4-request/minute public
-  API quota.
+  VirusTotal lookups default to 4 per scan, the public API's per-minute quota,
+  in the order the PKGBUILD declares them. Anything left unchecked by the cap
+  or a rate-limit reply is reported as `TI-UNCHECKED-001`, so a quiet result
+  never means "checked and clean" when it wasn't.
 
 ---
 
@@ -1215,40 +1286,46 @@ The scanner would have detected this attack with the following findings:
 
 ```
 ks-aur-scanner/
-├── Cargo.toml                    # Workspace manifest
+├── Cargo.toml                    # Workspace manifest (rust-version = 1.85)
 ├── crates/
 │   ├── aur-scanner-core/         # Core analysis engine (library)
-│   │   ├── src/
-│   │   │   ├── lib.rs            # Public API
-│   │   │   ├── types.rs          # Core types (Severity, Finding, etc.)
-│   │   │   ├── error.rs          # Error types
-│   │   │   ├── parser/           # PKGBUILD parsing
-│   │   │   ├── rules/            # Rule engine and built-in rules
-│   │   │   ├── analyzer/         # Security analyzers
-│   │   │   ├── aur.rs            # AUR RPC client
-│   │   │   └── cache/            # Result caching
-│   │   └── Cargo.toml
+│   │   └── src/
+│   │       ├── lib.rs            # Public API: Scanner, scan pipeline
+│   │       ├── types.rs          # Severity, Finding, ScanConfig, ScanResult
+│   │       ├── pkgfiles.rs       # Bounded, symlink-safe reads of package files
+│   │       ├── parser/           # Static PKGBUILD / .install parsing
+│   │       ├── resolve.rs        # Static variable resolution, payload decoding
+│   │       ├── textutil.rs       # De-obfuscation helpers
+│   │       ├── rules/            # Pattern rule engine, built-ins, rules.d loader
+│   │       ├── catalog/          # The single index of every detection code
+│   │       ├── analyzer/         # Structural analyzers (binary, checksum, deep,
+│   │       │                     #   ioc, metadata, ownership, pattern, privilege,
+│   │       │                     #   remote_exec, source, squat, threat_intel)
+│   │       ├── aur.rs            # AUR RPC client and hardened git clone
+│   │       ├── depgraph.rs       # Dependency tree resolution (AUR + pacman)
+│   │       ├── registry.rs       # AUR metadata context for ownership checks
+│   │       ├── overlay.rs        # Local package dirs layered over the AUR
+│   │       ├── squat.rs          # Name-impersonation scoring
+│   │       ├── history.rs        # Scan history and change detection (DIFF-*)
+│   │       ├── provenance.rs     # PROV-001 risky-behavior gain
+│   │       ├── sbom.rs           # CycloneDX 1.5 SBOM and tree rendering
+│   │       ├── elf.rs            # Bounded ELF header reader (BIN-*)
+│   │       ├── neturl.rs         # URL parsing and normalization
+│   │       ├── validate.rs       # Package-name validation
+│   │       ├── threat_intel/     # IOC database and opt-in remote lookups
+│   │       ├── cache/            # Integrity-checked disk cache
+│   │       └── error.rs          # Error types
 │   ├── aur-scanner-cli/          # CLI binary (aur-scan)
-│   │   ├── src/
-│   │   │   ├── main.rs           # Entry point
-│   │   │   └── commands/         # Subcommands
-│   │   └── Cargo.toml
-│   ├── aur-scanner-hook/         # Pacman hook binary
-│   │   ├── src/main.rs
-│   │   └── Cargo.toml
-│   └── aur-scanner-plugin/       # AUR helper wrapper
-│       ├── src/
-│       │   ├── lib.rs            # Plugin library
-│       │   └── bin/wrapper.rs    # Wrapper binary
-│       └── Cargo.toml
-├── install/                      # Installation files
-│   ├── integration.bash
-│   ├── integration.zsh
-│   ├── integration.fish
-│   ├── integration.nu
-│   └── aur-scan.hook
-├── tests/                        # Test fixtures (clean & malicious PKGBUILDs)
-└── PKGBUILD                      # AUR package definition
+│   │   ├── src/{main.rs, commands/, output/}
+│   │   └── tests/                # End-to-end tests against the real binary
+│   ├── aur-scanner-hook/         # Pacman hook binary (aur-scan-hook)
+│   └── aur-scanner-plugin/       # AUR helper wrapper (aur-scan-wrap)
+│       ├── src/bin/wrapper.rs
+│       └── tests/shell_gate.rs   # Drives every shell integration with stub helpers
+├── install/                      # Shell integrations, pacman hook, rules.d examples
+├── aur/                          # Published AUR package definitions
+├── tests/                        # PKGBUILD fixtures and VM acceptance test
+└── PKGBUILD                      # Local development build of this checkout
 ```
 
 ---
@@ -1278,6 +1355,11 @@ ks-aur-scanner/
 | `blake3` | 1.5 | Fast hashing |
 | `sha2` | 0.10 | SHA-256 checksums |
 | `base64` | 0.22 | Base64 encoding |
+| `clap_complete` | 4.5 | Shell completion generation |
+| `dirs` | 5.0 / 6.0 | Standard config and cache paths |
+| `tempfile` | 3.14 | Scratch directories for fetched packages |
+| `url` | 2.5 | URL parsing |
+| `libc` | 0.2 | Invoking-user lookup and safe file opens in the pacman hook |
 
 ### Runtime Dependencies
 
@@ -1357,11 +1439,20 @@ cargo fmt --check
 ### Test Coverage
 
 The test suite includes:
-- Unit tests for parser, rule matching, and analyzers
-- Integration tests with fixture PKGBUILDs
-- Malicious pattern detection tests
-- False positive prevention tests
-- AUR API client tests
+- Unit tests for the parser, resolver, rule engine, and every analyzer
+- End-to-end tests that run the real `aur-scan` binary against fixture
+  PKGBUILDs, including output-format contracts (JSON/SARIF stay valid)
+- Detection tests in both directions: the malicious form fires, the benign
+  form doesn't, plus an evasion fuzzer that mutates known payloads
+- Fail-closed tests: unreadable, oversized, symlinked, and non-UTF-8 package
+  files; unresolved dependencies; declined or non-terminal prompts
+- A shell-gate harness that drives the bash, zsh, fish, and Nushell
+  integrations and `aur-scan-wrap` against stub helpers
+  (`cargo test -p aur-scanner-plugin --test shell_gate`; a missing shell skips)
+- Dependency resolution and AUR client logic, tested offline through fakes
+  (two live-network tests are `#[ignore]`d)
+- A README sync test that keeps the detection tables above identical to the
+  catalog
 
 ---
 
