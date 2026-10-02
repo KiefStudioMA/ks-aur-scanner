@@ -647,6 +647,19 @@ impl AnalysisContext {
         self.install_script.iter().chain(self.side_scripts.iter())
     }
 
+    /// Functions and aliases anywhere in the package (PKGBUILD, scriptlets,
+    /// sidecars) that redefine a message printer such as `warning` or `note`.
+    /// A redefinition can turn "print this text" into "run this text", so
+    /// analyzers treat those names as code in every file of the package.
+    pub fn shadowed_printers(&self) -> crate::rules::ShadowSet {
+        let mut texts: Vec<(&std::path::Path, &str)> =
+            vec![(self.file_path.as_path(), self.pkgbuild.raw_content.as_str())];
+        for s in self.all_scripts() {
+            texts.push((s.path.as_path(), s.content.as_str()));
+        }
+        crate::rules::ShadowSet::from_texts(texts)
+    }
+
     /// The package name this context is about, preferring the parsed PKGBUILD.
     pub fn package_name(&self) -> Option<&str> {
         self.pkgbuild.pkgname.first().map(|s| s.as_str())

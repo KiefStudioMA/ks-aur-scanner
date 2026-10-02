@@ -25,31 +25,46 @@ impl SecurityAnalyzer for PatternAnalyzer {
     async fn analyze(&self, context: &AnalysisContext) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        // Analyze PKGBUILD content
-        let pkgbuild_matches = self
-            .rule_engine
-            .match_content(&context.pkgbuild.raw_content, FileType::Pkgbuild);
+        // Printer names the package redefines into something that can run its
+        // arguments (`warning() { "$@" | sh; }`): code everywhere, never inert.
+        let shadow = context.shadowed_printers();
+        let shadowed = shadow.names();
 
-        for rule_match in pkgbuild_matches {
-            if let Some(rule) = self.rule_engine.get_rule(&rule_match.rule_id) {
-                findings.push(Finding {
-                    id: rule.id.clone(),
-                    severity: rule.severity,
-                    category: rule.category.clone(),
-                    title: rule.name.clone(),
-                    description: rule.description.clone(),
-                    location: Location {
-                        file: context.file_path.clone(),
-                        line: Some(rule_match.line),
-                        column: Some(rule_match.column),
-                        snippet: Some(rule_match.context.clone()),
-                    },
-                    recommendation: rule.recommendation.clone(),
-                    cwe_id: rule.cwe_id.clone(),
-                    metadata: serde_json::json!({
-                        "matched_text": rule_match.matched_text,
-                    }),
-                });
+        // Analyze PKGBUILD content. A second pass runs over the same text with
+        // calls to a redefined printer replaced by what they execute, so the
+        // ordinary rules see the real command; hits already reported on the
+        // same line are not repeated.
+        let mut variants = vec![context.pkgbuild.raw_content.clone()];
+        variants.extend(shadow.inline_calls(&context.pkgbuild.raw_content));
+        let mut seen: std::collections::HashSet<(String, usize)> = Default::default();
+        for text in &variants {
+            let pkgbuild_matches =
+                self.rule_engine
+                    .match_content_with(text, FileType::Pkgbuild, &shadowed);
+            for rule_match in pkgbuild_matches {
+                if !seen.insert((rule_match.rule_id.clone(), rule_match.line)) {
+                    continue;
+                }
+                if let Some(rule) = self.rule_engine.get_rule(&rule_match.rule_id) {
+                    findings.push(Finding {
+                        id: rule.id.clone(),
+                        severity: rule.severity,
+                        category: rule.category.clone(),
+                        title: rule.name.clone(),
+                        description: rule.description.clone(),
+                        location: Location {
+                            file: context.file_path.clone(),
+                            line: Some(rule_match.line),
+                            column: Some(rule_match.column),
+                            snippet: Some(rule_match.context.clone()),
+                        },
+                        recommendation: rule.recommendation.clone(),
+                        cwe_id: rule.cwe_id.clone(),
+                        metadata: serde_json::json!({
+                            "matched_text": rule_match.matched_text,
+                        }),
+                    });
+                }
             }
         }
 
@@ -69,30 +84,40 @@ impl SecurityAnalyzer for PatternAnalyzer {
             } else {
                 "install script"
             };
-            let script_matches = self.rule_engine.match_content(&script.content, file_type);
+            let mut variants = vec![script.content.clone()];
+            variants.extend(shadow.inline_calls(&script.content));
+            let mut seen: std::collections::HashSet<(String, usize)> = Default::default();
+            for text in &variants {
+                let script_matches = self
+                    .rule_engine
+                    .match_content_with(text, file_type, &shadowed);
 
-            for rule_match in script_matches {
-                if let Some(rule) = self.rule_engine.get_rule(&rule_match.rule_id) {
-                    findings.push(Finding {
-                        id: rule.id.clone(),
-                        severity: rule.severity,
-                        category: rule.category.clone(),
-                        title: format!("{} ({})", rule.name, kind),
-                        description: rule.description.clone(),
-                        location: Location {
-                            file: script.path.clone(),
-                            line: Some(rule_match.line),
-                            column: Some(rule_match.column),
-                            snippet: Some(rule_match.context.clone()),
-                        },
-                        recommendation: rule.recommendation.clone(),
-                        cwe_id: rule.cwe_id.clone(),
-                        metadata: serde_json::json!({
-                            "matched_text": rule_match.matched_text,
-                            "in_install_script": !matches!(file_type, FileType::SourceFile),
-                            "script_kind": kind,
-                        }),
-                    });
+                for rule_match in script_matches {
+                    if !seen.insert((rule_match.rule_id.clone(), rule_match.line)) {
+                        continue;
+                    }
+                    if let Some(rule) = self.rule_engine.get_rule(&rule_match.rule_id) {
+                        findings.push(Finding {
+                            id: rule.id.clone(),
+                            severity: rule.severity,
+                            category: rule.category.clone(),
+                            title: format!("{} ({})", rule.name, kind),
+                            description: rule.description.clone(),
+                            location: Location {
+                                file: script.path.clone(),
+                                line: Some(rule_match.line),
+                                column: Some(rule_match.column),
+                                snippet: Some(rule_match.context.clone()),
+                            },
+                            recommendation: rule.recommendation.clone(),
+                            cwe_id: rule.cwe_id.clone(),
+                            metadata: serde_json::json!({
+                                "matched_text": rule_match.matched_text,
+                                "in_install_script": !matches!(file_type, FileType::SourceFile),
+                                "script_kind": kind,
+                            }),
+                        });
+                    }
                 }
             }
         }

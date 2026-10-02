@@ -333,6 +333,11 @@ fn every_registry_none_call_site_is_deliberate() {
             "offline detection fixtures: they pin the analyzers on a PKGBUILD \
              on disk, where there is no AUR record to supply",
         ),
+        (
+            "crates/aur-scanner-core/tests/package_scan_hardening.rs",
+            "offline detection fixtures for package-wide scanning, same as \
+             detection_hardening.rs: no AUR record exists for a temp directory",
+        ),
     ];
 
     let mut offenders = Vec::new();
