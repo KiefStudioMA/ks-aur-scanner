@@ -352,8 +352,8 @@ mod tests {
             let code = src.split("#[cfg(test)]").next().unwrap();
             for cap in re.captures_iter(code) {
                 let id = &cap[1];
-                // CWE references and hash-algorithm names are not finding ids.
-                if id.starts_with("CWE-") || id.starts_with("SHA-") {
+                // CWE references, hash-algorithm names and ELF machine names are not finding ids.
+                if id.starts_with("CWE-") || id.starts_with("SHA-") || id == "RISC-V" {
                     continue;
                 }
                 ids.insert(id.to_string());
