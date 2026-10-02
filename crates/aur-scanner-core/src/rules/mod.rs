@@ -3767,4 +3767,14 @@ pattern = "neverMatchesAnything12345"
         let n = m.iter().filter(|x| x.rule_id == "PASTE-001").count();
         assert_eq!(n, 1, "PASTE-001 reported {n}x for one line: {m:?}");
     }
+
+    #[test]
+    fn shipped_example_rules_still_load_under_strict_parsing() {
+        // The strict (deny_unknown_fields) loader must not reject the example
+        // rule file we ship for authors to copy.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../install/rules.d");
+        let mut engine = RuleEngine::new();
+        engine.load_rules_from_dir(&dir).unwrap();
+        assert!(engine.get_rule("EXAMPLE-001").is_some());
+    }
 }
