@@ -356,8 +356,9 @@ fn decode_b64(lit: &str) -> Option<String> {
     accept_decoded(engine.decode(lit).ok()?)
 }
 
+#[allow(clippy::manual_is_multiple_of)] // is_multiple_of needs Rust 1.87; MSRV is 1.85
 fn decode_hex(lit: &str) -> Option<String> {
-    if lit.len() > MAX_ENCODED_LEN || !lit.len().is_multiple_of(2) {
+    if lit.len() > MAX_ENCODED_LEN || lit.len() % 2 != 0 {
         return None;
     }
     let bytes: Option<Vec<u8>> = (0..lit.len())

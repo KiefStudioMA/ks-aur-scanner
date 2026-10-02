@@ -6,7 +6,9 @@
 //! disk, so they pin behavior across the rule engine, the variable resolver and
 //! the structural analyzers together.
 
-use aur_scanner_core::{Scanner, Severity};
+// Aliased: these are offline fixture scans with no registry lookup by design
+// (the registry-None guard in cli_behavior.rs is about install-gate call sites).
+use aur_scanner_core::{Registry as Reg, Scanner, Severity};
 
 const HEAD: &str = "pkgname=t\npkgver=1\npkgrel=1\narch=(any)\n";
 
@@ -24,7 +26,7 @@ async fn scan(body: &str, install: Option<&str>) -> Vec<(String, Severity)> {
     }
     let scanner = Scanner::with_defaults().expect("scanner");
     let res = scanner
-        .scan_pkgbuild(&dir.path().join("PKGBUILD"))
+        .scan_pkgbuild(&dir.path().join("PKGBUILD"), Reg::None)
         .await
         .expect("scan");
     res.findings
