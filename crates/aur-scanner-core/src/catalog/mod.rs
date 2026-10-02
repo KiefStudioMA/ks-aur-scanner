@@ -9,7 +9,7 @@
 //! collision, and the `codes`/`explain` commands and the docs are all
 //! generated from it -- they cannot drift from what the tool actually emits.
 
-use crate::rules::{get_builtin_rules, user_rule_dirs, Rule, RuleLoader};
+use crate::rules::{get_builtin_rules, load_community_rules, user_rule_dirs, Rule};
 use crate::types::{Category, Severity};
 use serde::Serialize;
 
@@ -77,19 +77,15 @@ impl Catalog {
         }
         // 2. Analyzer-owned codes (logic in Rust, metadata here).
         entries.extend(analyzer_codes());
-        // 3. Community rule files (standard dirs + any caller-supplied extras).
-        let loader = RuleLoader::new();
-        for dir in user_rule_dirs()
+        // 3. Community rule files (standard dirs + any caller-supplied extras),
+        //    through the SAME vetting loader the scan engine uses: a rule that
+        //    collides with a built-in or fails to compile is not listed, so the
+        //    catalog never advertises a detection that will not run.
+        let dirs = user_rule_dirs()
             .into_iter()
-            .chain(extra_dirs.iter().cloned())
-        {
-            if dir.is_dir() {
-                if let Ok(rules) = loader.load_from_directory(&dir) {
-                    for rule in rules {
-                        entries.push(CatalogEntry::from_rule(&rule, "user"));
-                    }
-                }
-            }
+            .chain(extra_dirs.iter().cloned());
+        for rule in load_community_rules(dirs) {
+            entries.push(CatalogEntry::from_rule(&rule, "user"));
         }
 
         entries.sort_by(|a, b| a.id.cmp(&b.id));
