@@ -25,6 +25,8 @@
 //!   AUR_SCAN_MODE             `install` = race-free `aur-scan install` for named installs
 //!   AUR_SCAN_SCAN_UPGRADES    0 = do not scan the AUR update set on -Syu / bare helper
 //!   AUR_SCAN_SCAN_GETPKGBUILD 1 = also scan `-G` downloads
+//!   AUR_SCAN_ALLOW_MENU       1 = allow search-menu installs (`paru <term>`, `yay <term>`),
+//!                             scanning only the typed term; default is to refuse them
 
 use aur_scanner_core::validate::is_valid_package_name;
 use colored::Colorize;
@@ -36,8 +38,18 @@ use std::process::{Command, ExitCode, Stdio};
 /// Long options (pacman / paru / yay) that consume the NEXT argv element as
 /// their value in the `--opt value` form. Without this the value would be read
 /// as a package operand. Only options that ALWAYS take a value are listed:
-/// listing a boolean flag here would swallow a real operand (fail-open).
+/// listing a boolean (or optional-value) flag here would swallow a real operand
+/// (fail-open). The `--opt=value` form never consumes the next element.
+///
+/// Sources: paru `src/command_line.rs::takes_value` (TakesValue::Required) and
+/// yay `pkg/settings/parser/parser.go::hasParam`, plus pacman's own. The
+/// optional-value options (`--removemake`, `--redownload`, `--rebuild`,
+/// `--provides`, `--chroot`, `--localrepo`, `--sudoloop`, `--sign`,
+/// `--signdb`) only take a value through `=` and are deliberately absent.
+/// The same list is mirrored in `install/integration.{bash,zsh,fish}`; the
+/// `value_long_opts_match_the_shell_integrations` test keeps them in step.
 const VALUE_LONG_OPTS: &[&str] = &[
+    // pacman
     "root",
     "dbpath",
     "cachedir",
@@ -53,12 +65,16 @@ const VALUE_LONG_OPTS: &[&str] = &[
     "assume-installed",
     "overwrite",
     "print-format",
+    "ask",
+    // paru + yay
     "aururl",
+    "aurrpcurl",
     "clonedir",
     "builddir",
     "makepkg",
     "makepkgconf",
     "pacman",
+    "pacman-conf",
     "pacmanconf",
     "git",
     "gitflags",
@@ -81,12 +97,55 @@ const VALUE_LONG_OPTS: &[&str] = &[
     "searchby",
     "sortby",
     "completioninterval",
+    "requestsplitn",
+    // paru only
+    "mode",
+    "limit",
+    "develsuffixes",
+    "develfile",
+    "ignoredevel",
+    "chrootflags",
+    "chrootpkgs",
+    "rootchrootpkgs",
+    "pkgctl",
 ];
 
-/// Long options that mean "this is not an install/upgrade at all".
-const BENIGN_LONG_OPTS: &[&str] = &[
-    "help", "version", "gendb", "stats", "news", "order", "comments",
+/// Options that change WHICH AUR packages are upgradeable (or where the list
+/// comes from). They are copied onto the `<helper> -Quaq` enumeration so the
+/// scanned update set is the set the real run will build. `--repo`/`--mode`
+/// and `--aur` are deliberately not forwarded: `-Quaq` already asks for the AUR
+/// side, and widening to the full AUR set can only over-scan. `--rebuild`,
+/// `--redownload`, `--noconfirm` and the like change how a package is built, not
+/// which packages are upgradeable. `--devel` is handled separately.
+const UPDATE_FLAG_OPTS: &[&str] = &[
+    "aururl",
+    "aurrpcurl",
+    "config",
+    "ignore",
+    "ignoregroup",
+    "assume-installed",
+    "arch",
+    "dbpath",
+    "root",
+    "sysroot",
+    "pacman",
+    "pacman-conf",
+    "pacmanconf",
+    "develsuffixes",
+    "develfile",
+    "ignoredevel",
+    "nodevel",
 ];
+
+/// Suffixes that mark a VCS package whose update `-Quaq` cannot see reliably.
+const VCS_SUFFIXES: &[&str] = &["-git", "-svn", "-hg", "-bzr"];
+
+/// Long options that select a read-only report (paru/yay `--stats`, `--news`,
+/// `--order`, `--comments`, `--gendb`). They NEVER short-circuit the
+/// classification on their own: `paru -S evil --stats` still installs `evil`,
+/// so the invocation is read-only only when no install, upgrade or build
+/// operation (and no operand) accompanies them.
+const REPORT_LONG_OPTS: &[&str] = &["gendb", "stats", "news", "order", "comments"];
 
 /// How one `-S`-style operand is to be treated.
 #[derive(Debug, PartialEq, Eq)]
@@ -142,6 +201,17 @@ struct Plan {
     notices: Vec<String>,
     /// Reasons the invocation must be refused outright.
     blocked: Vec<String>,
+    /// The helper will show a search menu and install whatever the user picks
+    /// (`paru <term>`, `yay <term>`, `yay -Y <term>`, `-S --interactive`). The
+    /// picked packages are chosen AFTER this gate runs, so they cannot be
+    /// scanned; the invocation is refused unless `AUR_SCAN_ALLOW_MENU=1`.
+    menu: bool,
+    /// User flags copied onto the `-Quaq` update enumeration (see
+    /// [`UPDATE_FLAG_OPTS`]), in argv form.
+    update_flags: Vec<String>,
+    /// `--devel` is in effect: VCS updates cannot be enumerated reliably, so the
+    /// installed foreign VCS packages are scanned as well.
+    devel: bool,
 }
 
 /// Classify a pacman/paru/yay invocation by its *operation*, not by substring
@@ -157,6 +227,9 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
     let mut operands: Vec<String> = Vec::new();
     let mut end_of_opts = false;
     let mut skip_value = false;
+    let mut update_flags: Vec<String> = Vec::new();
+    let mut forward_value = false; // the value being skipped belongs to a forwarded flag
+    let mut devel = false;
 
     for arg in helper_args {
         if end_of_opts {
@@ -165,6 +238,9 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
         }
         if skip_value {
             skip_value = false;
+            if std::mem::take(&mut forward_value) {
+                update_flags.push((*arg).to_string());
+            }
             continue;
         }
         if *arg == "--" {
@@ -186,6 +262,7 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
                 "getpkgbuild" => op.push('G'),
                 "show" => op.push('P'),
                 "build" => op.push('B'),
+                "version" => op.push('V'),
                 "yay" => op.push('Y'),
                 "sysupgrade" => mods.push('u'),
                 "search" => mods.push('s'),
@@ -197,33 +274,64 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
                 "print" => mods.push('p'),
                 _ => {}
             }
+            match name {
+                "devel" => devel = true,
+                "nodevel" => devel = false,
+                _ => {}
+            }
+            if UPDATE_FLAG_OPTS.contains(&name) {
+                update_flags.push((*arg).to_string());
+                forward_value = !has_value && VALUE_LONG_OPTS.contains(&name);
+            }
             if !has_value && VALUE_LONG_OPTS.contains(&name) {
                 skip_value = true;
             }
         } else if let Some(short) = arg.strip_prefix('-').filter(|s| !s.is_empty()) {
-            for c in short.chars() {
+            for (i, c) in short.char_indices() {
+                // getopt: -b <dbpath> / -r <root> take a value. It is the rest
+                // of this argument (`-Sb/db`) or, when the option ends the
+                // group (`-Sb /db`), the NEXT argument.
+                if matches!(c, 'b' | 'r') {
+                    let long = if c == 'b' { "--dbpath" } else { "--root" };
+                    let rest = &short[i + c.len_utf8()..];
+                    if rest.is_empty() {
+                        update_flags.push(long.to_string());
+                        skip_value = true;
+                        forward_value = true;
+                    } else {
+                        update_flags.push(format!("{long}={rest}"));
+                    }
+                    break;
+                }
                 if c.is_ascii_uppercase() {
                     op.push(c);
                 } else {
                     mods.push(c);
                 }
             }
-            // pacman's -b <dbpath> / -r <root> take a separate value.
-            if matches!(short, "b" | "r") {
-                skip_value = true;
-            }
         } else {
             operands.push((*arg).to_string());
         }
     }
 
-    let mut plan = Plan::default();
+    let mut plan = Plan {
+        update_flags,
+        devel,
+        ..Plan::default()
+    };
     let has = |c: char| op.contains(c);
     let (is_sync, is_upfile, is_build) = (has('S'), has('U'), has('B'));
     let sysupgrade = mods.contains('u');
     let readonly_sync = mods
         .chars()
         .any(|m| matches!(m, 's' | 'i' | 'l' | 'g' | 'c' | 'p'));
+
+    // Help prints usage and installs nothing, but ONLY when there is nothing to
+    // install: `-S evil --help` must still be classified as an install.
+    let help = mods.contains('h') || long_opts.contains(&"help");
+    if help && operands.is_empty() {
+        return plan;
+    }
 
     // -G only downloads a PKGBUILD for review: recorded, scanned on opt-in.
     if has('G') {
@@ -255,7 +363,11 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
     if is_sync && readonly_sync {
         return plan;
     }
-    if mods.contains('h') || long_opts.iter().any(|o| BENIGN_LONG_OPTS.contains(o)) {
+    // A report flag (`--stats`, `--gendb`, ...) is read-only only when no
+    // install, upgrade or build operation and no operand is present; otherwise
+    // the invocation is classified exactly as if the flag were absent.
+    let report = long_opts.iter().any(|o| REPORT_LONG_OPTS.contains(o));
+    if report && operands.is_empty() && !sysupgrade && !is_upfile {
         return plan;
     }
 
@@ -295,10 +407,26 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
         plan.upgrade = true;
     }
 
+    // Search-menu installs. Verified against the helpers' sources:
+    //  * paru: a bare `paru <term>` runs `interactive_search` (the term is only
+    //    a search; an exact name just sorts first, it is not auto-selected);
+    //    `-S --interactive [term]` does the same.
+    //  * yay: bare targets become op `-Y`, and `handleYay` always opens the
+    //    number menu for `-Y <term>`; `-s`/`-i`/`-l`/`-g`/`-p` do not change
+    //    that (only `--gendb` and `-c` do).
+    // Either way the installed set is picked after the gate ran.
+    let interactive = long_opts.contains(&"interactive");
+    let yay_no_menu =
+        mods.contains('c') || long_opts.contains(&"gendb") || long_opts.contains(&"clean");
+    let yay_menu = has('Y') && !is_sync && !is_upfile && !operands.is_empty() && !yay_no_menu;
+    let bare_menu = op.is_empty() && !operands.is_empty() && !readonly_sync;
+    let sync_menu = is_sync && interactive && !readonly_sync;
+    plan.menu = yay_menu || bare_menu || sync_menu;
+
     // Named install: any operand of a non-read-only invocation (covers
     // `-S pkg`, `-Sw pkg`, bare `helper pkg`, yay `-Y pkg`). Fail closed on an
     // operand that cannot be validated.
-    if !readonly_sync {
+    if !readonly_sync || yay_menu {
         for o in &operands {
             match parse_operand(o) {
                 Operand::Aur(n) => {
@@ -383,6 +511,13 @@ fn check_argv(
     a
 }
 
+/// Why a search-menu install is refused (mirrored by the shell integrations).
+const MENU_REFUSAL: &str = "menu-mode install: the helper lets you pick packages from a \
+search menu AFTER this scan, so the packages you pick would not be scanned. \
+Name the exact package instead ('-S <name>'), or set AUR_SCAN_ALLOW_MENU=1 to accept the \
+old behaviour (the search term is scanned as a package name; rely on the pacman hook for \
+the final pick).";
+
 fn block(msg: &str) -> ExitCode {
     eprintln!("{} {}", "BLOCKED:".red().bold(), msg);
     ExitCode::FAILURE
@@ -393,6 +528,11 @@ fn main() -> ExitCode {
     if args.len() < 2 {
         print_usage();
         return ExitCode::FAILURE;
+    }
+    if matches!(args[1].as_str(), "-h" | "--help") {
+        // The wrapper's own usage; `--help` is not a helper to run.
+        print_usage_to(&mut io::stdout());
+        return ExitCode::SUCCESS;
     }
     let helper = &args[1];
     let helper_args: Vec<&str> = args[2..].iter().map(|s| s.as_str()).collect();
@@ -408,6 +548,11 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
+    if plan.menu && !env_is("AUR_SCAN_ALLOW_MENU", "1") {
+        eprintln!("{} {}", "BLOCKED:".red().bold(), MENU_REFUSAL);
+        eprintln!("Nothing was installed.");
+        return ExitCode::FAILURE;
+    }
     for n in &plan.notices {
         eprintln!("{} {}", "notice:".yellow(), n);
     }
@@ -421,13 +566,27 @@ fn main() -> ExitCode {
     }
 
     if plan.upgrade && !env_is("AUR_SCAN_SCAN_UPGRADES", "0") {
-        match enumerate_updates(helper) {
+        match enumerate_updates(helper, &plan.update_flags) {
             Ok(upd) => names.extend(upd),
             Err(e) => {
                 return block(&format!(
                     "could not list pending AUR updates ({helper} -Quaq failed: {e}); \
                      refusing to upgrade unscanned"
                 ))
+            }
+        }
+        // `--devel`: `-Quaq` cannot list VCS updates reliably (it prints a
+        // progress line and only sees what the helper's devel check finds), so
+        // every installed foreign VCS package is scanned as well.
+        if plan.devel {
+            match installed_vcs_packages(&plan.update_flags) {
+                Ok(vcs) => names.extend(vcs),
+                Err(e) => {
+                    return block(&format!(
+                        "--devel is set and the installed VCS packages could not be listed \
+                         (pacman -Qmq failed: {e}); refusing to upgrade unscanned"
+                    ))
+                }
             }
         }
     }
@@ -516,9 +675,61 @@ fn run_aur_scan(argv: &[String]) -> Result<bool, String> {
     }
 }
 
-fn enumerate_updates(helper: &str) -> Result<Vec<String>, String> {
+/// The foreign packages (`pacman -Qmq`) whose name marks them as VCS packages.
+/// Same shape as the update list: pacman exits 1 silently when there are none.
+fn parse_vcs_packages(code: Option<i32>, stdout: &str, stderr: &str) -> UpdateSet {
+    match parse_update_set(code, stdout, stderr) {
+        UpdateSet::Names(n) => UpdateSet::Names(
+            n.into_iter()
+                .filter(|p| VCS_SUFFIXES.iter().any(|s| p.ends_with(s)))
+                .collect(),
+        ),
+        failed => failed,
+    }
+}
+
+/// The subset of the forwarded flags that tell `pacman` which database to read
+/// (`--dbpath`, `--root`, `--sysroot`). Helper-only flags (`--config` is the
+/// helper's, `--aururl`, ...) must not reach pacman.
+fn pacman_db_flags(update_flags: &[String]) -> Vec<String> {
+    let is_db = |f: &str| {
+        let name = f.split('=').next().unwrap_or("");
+        matches!(name, "--dbpath" | "--root" | "--sysroot")
+    };
+    let mut out = Vec::new();
+    let mut it = update_flags.iter();
+    while let Some(f) = it.next() {
+        if is_db(f) {
+            out.push(f.clone());
+            if !f.contains('=') {
+                out.extend(it.next().cloned());
+            }
+        }
+    }
+    out
+}
+
+fn installed_vcs_packages(update_flags: &[String]) -> Result<Vec<String>, String> {
+    let out = Command::new("pacman")
+        .arg("-Qmq")
+        .args(pacman_db_flags(update_flags))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run pacman: {e}"))?;
+    match parse_vcs_packages(
+        out.status.code(),
+        &String::from_utf8_lossy(&out.stdout),
+        &String::from_utf8_lossy(&out.stderr),
+    ) {
+        UpdateSet::Names(n) => Ok(n),
+        UpdateSet::Failed(e) => Err(e),
+    }
+}
+
+fn enumerate_updates(helper: &str, update_flags: &[String]) -> Result<Vec<String>, String> {
     let out = Command::new(helper)
         .arg("-Quaq")
+        .args(update_flags)
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("cannot run {helper}: {e}"))?;
@@ -550,18 +761,26 @@ fn run_helper(helper: &str, args: &[&str]) -> ExitCode {
 }
 
 fn print_usage() {
-    eprintln!("AUR Security Scanner Wrapper");
-    eprintln!();
-    eprintln!("Usage: aur-scan-wrap <helper> [args...]");
-    eprintln!();
-    eprintln!("Examples:");
-    eprintln!("  aur-scan-wrap paru -S package");
-    eprintln!("  aur-scan-wrap yay -Syu");
-    eprintln!("  aur-scan-wrap paru -B ./pkgdir");
-    eprintln!();
-    eprintln!("Setup as alias:");
-    eprintln!("  alias paru='aur-scan-wrap paru'");
-    eprintln!("  alias yay='aur-scan-wrap yay'");
+    print_usage_to(&mut io::stderr());
+}
+
+fn print_usage_to(out: &mut dyn io::Write) {
+    let _ = writeln!(
+        out,
+        "AUR Security Scanner Wrapper
+
+Usage: aur-scan-wrap <helper> [args...]
+       aur-scan-wrap --help
+
+Examples:
+  aur-scan-wrap paru -S package
+  aur-scan-wrap yay -Syu
+  aur-scan-wrap paru -B ./pkgdir
+
+Setup as alias:
+  alias paru='aur-scan-wrap paru'
+  alias yay='aur-scan-wrap yay'"
+    );
 }
 
 #[cfg(test)]
@@ -619,6 +838,43 @@ mod tests {
         let g = plan(&["-G", "firefox"]);
         assert!(!g.upgrade && g.names.is_empty() && g.blocked.is_empty());
         assert_eq!(g.getpkgbuild, s(&["firefox"]));
+    }
+
+    // Regression: --stats/--order/--comments/--news/--gendb/--help anywhere on
+    // the line used to return an empty plan, so `paru -S evil --stats` ran the
+    // helper unscanned.
+    #[test]
+    fn report_and_help_flags_never_short_circuit() {
+        for flag in [
+            "--stats",
+            "--order",
+            "--comments",
+            "--news",
+            "--gendb",
+            "--help",
+            "-h",
+        ] {
+            assert_eq!(names(&["-S", "evil", flag]), s(&["evil"]), "{flag} after");
+            assert_eq!(names(&[flag, "-S", "evil"]), s(&["evil"]), "{flag} before");
+            if !matches!(flag, "--help" | "-h") {
+                assert!(plan(&["-Syu", flag]).upgrade, "{flag} must not hide -Syu");
+            }
+        }
+        let dirs = |p: &str| p == "d";
+        let p = classify(&["-B", "d", "--stats"], &dirs);
+        assert_eq!(p.local_dirs, vec![PathBuf::from("d")]);
+        // Read-only forms still pass.
+        for args in [
+            &["-P", "--stats"][..],
+            &["--gendb"],
+            &["-Y", "--gendb"],
+            &["--news"],
+            &["-S", "--help"],
+            &["--help"],
+            &["-h"],
+        ] {
+            assert_eq!(plan(args), Plan::default(), "{args:?} must pass through");
+        }
     }
 
     #[test]
@@ -700,6 +956,249 @@ mod tests {
         assert_eq!(names(&["--clonedir=/tmp/x", "-S", "pkg"]), s(&["pkg"]));
         // A boolean flag must NOT swallow an operand.
         assert_eq!(names(&["-S", "--needed", "pkg"]), s(&["pkg"]));
+    }
+
+    // Search-menu installs are flagged: the pick is made after the gate runs.
+    #[test]
+    fn menu_installs_are_flagged() {
+        for args in [
+            &["foo"][..],
+            &["aur/foo"],
+            &["--noconfirm", "foo"],
+            &["-Y", "foo"],
+            &["--yay", "foo"],
+            &["-Ys", "foo"],
+            &["-Yi", "foo"],
+            &["-S", "--interactive", "foo"],
+            &["-S", "--interactive"],
+            &["-Sy", "--interactive"],
+        ] {
+            assert!(plan(args).menu, "{args:?} is a menu install");
+        }
+        // The term is still collected so AUR_SCAN_ALLOW_MENU=1 keeps scanning it.
+        assert_eq!(plan(&["-Ys", "foo"]).names, s(&["foo"]));
+        for args in [
+            &["-S", "foo"][..],
+            &["-Ss", "--interactive", "foo"],
+            &["-Qs", "--interactive", "foo"],
+            &["-s", "foo"],
+            &["-Yc"],
+            &["-Y", "--gendb"],
+            &["-Y"],
+            &["-Syu"],
+            &[],
+            &["-G", "foo"],
+            &["-B", "d"],
+        ] {
+            assert!(
+                !classify(args, &|_| true).menu,
+                "{args:?} is not a menu install"
+            );
+        }
+    }
+
+    // Every option the helpers document as taking a required value must eat it.
+    #[test]
+    fn value_options_consume_their_value() {
+        for opt in VALUE_LONG_OPTS {
+            let long = format!("--{opt}");
+            assert_eq!(
+                names(&["-S", &long, "VALUE", "foo"]),
+                s(&["foo"]),
+                "{long} must consume its value"
+            );
+            let eq = format!("--{opt}=VALUE");
+            assert_eq!(names(&["-S", &eq, "foo"]), s(&["foo"]), "{eq}");
+        }
+        for opt in [
+            "mode",
+            "limit",
+            "ask",
+            "develsuffixes",
+            "develfile",
+            "chrootflags",
+            "chrootpkgs",
+            "rootchrootpkgs",
+            "aurrpcurl",
+            "pkgctl",
+            "pacman-conf",
+            "builddir",
+            "editor",
+            "editorflags",
+            "makepkg",
+            "makepkgconf",
+            "pacman",
+            "git",
+            "gitflags",
+            "gpg",
+            "gpgflags",
+            "config",
+            "requestsplitn",
+            "completioninterval",
+            "sortby",
+            "searchby",
+            "answerclean",
+            "answerdiff",
+            "answeredit",
+            "answerupgrade",
+        ] {
+            assert!(VALUE_LONG_OPTS.contains(&opt), "--{opt} missing");
+        }
+        // Optional-value and boolean options must NOT swallow an operand.
+        for flag in [
+            "--removemake",
+            "--redownload",
+            "--rebuild",
+            "--provides",
+            "--chroot",
+            "--localrepo",
+            "--sudoloop",
+            "--sign",
+            "--signdb",
+            "--topdown",
+            "--bottomup",
+            "--needed",
+            "--noconfirm",
+            "--devel",
+            "--nodevel",
+        ] {
+            assert_eq!(names(&["-S", flag, "foo"]), s(&["foo"]), "{flag}");
+        }
+        // getopt -b/-r: attached value, or the next argument when it ends the group.
+        assert_eq!(names(&["-Sb", "/db", "foo"]), s(&["foo"]));
+        assert_eq!(names(&["-Sb/db", "foo"]), s(&["foo"]));
+        assert_eq!(names(&["-r", "/root", "-S", "foo"]), s(&["foo"]));
+    }
+
+    /// The shell integrations carry copies of the value-option and the
+    /// update-flag lists; they must be the same sets as the wrapper's.
+    #[test]
+    fn option_tables_match_the_shell_integrations() {
+        let set = |opts: &[&str]| -> std::collections::BTreeSet<String> {
+            opts.iter().map(|o| format!("--{o}")).collect()
+        };
+        let tokens = |line: &str| -> std::collections::BTreeSet<String> {
+            line.split(['|', ' ', ')', '\''])
+                .map(|t| t.trim_matches(['\'', ')']).to_string())
+                .filter(|t| t.starts_with("--") && t.len() > 2)
+                .collect()
+        };
+        for file in ["integration.bash", "integration.zsh", "integration.fish"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../install")
+                .join(file);
+            let text = std::fs::read_to_string(&path).unwrap();
+            let find = |pred: &dyn Fn(&str) -> bool, what: &str| -> String {
+                text.lines()
+                    .find(|l| !l.trim_start().starts_with('#') && pred(l))
+                    .unwrap_or_else(|| panic!("{file}: {what} line not found"))
+                    .to_string()
+            };
+            let value_line = find(
+                &|l| l.contains("--root") && l.contains("--dbpath") && !l.contains("--nodevel"),
+                "value-option",
+            );
+            assert_eq!(
+                tokens(&value_line),
+                set(VALUE_LONG_OPTS),
+                "{file} value-option list drifted"
+            );
+            let fwd_line = find(
+                &|l| l.contains("--aururl") && l.contains("--nodevel"),
+                "update-flag",
+            );
+            assert_eq!(
+                tokens(&fwd_line),
+                set(UPDATE_FLAG_OPTS),
+                "{file} update-flag list drifted"
+            );
+        }
+    }
+
+    // Flags that decide which AUR packages are upgradeable are forwarded to
+    // the `-Quaq` listing; build-only flags and --devel itself are not.
+    #[test]
+    fn update_flags_are_forwarded() {
+        let p = plan(&[
+            "-Syu",
+            "--aururl",
+            "https://aur.example",
+            "--config=/tmp/p.conf",
+            "--rebuild",
+            "--redownload",
+            "--noconfirm",
+            "--ignore",
+            "foo",
+            "--nodevel",
+            "-b",
+            "/db",
+            "-Sr/root",
+        ]);
+        assert_eq!(
+            p.update_flags,
+            s(&[
+                "--aururl",
+                "https://aur.example",
+                "--config=/tmp/p.conf",
+                "--ignore",
+                "foo",
+                "--nodevel",
+                "--dbpath",
+                "/db",
+                "--root=/root",
+            ])
+        );
+        assert!(!p.devel);
+        assert!(plan(&["-Syu", "--devel"]).devel);
+        assert!(!plan(&["-Syu", "--devel", "--nodevel"]).devel);
+        assert!(plan(&["-Syu", "--devel"]).update_flags.is_empty());
+        assert_eq!(
+            pacman_db_flags(&s(&[
+                "--config",
+                "/x",
+                "--dbpath",
+                "/db",
+                "--root=/r",
+                "--aururl=u"
+            ])),
+            s(&["--dbpath", "/db", "--root=/r"])
+        );
+    }
+
+    #[test]
+    fn vcs_packages_are_filtered_and_fail_closed() {
+        assert_eq!(
+            parse_vcs_packages(
+                Some(0),
+                "a-git
+b
+c-svn
+d-hg
+e-bzr
+f-gitx
+",
+                ""
+            ),
+            UpdateSet::Names(s(&["a-git", "c-svn", "d-hg", "e-bzr"]))
+        );
+        assert_eq!(
+            parse_vcs_packages(Some(1), "", ""),
+            UpdateSet::Names(vec![])
+        );
+        assert!(matches!(
+            parse_vcs_packages(Some(1), "", "error: database"),
+            UpdateSet::Failed(_)
+        ));
+        assert!(matches!(
+            parse_vcs_packages(
+                Some(0),
+                "ok-git
+../x
+",
+                ""
+            ),
+            UpdateSet::Failed(_)
+        ));
     }
 
     // Local builds.

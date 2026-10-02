@@ -37,6 +37,12 @@ struct Case {
     skip_wrapper: bool,
     /// Optional: required severity token on the `check` call.
     severity: Option<&'static str>,
+    /// Optional: text that must appear in the gate's output (a refusal reason).
+    text_has: Option<&'static str>,
+    /// Exact log lines that must be present (e.g. the `-Quaq` argv).
+    log_has: &'static [&'static str],
+    /// Log-line prefixes that must NOT be present.
+    log_lacks: &'static [&'static str],
 }
 
 const fn case(
@@ -53,6 +59,17 @@ const fn case(
         expect,
         skip_wrapper: false,
         severity: None,
+        text_has: None,
+        log_has: &[],
+        log_lacks: &[],
+    }
+}
+
+/// A search-menu install that must be refused with the menu message.
+const fn menu_refused(name: &'static str, args: &'static [&'static str]) -> Case {
+    Case {
+        text_has: Some("AUR_SCAN_ALLOW_MENU"),
+        ..case(name, args, &[], Expect::Blocked)
     }
 }
 
@@ -97,6 +114,240 @@ fn cases() -> Vec<Case> {
         case(
             "option values are not operands",
             &["-S", "--sudo", "doas", "--clonedir", "/tmp/x", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        // --- report/help flags never short-circuit the classification -------
+        // Regression: any of these anywhere on the line returned an empty plan,
+        // so `paru -S evil --stats` installed `evil` unscanned.
+        case(
+            "-S evil --stats is still scanned",
+            &["-S", "evil", "--stats"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "--order before the operation is still scanned",
+            &["--order", "-S", "evil"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "-S evil --comments is still scanned",
+            &["-S", "evil", "--comments"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "-S evil --news is still scanned",
+            &["-S", "evil", "--news"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "-S evil --gendb is still scanned",
+            &["-S", "evil", "--gendb"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "-S evil --help is still scanned",
+            &["-S", "evil", "--help"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "-S evil -h is still scanned",
+            &["-S", "evil", "-h"],
+            &[],
+            Ran(Some((&["evil"], &[]))),
+        ),
+        case(
+            "-Syu --stats still scans the update set",
+            &["-Syu", "--stats"],
+            &[UPD],
+            Ran(Some((&["foo", "bar"], &[]))),
+        ),
+        case(
+            "-B dir --stats still scans the dir",
+            &["-B", "mydir", "--stats"],
+            &[],
+            Ran(Some((&[], &["mydir"]))),
+        ),
+        case("-P --stats passes", &["-P", "--stats"], &[], Ran(None)),
+        case("--gendb alone passes", &["--gendb"], &[], Ran(None)),
+        case("-Y --gendb passes", &["-Y", "--gendb"], &[], Ran(None)),
+        case("--help alone passes", &["--help"], &[], Ran(None)),
+        case("-h alone passes", &["-h"], &[], Ran(None)),
+        case(
+            "-S --help (no operand) passes",
+            &["-S", "--help"],
+            &[],
+            Ran(None),
+        ),
+        case("--version passes", &["--version"], &[], Ran(None)),
+        // --- option values (paru/yay/pacman) --------------------------------
+        // Regression: these value-taking options were missing from the table, so
+        // their value ("aur", "4", ...) was scanned as a package and the real
+        // operand rode along as an extra, mis-classified word.
+        case(
+            "paru --mode value is not an operand",
+            &["-S", "--mode", "aur", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "--ask value is not an operand",
+            &["-S", "--ask", "4", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "--limit value is not an operand",
+            &["-S", "--limit", "5", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "--develsuffixes/--develfile/--chrootpkgs values are not operands",
+            &[
+                "-S",
+                "--develsuffixes",
+                "-git",
+                "--develfile",
+                "/tmp/d.toml",
+                "--chrootpkgs",
+                "base-devel",
+                "foo",
+            ],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "--aurrpcurl/--pkgctl/--pacman-conf values are not operands",
+            &[
+                "-S",
+                "--aurrpcurl",
+                "https://aur.example/rpc",
+                "--pkgctl",
+                "pkgctl",
+                "--pacman-conf",
+                "/tmp/p.conf",
+                "foo",
+            ],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "yay --editor/--requestsplitn/--answerdiff values are not operands",
+            &[
+                "-S",
+                "--editor",
+                "vim",
+                "--requestsplitn",
+                "150",
+                "--answerdiff",
+                "None",
+                "foo",
+            ],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "--opt=value forms keep the operand",
+            &[
+                "-S",
+                "--mode=aur",
+                "--ask=4",
+                "--editor=vim",
+                "--builddir=/tmp/b",
+                "foo",
+            ],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "optional-value options do not swallow the operand",
+            &["-S", "--removemake", "--rebuild", "--redownload", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "-b <dbpath> ending a group takes the next argument",
+            &["-Sb", "/tmp/db", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "-b<dbpath> attached is not an operand",
+            &["-Sb/tmp/db", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "-r <root> takes the next argument",
+            &["-r", "/tmp/root", "-S", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        // --- search-menu installs -------------------------------------------
+        // `paru <term>` / `yay <term>` / `yay -Y <term>` / `-S --interactive`
+        // open a menu and install the PICK after the gate ran. Neither helper
+        // auto-selects an exact name, so there is no exact-name exception.
+        menu_refused("bare term is a menu install", &["foo"]),
+        menu_refused("bare aur/name is still a menu install", &["aur/foo"]),
+        menu_refused("yay -Y term is a menu install", &["-Y", "foo"]),
+        menu_refused("yay --yay term is a menu install", &["--yay", "foo"]),
+        menu_refused("yay -Ys term is still a menu install", &["-Ys", "foo"]),
+        menu_refused("yay -Yi term is still a menu install", &["-Yi", "foo"]),
+        menu_refused(
+            "-S --interactive term is a menu install",
+            &["-S", "--interactive", "foo"],
+        ),
+        menu_refused(
+            "-S --interactive without a term is a menu install",
+            &["-S", "--interactive"],
+        ),
+        menu_refused(
+            "bare term with flags is a menu install",
+            &["--noconfirm", "foo"],
+        ),
+        case(
+            "AUR_SCAN_ALLOW_MENU=1 scans the term and proceeds",
+            &["foo"],
+            &[("AUR_SCAN_ALLOW_MENU", "1")],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "AUR_SCAN_ALLOW_MENU=1 covers yay -Y too",
+            &["-Y", "foo"],
+            &[("AUR_SCAN_ALLOW_MENU", "1")],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "AUR_SCAN_ALLOW_MENU=1 still blocks an unvalidatable term",
+            &["foo;bar"],
+            &[("AUR_SCAN_ALLOW_MENU", "1")],
+            Blocked,
+        ),
+        case(
+            "AUR_SCAN_ALLOW_MENU=0 keeps refusing",
+            &["foo"],
+            &[("AUR_SCAN_ALLOW_MENU", "0")],
+            Blocked,
+        ),
+        case(
+            "interactive search without install passes",
+            &["-Ss", "--interactive", "foo"],
+            &[],
+            Ran(None),
+        ),
+        case("bare search flag passes", &["-s", "foo"], &[], Ran(None)),
+        case("yay -Yc passes", &["-Yc"], &[], Ran(None)),
+        case("yay -Y --gendb passes", &["-Y", "--gendb"], &[], Ran(None)),
+        case(
+            "-S name is not a menu",
+            &["-S", "foo"],
             &[],
             Ran(Some((&["foo"], &[]))),
         ),
@@ -159,6 +410,125 @@ fn cases() -> Vec<Case> {
             &["-Syu"],
             &[("AUR_SCAN_SCAN_UPGRADES", "0")],
             Ran(None),
+        ),
+        // --- update enumeration honours the user's flags ---------------------
+        // Regression: `-Quaq` ran bare, so --aururl/--config/--ignore/... did not
+        // reach it and the scanned update set could differ from what gets built.
+        Case {
+            log_has: &["QUAQ -Quaq --aururl https://aur.example --config /tmp/p.conf"],
+            ..case(
+                "-Quaq gets --aururl and --config",
+                &[
+                    "-Syu",
+                    "--aururl",
+                    "https://aur.example",
+                    "--config",
+                    "/tmp/p.conf",
+                ],
+                &[UPD],
+                Ran(Some((&["foo", "bar"], &[]))),
+            )
+        },
+        Case {
+            log_has: &["QUAQ -Quaq --aururl=https://x --nodevel --ignore baz"],
+            ..case(
+                "-Quaq gets --opt=value, --nodevel and --ignore",
+                &["-Su", "--aururl=https://x", "--nodevel", "--ignore", "baz"],
+                &[UPD],
+                Ran(Some((&["foo", "bar"], &[]))),
+            )
+        },
+        Case {
+            log_has: &["QUAQ -Quaq --dbpath /tmp/db"],
+            ..case(
+                "-Quaq gets -b <dbpath>",
+                &["-Sub", "/tmp/db"],
+                &[UPD],
+                Ran(Some((&["foo", "bar"], &[]))),
+            )
+        },
+        Case {
+            log_has: &["QUAQ -Quaq"],
+            ..case(
+                "-Quaq does not get build-only flags",
+                &[
+                    "-Syu",
+                    "--rebuild",
+                    "--redownload",
+                    "--noconfirm",
+                    "--needed",
+                ],
+                &[UPD],
+                Ran(Some((&["foo", "bar"], &[]))),
+            )
+        },
+        // --- --devel: VCS updates are not listable, so scan installed VCS pkgs
+        Case {
+            log_has: &["QUAQ -Quaq", "PACMAN -Qmq"],
+            ..case(
+                "--devel also scans installed -git/-svn/-hg/-bzr packages",
+                &["-Syu", "--devel"],
+                &[UPD, ("STUB_FOREIGN", "a-git b c-svn d-hg e-bzr f-gitx")],
+                Ran(Some((
+                    &["foo", "bar", "a-git", "c-svn", "d-hg", "e-bzr"],
+                    &[],
+                ))),
+            )
+        },
+        Case {
+            log_has: &["PACMAN -Qmq --dbpath /tmp/db"],
+            ..case(
+                "--devel passes the db flags to pacman, not helper flags",
+                &[
+                    "-Syu",
+                    "--devel",
+                    "--dbpath",
+                    "/tmp/db",
+                    "--config",
+                    "/tmp/p.conf",
+                ],
+                &[UPD, ("STUB_FOREIGN", "a-git")],
+                Ran(Some((&["foo", "bar", "a-git"], &[]))),
+            )
+        },
+        Case {
+            log_lacks: &["PACMAN"],
+            ..case(
+                "--nodevel after --devel skips the VCS listing",
+                &["-Syu", "--devel", "--nodevel"],
+                &[UPD, ("STUB_FOREIGN", "a-git")],
+                Ran(Some((&["foo", "bar"], &[]))),
+            )
+        },
+        Case {
+            log_lacks: &["PACMAN"],
+            ..case(
+                "no --devel, no VCS listing",
+                &["-Syu"],
+                &[UPD, ("STUB_FOREIGN", "a-git")],
+                Ran(Some((&["foo", "bar"], &[]))),
+            )
+        },
+        Case {
+            log_lacks: &["PACMAN"],
+            ..case(
+                "--devel on a named install is not an upgrade",
+                &["-S", "--devel", "foo"],
+                &[("STUB_FOREIGN", "a-git")],
+                Ran(Some((&["foo"], &[]))),
+            )
+        },
+        case(
+            "--devel with no installed VCS packages (silent exit 1) proceeds",
+            &["-Syu", "--devel"],
+            &[UPD, ("STUB_PACMAN_RC", "1")],
+            Ran(Some((&["foo", "bar"], &[]))),
+        ),
+        case(
+            "--devel blocks when pacman cannot be queried",
+            &["-Syu", "--devel"],
+            &[UPD, ("STUB_PACMAN_RC", "2")],
+            Blocked,
         ),
         // --- read-only ------------------------------------------------------
         case("search passes", &["-Ss", "foo"], &[], Ran(None)),
@@ -318,13 +688,25 @@ exit "${STUB_SCAN_RC:-0}""#,
         }
         let helper = r#"n=$(basename "$0")
 if [ "$1" = "-Quaq" ]; then
-  echo "QUAQ" >> "$STUB_LOG"
+  echo "QUAQ $*" >> "$STUB_LOG"
   [ -n "$STUB_UPDATES" ] && printf '%s\n' $STUB_UPDATES
   [ -n "$STUB_QUAQ_ERR" ] && echo "$STUB_QUAQ_ERR" >&2
   exit "${STUB_QUAQ_RC:-0}"
 fi
 echo "RAN $n $*" >> "$STUB_LOG"
 exit 0"#;
+        // pacman is stubbed too (and shadows the real one): only the read-only
+        // `-Qmq` listing is answered, anything else is logged and refused.
+        stub(
+            "pacman",
+            r#"if [ "$1" = "-Qmq" ]; then
+  echo "PACMAN $*" >> "$STUB_LOG"
+  [ -n "$STUB_FOREIGN" ] && printf '%s\n' $STUB_FOREIGN
+  exit "${STUB_PACMAN_RC:-0}"
+fi
+echo "PACMAN-BAD $*" >> "$STUB_LOG"
+exit 99"#,
+        );
         stub("paru", helper);
         stub("yay", helper);
         // nushell routes through the real wrapper binary.
@@ -491,10 +873,27 @@ fn run_all(gate: Gate) {
         let ran: Vec<&String> = log.iter().filter(|l| l.starts_with("RAN ")).collect();
         let scans: Vec<&String> = log.iter().filter(|l| l.starts_with("SCAN ")).collect();
         let mut why = None;
+        for want in c.log_has {
+            if !log.iter().any(|l| l == want) {
+                why = Some(format!("log lacks {want:?}: {log:?}"));
+            }
+        }
+        for bad in c.log_lacks {
+            if log.iter().any(|l| l.starts_with(bad)) {
+                why = Some(format!("log must not contain {bad:?}: {log:?}"));
+            }
+        }
+        if log.iter().any(|l| l.starts_with("PACMAN-BAD")) {
+            why = Some(format!("unexpected pacman call: {log:?}"));
+        }
         match c.expect {
             Expect::Blocked => {
                 if ok || !ran.is_empty() {
                     why = Some(format!("expected BLOCK, ok={ok} ran={ran:?}"));
+                } else if let Some(t) = c.text_has {
+                    if !text.contains(t) {
+                        why = Some(format!("refusal does not mention {t:?}"));
+                    }
                 }
             }
             Expect::Ran(scan) => {
@@ -534,6 +933,28 @@ fn run_all(gate: Gate) {
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// `aur-scan-wrap --help` / `-h` is the wrapper's own usage, exit 0, and never
+/// tries to run a helper called `--help`.
+#[test]
+fn wrapper_help_prints_usage() {
+    for flag in ["--help", "-h"] {
+        let sb = Sandbox::new(true);
+        let out = sb
+            .base_cmd(Command::new(env!("CARGO_BIN_EXE_aur-scan-wrap")), &[])
+            .arg(flag)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{flag}: {out:?}");
+        assert!(
+            text.contains("Usage: aur-scan-wrap <helper>"),
+            "{flag}: {text}"
+        );
+        let log = fs::read_to_string(&sb.log).unwrap();
+        assert!(log.is_empty(), "{flag}: nothing may run: {log:?}");
+    }
 }
 
 #[test]

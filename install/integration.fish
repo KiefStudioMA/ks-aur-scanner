@@ -35,6 +35,16 @@ function _aur_scan_valid_name
     and string match -qr '^[A-Za-z0-9@_+][A-Za-z0-9@._+-]*$' -- $argv[1]
 end
 
+# Options that change WHICH AUR packages are upgradeable (or where the list
+# comes from). They are copied onto the `<helper> -Quaq` enumeration so the
+# scanned update set is the set the real run will build. Mirrors
+# UPDATE_FLAG_OPTS in aur-scan-wrap (a test keeps them in step). --repo/--mode/
+# --aur are not forwarded: -Quaq already asks for the AUR side and widening can
+# only over-scan; --rebuild/--redownload/--noconfirm do not change the set.
+function _aur_scan_fwd_opt
+    contains -- $argv[1] --aururl --aurrpcurl --config --ignore --ignoregroup --assume-installed --arch --dbpath --root --sysroot --pacman --pacman-conf --pacmanconf --develsuffixes --develfile --ignoredevel --nodevel
+end
+
 # Classify a pacman/helper invocation by its OPERATION (not by substring
 # sniffing, which could let an unrelated flag silently disable scanning). It
 # fills, fail-closed:
@@ -44,6 +54,14 @@ end
 #   _AUR_SCAN_LOCAL        local build dirs (`-B dir`, `-Ui`, `-U dir`) to scan
 #   _AUR_SCAN_NOTICES      prebuilt-package installs that cannot be pre-scanned
 #   _AUR_SCAN_BLOCK        reasons the invocation must be refused (cannot be validated)
+#   _AUR_SCAN_UPD_FLAGS    user flags to copy onto the `<helper> -Quaq` update listing
+#   _AUR_SCAN_DEVEL        `--devel` is in effect: VCS updates cannot be listed reliably,
+#                          so installed foreign -git/-svn/-hg/-bzr packages are scanned too
+#   _AUR_SCAN_MENU         the helper will show a search menu and install the pick
+#                          (`paru <term>`, `yay <term>`, `yay -Y <term>`, `-S --interactive`);
+#                          the pick is made AFTER the gate, so it is refused unless
+#                          AUR_SCAN_ALLOW_MENU=1. Neither paru nor yay auto-selects an
+#                          exact name: the menu is always shown.
 # Bias: scan whenever an install is possible; refuse what cannot be scanned.
 function _aur_scan_classify
     set -g _AUR_SCAN_IS_UPGRADE 0
@@ -53,6 +71,10 @@ function _aur_scan_classify
     set -g _AUR_SCAN_LOCAL
     set -g _AUR_SCAN_NOTICES
     set -g _AUR_SCAN_BLOCK
+    set -g _AUR_SCAN_MENU 0
+    set -g _AUR_SCAN_UPD_FLAGS
+    set -g _AUR_SCAN_DEVEL 0
+    set -l fwd_next 0
     set -l op ""
     set -l mods ""
     set -l longs " "
@@ -61,6 +83,10 @@ function _aur_scan_classify
     for a in $argv
         if test "$skip" = "1"
             set skip 0
+            if test "$fwd_next" = "1"
+                set fwd_next 0
+                set -a _AUR_SCAN_UPD_FLAGS $a
+            end
             continue
         end
         if test "$eoo" = "1"
@@ -84,6 +110,8 @@ function _aur_scan_classify
                 set op "$op"P
             case '--build'
                 set op "$op"B
+            case '--version'
+                set op "$op"V
             case '--yay'
                 set op "$op"Y
             case '--files'
@@ -106,20 +134,49 @@ function _aur_scan_classify
                 set mods "$mods"c
             case '--print'
                 set mods "$mods"p
+            case '--devel'
+                set -g _AUR_SCAN_DEVEL 1
+                set longs "$longs--devel "
+            case '--nodevel'
+                set -g _AUR_SCAN_DEVEL 0
+                set -a _AUR_SCAN_UPD_FLAGS $a
+                set longs "$longs--nodevel "
             # Long options that take the NEXT argument as their value (only ones
             # that ALWAYS do: a boolean flag listed here would swallow an operand).
-            case '--root' '--dbpath' '--cachedir' '--logfile' '--gpgdir' '--hookdir' '--arch' '--color' '--config' '--sysroot' '--ignore' '--ignoregroup' '--assume-installed' '--overwrite' '--print-format' '--aururl' '--clonedir' '--builddir' '--makepkg' '--makepkgconf' '--pacman' '--pacmanconf' '--git' '--gitflags' '--sudo' '--sudoflags' '--asp' '--bat' '--batflags' '--fm' '--fmflags' '--editor' '--editorflags' '--mflags' '--gpg' '--gpgflags' '--answerclean' '--answerdiff' '--answeredit' '--answerupgrade' '--searchby' '--sortby' '--completioninterval'
+            case '--root' '--dbpath' '--cachedir' '--logfile' '--gpgdir' '--hookdir' '--arch' '--color' '--config' '--sysroot' '--ignore' '--ignoregroup' '--assume-installed' '--overwrite' '--print-format' '--ask' '--aururl' '--aurrpcurl' '--clonedir' '--builddir' '--makepkg' '--makepkgconf' '--pacman' '--pacman-conf' '--pacmanconf' '--git' '--gitflags' '--sudo' '--sudoflags' '--asp' '--bat' '--batflags' '--fm' '--fmflags' '--editor' '--editorflags' '--mflags' '--gpg' '--gpgflags' '--answerclean' '--answerdiff' '--answeredit' '--answerupgrade' '--searchby' '--sortby' '--completioninterval' '--requestsplitn' '--mode' '--limit' '--develsuffixes' '--develfile' '--ignoredevel' '--chrootflags' '--chrootpkgs' '--rootchrootpkgs' '--pkgctl'
                 set longs "$longs$a "
                 set skip 1
+                if _aur_scan_fwd_opt $a
+                    set -a _AUR_SCAN_UPD_FLAGS $a
+                    set fwd_next 1
+                end
             case '--*'
                 # other long option (strip any =value)
-                set longs "$longs"(string replace -r '=.*' '' -- $a)" "
-            case '-b' '-r'
-                # pacman -b <dbpath> / -r <root>
-                set skip 1
+                set -l oname (string replace -r '=.*' '' -- $a)
+                set longs "$longs$oname "
+                if _aur_scan_fwd_opt $oname
+                    set -a _AUR_SCAN_UPD_FLAGS $a
+                end
             case '-*'
                 set -l rest (string sub -s 2 -- $a)
-                for c in (string split '' -- $rest)
+                set -l chars (string split '' -- $rest)
+                for i in (seq (count $chars))
+                    set -l c $chars[$i]
+                    # getopt: -b <dbpath> / -r <root> take a value: the rest of
+                    # this argument (-Sb/db) or, ending the group, the NEXT one.
+                    if string match -qr '^[br]$' -- $c
+                        set -l long_flag --dbpath
+                        test "$c" = r; and set long_flag --root
+                        if test $i -eq (count $chars)
+                            set skip 1
+                            set fwd_next 1
+                            set -a _AUR_SCAN_UPD_FLAGS $long_flag
+                        else
+                            set -l restv (string join '' -- $chars[(math $i + 1)..-1])
+                            set -a _AUR_SCAN_UPD_FLAGS "$long_flag=$restv"
+                        end
+                        break
+                    end
                     if string match -qr '[A-Z]' -- $c
                         set op "$op$c"
                     else
@@ -144,6 +201,14 @@ function _aur_scan_classify
     string match -qr '[QRFDTVP]' -- $op; and set non_install 1
     # Read-only sync sub-operations: search/info/list/groups/clean/print.
     string match -qr '[silgcp]' -- $mods; and set readonly_sync 1
+
+    # Help prints usage and installs nothing, but ONLY when there is nothing to
+    # install: `paru -S evil --help` must still be classified as an install.
+    if test $npk -eq 0
+        if string match -q '*h*' -- $mods; or string match -q '* --help *' -- $longs
+            return
+        end
+    end
 
     # -G/--getpkgbuild only downloads a PKGBUILD to inspect -- not an install.
     # Scanned ONLY on opt-in (AUR_SCAN_SCAN_GETPKGBUILD=1).
@@ -176,10 +241,11 @@ function _aur_scan_classify
     if test "$is_sync" = "1" -a "$readonly_sync" = "1"
         return
     end
-    if string match -q '*h*' -- $mods
-        return
-    end
-    if string match -qr ' --(help|version|gendb|stats|news|order|comments) ' -- $longs
+    # A report flag (--stats, --gendb, ...) is read-only only when no install,
+    # upgrade or build operation and no operand is present; otherwise the
+    # invocation is classified exactly as if the flag were absent.
+    if string match -qr ' --(gendb|stats|news|order|comments) ' -- $longs
+        and test $npk -eq 0 -a "$sysupgrade" = "0" -a "$is_upfile" = "0"
         return
     end
 
@@ -207,6 +273,22 @@ function _aur_scan_classify
         return
     end
 
+    # Search-menu installs: bare `helper <term>` (paru: interactive search; yay:
+    # op -Y), `yay -Y <term>` (its -s/-i/-l/-g/-p do not stop the menu; only
+    # --gendb and -c do) and `-S --interactive`. The installed set is picked
+    # after this gate runs, so it cannot be scanned.
+    set -l yay_menu 0
+    if string match -q '*Y*' -- $op; and test "$is_sync" = "0" -a "$is_upfile" = "0" -a $npk -gt 0
+        and not string match -q '*c*' -- $mods
+        and not string match -q '* --gendb *' -- $longs
+        set yay_menu 1
+        set -g _AUR_SCAN_MENU 1
+    else if test -z "$op" -a $npk -gt 0 -a "$readonly_sync" = "0"
+        set -g _AUR_SCAN_MENU 1
+    else if test "$is_sync" = "1" -a "$readonly_sync" = "0"; and string match -q '* --interactive *' -- $longs
+        set -g _AUR_SCAN_MENU 1
+    end
+
     # System upgrade: -Syu/-Su/-Sua, yay -Yu, or the helper's default (no
     # operation and no operands -- e.g. bare `paru` == `paru -Syu`). The upgraded
     # packages are not named, so the gate enumerates the AUR update set itself.
@@ -222,7 +304,7 @@ function _aur_scan_classify
     # Named install: operands of a non-read-only invocation. Covers `-S pkg`, bare
     # `helper pkg`, and yay's `-Y pkg` (#12). `aur/x` scans x; `core/x` (another
     # repo) needs no scan; anything that is not a legal name is REFUSED.
-    if test $npk -gt 0 -a "$readonly_sync" = "0"
+    if test $npk -gt 0; and test "$readonly_sync" = "0" -o "$yay_menu" = "1"
         for p in $_AUR_SCAN_PKGS
             set -l repo ""
             set -l name $p
@@ -256,7 +338,7 @@ function _aur_scan_updates
         echo "AUR Security Scanner: cannot create a temp file; refusing." >&2
         return 1
     end
-    set -l out (command $helper -Quaq 2>$errf)
+    set -l out (command $helper -Quaq $_AUR_SCAN_UPD_FLAGS 2>$errf)
     set -l rc $status
     set -l err (cat $errf)
     rm -f $errf
@@ -280,6 +362,58 @@ function _aur_scan_updates
     return 0
 end
 
+# `--devel`: `-Quaq` cannot list VCS updates reliably, so list the installed
+# foreign VCS packages (`pacman -Qmq`, -git/-svn/-hg/-bzr) into _AUR_SCAN_VCS and
+# scan them too. Returns 1 (BLOCK) when pacman cannot be queried.
+function _aur_scan_vcs_installed
+    set -g _AUR_SCAN_VCS
+    set -l pflags
+    set -l skipn 0
+    for a in $_AUR_SCAN_UPD_FLAGS
+        if test "$skipn" = "1"
+            set -a pflags $a
+            set skipn 0
+            continue
+        end
+        switch $a
+            case '--dbpath' '--root' '--sysroot'
+                set -a pflags $a
+                set skipn 1
+            case '--dbpath=*' '--root=*' '--sysroot=*'
+                set -a pflags $a
+        end
+    end
+    set -l errf (mktemp)
+    or begin
+        echo "AUR Security Scanner: cannot create a temp file; refusing." >&2
+        return 1
+    end
+    set -l out (command pacman -Qmq $pflags 2>$errf)
+    set -l rc $status
+    set -l err (cat $errf)
+    rm -f $errf
+    set -l outj (string join '' -- $out | string trim)
+    set -l errj (string join '' -- $err | string trim)
+    if test $rc -ne 0
+        if not test $rc -eq 1 -a -z "$outj" -a -z "$errj"
+            echo "AUR Security Scanner: 'pacman -Qmq' failed ($err[1]); cannot list installed VCS packages." >&2
+            return 1
+        end
+    end
+    for line in $out
+        set line (string trim -- $line)
+        test -z "$line"; and continue
+        if not _aur_scan_valid_name $line
+            echo "AUR Security Scanner: unexpected package entry '$line'; refusing." >&2
+            return 1
+        end
+        if string match -qr -- '-(git|svn|hg|bzr)$' $line
+            set -a _AUR_SCAN_VCS $line
+        end
+    end
+    return 0
+end
+
 # Shared gate: scan what would be built, then hand off to the real helper.
 # $argv[1] is the helper name; the rest are its original arguments. Fail-closed
 # throughout.
@@ -298,6 +432,11 @@ function _aur_scan_gate
             echo "AUR Security Scanner: BLOCKED: $r" >&2
         end
         echo "Not proceeding with $helper. Use $helper-unsafe to bypass deliberately." >&2
+        return 1
+    end
+    if test "$_AUR_SCAN_MENU" = "1" -a "$AUR_SCAN_ALLOW_MENU" != "1"
+        echo "AUR Security Scanner: BLOCKED: menu-mode install: the helper lets you pick packages from a search menu AFTER this scan, so the packages you pick would not be scanned. Name the exact package instead ('-S <name>'), or set AUR_SCAN_ALLOW_MENU=1 to accept the old behaviour (the search term is scanned as a package name; rely on the pacman hook for the final pick)." >&2
+        echo "Nothing was installed. Use $helper-unsafe to bypass deliberately." >&2
         return 1
     end
     for n in $_AUR_SCAN_NOTICES
@@ -339,6 +478,13 @@ function _aur_scan_gate
             return 1
         end
         set -a to_scan $_AUR_SCAN_UPDATES
+        if test "$_AUR_SCAN_DEVEL" = "1"
+            if not _aur_scan_vcs_installed
+                echo "Not proceeding with $helper (--devel: cannot list installed VCS packages)." >&2
+                return 1
+            end
+            set -a to_scan $_AUR_SCAN_VCS
+        end
     end
 
     if test (count $to_scan) -gt 0 -o (count $_AUR_SCAN_LOCAL) -gt 0

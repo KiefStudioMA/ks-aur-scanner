@@ -141,11 +141,10 @@ async fn main() -> Result<()> {
 
         // Try to find PKGBUILD(s) in the helpers' cache locations. A helper clones
         // by pkgbase, so a split package's target name is found via `.SRCINFO`.
-        let mut lookup = find_pkgbuilds_for_package(&package, &roots, None);
-        if matches!(lookup, PkgbuildLookup::NotFound) {
-            let index = srcinfo_index.get_or_init(|| build_srcinfo_index(&roots));
-            lookup = find_pkgbuilds_for_package(&package, &roots, Some(index));
-        }
+        // The `.SRCINFO` index is consulted for EVERY target, not only when the
+        // exact-name directory is missing: a stale `<root>/<pkgname>/` must not
+        // hide the real pkgbase clone that is actually being built.
+        let lookup = locate_pkgbuilds(&package, &roots, &srcinfo_index);
         let pkgbuild_paths = match lookup {
             PkgbuildLookup::Found(p) => p,
             PkgbuildLookup::RefusedOnly => {
@@ -182,11 +181,24 @@ async fn main() -> Result<()> {
             .get(&package)
             .cloned()
             .or_else(|| sync_version(&package));
+        let declared: Vec<Option<String>> = pkgbuild_paths
+            .iter()
+            .map(|p| read_capped(p, PKGBUILD_VERSION_CAP).and_then(|t| pkgbuild_version(&t)))
+            .collect();
+        // Several candidates (a stale clone next to the real one): scan them
+        // all, the one matching the version being installed first, and say so
+        // when they disagree.
+        let (pkgbuild_paths, divergence) =
+            order_candidates(pkgbuild_paths, &declared, installing.as_deref());
+        if let Some(note) = divergence {
+            eprintln!(
+                "{} {} has {}",
+                "WARNING:".yellow().bold(),
+                package.bold(),
+                note
+            );
+        }
         if let Some(installing) = installing {
-            let declared: Vec<Option<String>> = pkgbuild_paths
-                .iter()
-                .map(|p| read_capped(p, PKGBUILD_VERSION_CAP).and_then(|t| pkgbuild_version(&t)))
-                .collect();
             if version_mismatch(&declared, &installing) {
                 eprintln!(
                     "{} the cached PKGBUILD for {} does not match the version being installed \
@@ -601,6 +613,66 @@ enum PkgbuildLookup {
     /// No candidate existed at all (an official-repo package, or a foreign one
     /// the hook cannot see).
     NotFound,
+}
+
+/// Locate every cached PKGBUILD for `package`: the exact-name directories AND
+/// every directory whose `.SRCINFO` lists it. The index is always consulted so
+/// a stale or decoy `<root>/<package>/` can never stand in for (shadow) the real
+/// pkgbase clone.
+fn locate_pkgbuilds(
+    package: &str,
+    roots: &[PathBuf],
+    index: &OnceCell<HashMap<String, Vec<PathBuf>>>,
+) -> PkgbuildLookup {
+    let index = index.get_or_init(|| build_srcinfo_index(roots));
+    find_pkgbuilds_for_package(package, roots, Some(index))
+}
+
+/// Order the candidate PKGBUILDs so the one whose declared version matches the
+/// version being installed comes first, and describe any disagreement between
+/// the candidates. Nothing is dropped: the caller scans every candidate.
+/// `declared[i]` is the version `paths[i]` declares (`None` = not statically
+/// known, e.g. a VCS `pkgver()`).
+fn order_candidates(
+    paths: Vec<PathBuf>,
+    declared: &[Option<String>],
+    installing: Option<&str>,
+) -> (Vec<PathBuf>, Option<String>) {
+    if paths.len() < 2 {
+        return (paths, None);
+    }
+    let want = installing.map(normalize_version);
+    let mut items: Vec<(PathBuf, Option<String>)> = paths
+        .into_iter()
+        .zip(declared.iter().cloned().chain(std::iter::repeat(None)))
+        .collect();
+    // Stable: matching versions first, otherwise discovery order.
+    items.sort_by_key(|(_, d)| !(want.is_some() && d.as_deref().map(normalize_version) == want));
+    let mut known: Vec<&str> = items
+        .iter()
+        .filter_map(|(_, d)| d.as_deref().map(normalize_version))
+        .collect();
+    known.sort_unstable();
+    known.dedup();
+    let note = (known.len() > 1).then(|| {
+        let list = items
+            .iter()
+            .map(|(p, d)| {
+                format!(
+                    "{} ({})",
+                    p.display(),
+                    d.as_deref().unwrap_or("version unknown")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "{} cached PKGBUILDs that declare different versions: {list}. \
+             Scanning all of them; a stale clone may be shadowing the real one.",
+            items.len()
+        )
+    });
+    (items.into_iter().map(|(p, _)| p).collect(), note)
 }
 
 /// Find the PKGBUILD(s) for `package` under `roots`.
@@ -1370,6 +1442,88 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(index.contains_key("mybase-cli"));
+    }
+
+    // Regression: the index was only consulted when the exact-name directory
+    // was missing, so a stale `<root>/<pkgname>/` hid the real pkgbase clone
+    // (the doc comment claimed a decoy could never shadow the real one).
+    #[test]
+    fn stale_exact_dir_does_not_shadow_the_pkgbase_clone() {
+        let t = tempfile::tempdir().unwrap();
+        // The stale/decoy clone, named for the split package.
+        write(
+            t.path(),
+            "paru/clone/mybase-lib/PKGBUILD",
+            "pkgname=mybase-lib\npkgver=0.1\npkgrel=1\n",
+        );
+        // The real one: a pkgbase clone that lists mybase-lib in its .SRCINFO.
+        write(
+            t.path(),
+            "paru/clone/mybase/PKGBUILD",
+            "pkgbase=mybase\npkgname=(mybase-cli mybase-lib)\npkgver=2.0\npkgrel=1\n",
+        );
+        write(
+            t.path(),
+            "paru/clone/mybase/.SRCINFO",
+            "pkgbase = mybase\n\tpkgver = 2.0\npkgname = mybase-cli\n\npkgname = mybase-lib\n",
+        );
+        let roots = vec![t.path().join("paru/clone")];
+        // The old call shape (no index) only ever sees the decoy.
+        match find_pkgbuilds_for_package("mybase-lib", &roots, None) {
+            PkgbuildLookup::Found(v) => {
+                assert_eq!(v, vec![t.path().join("paru/clone/mybase-lib/PKGBUILD")])
+            }
+            other => panic!("{other:?}"),
+        }
+        // The hook's lookup now sees both and scans both.
+        let cell = OnceCell::new();
+        match locate_pkgbuilds("mybase-lib", &roots, &cell) {
+            PkgbuildLookup::Found(mut v) => {
+                v.sort();
+                assert_eq!(
+                    v,
+                    vec![
+                        t.path().join("paru/clone/mybase/PKGBUILD"),
+                        t.path().join("paru/clone/mybase-lib/PKGBUILD"),
+                    ]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn candidates_prefer_the_installing_version_and_warn_on_disagreement() {
+        let a = PathBuf::from("/c/mybase-lib/PKGBUILD");
+        let b = PathBuf::from("/c/mybase/PKGBUILD");
+        let declared = [Some("0.1-1".to_string()), Some("2.0-1".to_string())];
+        let (ordered, note) =
+            order_candidates(vec![a.clone(), b.clone()], &declared, Some("2.0-1"));
+        assert_eq!(
+            ordered,
+            vec![b.clone(), a.clone()],
+            "matching version first"
+        );
+        let note = note.expect("versions differ, must warn");
+        assert!(note.contains("0.1-1") && note.contains("2.0-1"), "{note}");
+        // Nothing is ever dropped.
+        assert_eq!(ordered.len(), 2);
+        // Epoch-0 normalisation: `0:2.0-1` matches `2.0-1`.
+        let (ordered, _) = order_candidates(vec![a.clone(), b.clone()], &declared, Some("0:2.0-1"));
+        assert_eq!(ordered[0], b);
+        // Agreeing candidates: no warning, order untouched.
+        let same = [Some("2.0-1".to_string()), Some("2.0-1".to_string())];
+        let (ordered, note) = order_candidates(vec![a.clone(), b.clone()], &same, Some("2.0-1"));
+        assert_eq!((ordered, note), (vec![a.clone(), b.clone()], None));
+        // Unknown versions (VCS) never warn.
+        let unknown = [None, Some("2.0-1".to_string())];
+        let (_, note) = order_candidates(vec![a.clone(), b.clone()], &unknown, None);
+        assert_eq!(note, None);
+        // A single candidate is returned as-is.
+        assert_eq!(
+            order_candidates(vec![a.clone()], &declared[..1], Some("9")),
+            (vec![a], None)
+        );
     }
 
     #[test]
