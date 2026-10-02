@@ -291,7 +291,7 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
     // (no operation and no operands, e.g. bare `paru` == `paru -Syu`).
     let bare = op.is_empty() && operands.is_empty();
     let bare_y = op == "Y" && mods.is_empty() && operands.is_empty() && long_opts.is_empty();
-    if (is_sync && sysupgrade) || (has('Y') && sysupgrade) || bare || bare_y {
+    if ((is_sync || has('Y')) && sysupgrade) || bare || bare_y {
         plan.upgrade = true;
     }
 
