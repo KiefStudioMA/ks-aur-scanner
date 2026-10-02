@@ -1,347 +1,483 @@
 //! AUR helper wrapper
 //!
-//! Wraps yay/paru to add security scanning before package installation.
+//! Wraps yay/paru (and other pacman-grammar helpers) to scan before anything is
+//! built or installed.
 //!
 //! Usage:
 //!   aur-scan-wrap paru -S package
 //!   aur-scan-wrap yay -S package1 package2
+//!   aur-scan-wrap paru -Syu          # scans the pending AUR update set
+//!   aur-scan-wrap paru -B ./mydir    # scans the local build dir
 //!
 //! Can be aliased:
 //!   alias paru='aur-scan-wrap paru'
+//!
+//! The wrapper is a thin, fail-closed gate. It classifies the invocation,
+//! works out WHAT would be built (named operands, the AUR update set, local
+//! build directories) and delegates the actual dependency-tree scan to the
+//! `aur-scan check` subcommand (argv only, no shell) so it inherits every fix
+//! in the resolver and the scanner. Anything it cannot validate, resolve, or
+//! enumerate BLOCKS; it never degrades to "run the helper anyway".
+//!
+//! Environment (same names as the shell integrations):
+//!   AUR_SCAN_SEVERITY         gate threshold (critical|high|medium|low|info), default high
+//!   AUR_SCAN_INTERACTIVE      0 = never prompt (deny findings), default 1 (prompt on a TTY)
+//!   AUR_SCAN_MODE             `install` = race-free `aur-scan install` for named installs
+//!   AUR_SCAN_SCAN_UPGRADES    0 = do not scan the AUR update set on -Syu / bare helper
+//!   AUR_SCAN_SCAN_GETPKGBUILD 1 = also scan `-G` downloads
 
-use anyhow::{Context, Result};
-use aur_scanner_core::aur::{is_aur_package, AurClient};
 use aur_scanner_core::validate::is_valid_package_name;
-use aur_scanner_core::{Registry, Scanner, Severity};
 use colored::Colorize;
 use std::env;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
-/// What a helper invocation means for scanning.
-enum Operation {
-    /// An install-class sync that may build AUR packages: scan these operands.
-    Install(Vec<String>),
-    /// A read-only or non-install operation (search/info/query/remove/...): no scan.
-    PassThrough,
+/// Long options (pacman / paru / yay) that consume the NEXT argv element as
+/// their value in the `--opt value` form. Without this the value would be read
+/// as a package operand. Only options that ALWAYS take a value are listed:
+/// listing a boolean flag here would swallow a real operand (fail-open).
+const VALUE_LONG_OPTS: &[&str] = &[
+    "root",
+    "dbpath",
+    "cachedir",
+    "logfile",
+    "gpgdir",
+    "hookdir",
+    "arch",
+    "color",
+    "config",
+    "sysroot",
+    "ignore",
+    "ignoregroup",
+    "assume-installed",
+    "overwrite",
+    "print-format",
+    "aururl",
+    "clonedir",
+    "builddir",
+    "makepkg",
+    "makepkgconf",
+    "pacman",
+    "pacmanconf",
+    "git",
+    "gitflags",
+    "sudo",
+    "sudoflags",
+    "asp",
+    "bat",
+    "batflags",
+    "fm",
+    "fmflags",
+    "editor",
+    "editorflags",
+    "mflags",
+    "gpg",
+    "gpgflags",
+    "answerclean",
+    "answerdiff",
+    "answeredit",
+    "answerupgrade",
+    "searchby",
+    "sortby",
+    "completioninterval",
+];
+
+/// Long options that mean "this is not an install/upgrade at all".
+const BENIGN_LONG_OPTS: &[&str] = &[
+    "help", "version", "gendb", "stats", "news", "order", "comments",
+];
+
+/// How one `-S`-style operand is to be treated.
+#[derive(Debug, PartialEq, Eq)]
+enum Operand {
+    /// Scan this AUR package name (`name`, or the `name` of `aur/name`).
+    Aur(String),
+    /// Explicit non-AUR repository target (`core/name`): nothing to scan.
+    Repo,
+    /// Cannot be validated: the invocation is blocked.
+    Invalid(String),
+}
+
+/// Is `s` a plausible pacman repository name (the `repo` of `repo/name`)?
+fn is_repo_token(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
+}
+
+/// Normalise an install operand, understanding pacman's `repo/name` syntax.
+fn parse_operand(raw: &str) -> Operand {
+    if let Some((repo, name)) = raw.split_once('/') {
+        if !is_valid_package_name(name) {
+            return Operand::Invalid(raw.to_string());
+        }
+        if repo == "aur" {
+            return Operand::Aur(name.to_string());
+        }
+        if is_repo_token(repo) {
+            return Operand::Repo;
+        }
+        return Operand::Invalid(raw.to_string());
+    }
+    if is_valid_package_name(raw) {
+        Operand::Aur(raw.to_string())
+    } else {
+        Operand::Invalid(raw.to_string())
+    }
+}
+
+/// Everything the gate must do for one helper invocation.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Plan {
+    /// AUR package names that would be built/installed (roots).
+    names: Vec<String>,
+    /// A system upgrade: the AUR update set must be enumerated and scanned.
+    upgrade: bool,
+    /// `-G` operands (scanned only on opt-in).
+    getpkgbuild: Vec<String>,
+    /// Local build directories (`-B dir`, `-Ui`, `-U dir`).
+    local_dirs: Vec<PathBuf>,
+    /// One-line notices to print (e.g. prebuilt packages that cannot be scanned).
+    notices: Vec<String>,
+    /// Reasons the invocation must be refused outright.
+    blocked: Vec<String>,
 }
 
 /// Classify a pacman/paru/yay invocation by its *operation*, not by substring
-/// sniffing. The previous implementation tested `contains('i')`/`contains('s')`
-/// over the whole arg vector, so an unrelated flag could flip an install to
-/// "skip scan" (fail-open). Here we parse the operation properly and default to
-/// scanning whenever an invocation could install packages.
-fn classify(helper_args: &[&str]) -> Operation {
-    let mut op_letters = String::new(); // uppercase operation selectors (S/Q/R/U/F/D/T)
-    let mut sync_mods = String::new(); // lowercase modifiers seen in short -S groups
+/// sniffing, and fail closed: anything that could install and cannot be
+/// validated ends up in `blocked`.
+///
+/// `is_dir` answers "is this operand an existing directory" (injected so the
+/// classifier stays unit-testable).
+fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
+    let mut op = String::new(); // uppercase operation selectors
+    let mut mods = String::new(); // lowercase modifiers from short groups
     let mut long_opts: Vec<&str> = Vec::new();
     let mut operands: Vec<String> = Vec::new();
     let mut end_of_opts = false;
+    let mut skip_value = false;
 
     for arg in helper_args {
         if end_of_opts {
             operands.push((*arg).to_string());
             continue;
         }
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
         if *arg == "--" {
             end_of_opts = true;
         } else if let Some(long) = arg.strip_prefix("--") {
-            // Long option; take the bare name (drop any =value).
-            long_opts.push(long.split('=').next().unwrap_or(long));
-        } else if let Some(short) = arg.strip_prefix('-') {
-            // Short option group, e.g. -Syu. Uppercase letters select the
-            // operation; lowercase letters are modifiers.
+            let (name, has_value) = match long.split_once('=') {
+                Some((n, _)) => (n, true),
+                None => (long, false),
+            };
+            long_opts.push(name);
+            match name {
+                "sync" => op.push('S'),
+                "upgrade" => op.push('U'),
+                "query" => op.push('Q'),
+                "remove" => op.push('R'),
+                "files" => op.push('F'),
+                "database" => op.push('D'),
+                "deptest" => op.push('T'),
+                "getpkgbuild" => op.push('G'),
+                "show" => op.push('P'),
+                "build" => op.push('B'),
+                "yay" => op.push('Y'),
+                "sysupgrade" => mods.push('u'),
+                "search" => mods.push('s'),
+                "info" => mods.push('i'),
+                "install" => mods.push('i'),
+                "list" => mods.push('l'),
+                "groups" => mods.push('g'),
+                "clean" => mods.push('c'),
+                "print" => mods.push('p'),
+                _ => {}
+            }
+            if !has_value && VALUE_LONG_OPTS.contains(&name) {
+                skip_value = true;
+            }
+        } else if let Some(short) = arg.strip_prefix('-').filter(|s| !s.is_empty()) {
             for c in short.chars() {
                 if c.is_ascii_uppercase() {
-                    op_letters.push(c);
+                    op.push(c);
                 } else {
-                    sync_mods.push(c);
+                    mods.push(c);
                 }
+            }
+            // pacman's -b <dbpath> / -r <root> take a separate value.
+            if matches!(short, "b" | "r") {
+                skip_value = true;
             }
         } else {
             operands.push((*arg).to_string());
         }
     }
 
-    // Map long operation aliases onto the same letters.
-    let has = |c: char, long: &str| op_letters.contains(c) || long_opts.contains(&long);
-    let is_sync = has('S', "sync");
-    let is_upgrade_file = has('U', "upgrade");
-    let non_install_op = has('Q', "query")
-        || has('R', "remove")
-        || has('F', "files")
-        || has('D', "database")
-        || has('T', "deptest")
-        || has('V', "version")
-        // yay/paru AUR extensions that are read-only and must never gate:
-        || has('G', "getpkgbuild") // downloads a PKGBUILD only
-        || has('P', "show"); // print stats / PKGBUILD to stdout
-
-    // Read-only sync sub-operations that never install anything.
-    let readonly_sync = long_opts.iter().any(|o| {
-        matches!(
-            *o,
-            "search" | "info" | "list" | "groups" | "clean" | "print"
-        )
-    }) || sync_mods
+    let mut plan = Plan::default();
+    let has = |c: char| op.contains(c);
+    let (is_sync, is_upfile, is_build) = (has('S'), has('U'), has('B'));
+    let sysupgrade = mods.contains('u');
+    let readonly_sync = mods
         .chars()
         .any(|m| matches!(m, 's' | 'i' | 'l' | 'g' | 'c' | 'p'));
 
-    // Decide. The bias is fail-closed: scan whenever the invocation could build
-    // an AUR package and there is something to scan.
-    if non_install_op && !is_sync && !is_upgrade_file {
-        return Operation::PassThrough;
+    // -G only downloads a PKGBUILD for review: recorded, scanned on opt-in.
+    if has('G') {
+        plan.getpkgbuild = operands;
+        return plan;
+    }
+    // -B (paru): build local PKGBUILD directories. Each directory is scanned.
+    if is_build {
+        let dirs = if operands.is_empty() {
+            vec![".".to_string()]
+        } else {
+            operands
+        };
+        for d in dirs {
+            if is_dir(&d) {
+                plan.local_dirs.push(PathBuf::from(d));
+            } else {
+                plan.blocked.push(format!(
+                    "-B operand {d:?} is not a directory; cannot scan it"
+                ));
+            }
+        }
+        return plan;
+    }
+    let non_install = ['Q', 'R', 'F', 'D', 'T', 'V', 'P'].iter().any(|c| has(*c));
+    if non_install && !is_sync && !is_upfile {
+        return plan;
     }
     if is_sync && readonly_sync {
-        return Operation::PassThrough;
+        return plan;
     }
-    if (is_sync || is_upgrade_file) && !operands.is_empty() {
-        return Operation::Install(operands);
+    if mods.contains('h') || long_opts.iter().any(|o| BENIGN_LONG_OPTS.contains(o)) {
+        return plan;
     }
-    // Fail closed: any invocation that carries package operands and is NOT a
-    // recognized read-only/non-install operation can install (AUR helpers treat
-    // bare operands as an install, even alongside long flags like `--noconfirm`
-    // or `--needed`). Scan them rather than risk a silent skip. Over-scanning an
-    // occasional flag value is harmless -- a non-AUR name is dropped downstream.
-    if !operands.is_empty() && !non_install_op && !readonly_sync {
-        return Operation::Install(operands);
-    }
-    // -Syu with no operands, -Sy, bare -S, search/query/remove, etc.: nothing to scan.
-    Operation::PassThrough
-}
 
-/// Keep only operands that are syntactically legal Arch package identifiers.
-/// Anything else (a leading-hyphen arg-injection attempt, a `../traversal`, an
-/// embedded URL/shell metacharacter, an empty string) cannot name a real AUR
-/// package and must never become an AUR-lookup or PKGBUILD-fetch key.
-fn fetch_candidates(operands: &[String]) -> Vec<String> {
-    operands
-        .iter()
-        .filter(|p| is_valid_package_name(p))
-        .cloned()
-        .collect()
-}
+    // -U / -Ui: install a local file, or build a local PKGBUILD directory.
+    if is_upfile && !is_sync {
+        let build = mods.contains('i');
+        if operands.is_empty() {
+            if build {
+                plan.local_dirs.push(PathBuf::from("."));
+            }
+            return plan;
+        }
+        for o in operands {
+            let as_path = Path::new(&o);
+            if is_dir(&o) {
+                plan.local_dirs.push(PathBuf::from(&o));
+            } else if as_path.file_name().is_some_and(|n| n == "PKGBUILD") {
+                let parent = as_path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                plan.local_dirs.push(parent.to_path_buf());
+            } else {
+                plan.notices.push(format!(
+                    "{o}: prebuilt package/URL installed as-is; aur-scan cannot pre-scan it"
+                ));
+            }
+        }
+        return plan;
+    }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    match run().await {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("{} {}", "Error:".red().bold(), e);
-            ExitCode::FAILURE
+    // System upgrade: -Syu/-Su/-Sua, yay -Yu, or the helper's default action
+    // (no operation and no operands, e.g. bare `paru` == `paru -Syu`).
+    let bare = op.is_empty() && operands.is_empty();
+    let bare_y = op == "Y" && mods.is_empty() && operands.is_empty() && long_opts.is_empty();
+    if (is_sync && sysupgrade) || (has('Y') && sysupgrade) || bare || bare_y {
+        plan.upgrade = true;
+    }
+
+    // Named install: any operand of a non-read-only invocation (covers
+    // `-S pkg`, `-Sw pkg`, bare `helper pkg`, yay `-Y pkg`). Fail closed on an
+    // operand that cannot be validated.
+    if !readonly_sync {
+        for o in &operands {
+            match parse_operand(o) {
+                Operand::Aur(n) => {
+                    if !plan.names.contains(&n) {
+                        plan.names.push(n);
+                    }
+                }
+                Operand::Repo => {}
+                Operand::Invalid(bad) => plan.blocked.push(format!(
+                    "package operand {bad:?} is not a valid package name; \
+                     refusing to install what cannot be scanned"
+                )),
+            }
         }
     }
+    plan
 }
 
-async fn run() -> Result<ExitCode> {
-    let args: Vec<String> = env::args().collect();
+/// Outcome of enumerating the AUR update set via `<helper> -Quaq`.
+#[derive(Debug, PartialEq, Eq)]
+enum UpdateSet {
+    Names(Vec<String>),
+    Failed(String),
+}
 
-    // Need at least: wrapper helper [args...]
+/// Interpret the result of `<helper> -Quaq`. pacman-style helpers exit 1 with
+/// NO output when nothing is pending, so that exact shape means "no updates".
+/// Any other failure (network down, helper error) must NOT be read as an empty
+/// update set: that is how an unscanned upgrade slipped through.
+fn parse_update_set(code: Option<i32>, stdout: &str, stderr: &str) -> UpdateSet {
+    let nothing_pending = code == Some(1) && stdout.trim().is_empty() && stderr.trim().is_empty();
+    if code != Some(0) && !nothing_pending {
+        let detail = stderr.trim();
+        return UpdateSet::Failed(if detail.is_empty() {
+            format!("exit status {code:?}")
+        } else {
+            detail.lines().next().unwrap_or("").to_string()
+        });
+    }
+    let mut names = Vec::new();
+    for line in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if !is_valid_package_name(line) {
+            return UpdateSet::Failed(format!("unexpected update entry {line:?}"));
+        }
+        if !names.iter().any(|n| n == line) {
+            names.push(line.to_string());
+        }
+    }
+    UpdateSet::Names(names)
+}
+
+/// Severity names accepted by `aur-scan --severity/--fail-on`.
+fn valid_severity(s: &str) -> bool {
+    matches!(s, "critical" | "high" | "medium" | "low" | "info")
+}
+
+/// Build the argv (after `aur-scan`) for the dependency-tree check.
+///
+/// Interactive runs let `check` prompt on findings (no `--fail-on`: with a
+/// threshold set the prompt could not override it). Non-interactive runs deny.
+fn check_argv(
+    names: &[String],
+    local_dirs: &[PathBuf],
+    severity: &str,
+    interactive: bool,
+) -> Vec<String> {
+    let mut a: Vec<String> = vec!["--severity".into(), severity.into(), "check".into()];
+    if !interactive {
+        a.extend(["--no-confirm".into(), "--fail-on".into(), severity.into()]);
+    }
+    for d in local_dirs {
+        a.push("--local".into());
+        a.push(d.to_string_lossy().into_owned());
+    }
+    a.extend(names.iter().cloned());
+    a
+}
+
+fn block(msg: &str) -> ExitCode {
+    eprintln!("{} {}", "BLOCKED:".red().bold(), msg);
+    ExitCode::FAILURE
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         print_usage();
-        return Ok(ExitCode::FAILURE);
+        return ExitCode::FAILURE;
     }
-
     let helper = &args[1];
     let helper_args: Vec<&str> = args[2..].iter().map(|s| s.as_str()).collect();
 
-    // Classify by operation (not substring sniffing). Only install-class
-    // operations with operands are scanned; everything else passes through.
-    let packages: Vec<String> = match classify(&helper_args) {
-        Operation::Install(pkgs) => pkgs,
-        Operation::PassThrough => return run_helper(helper, &helper_args),
-    };
+    let plan = classify(&helper_args, &|p| Path::new(p).is_dir());
 
-    if packages.is_empty() {
-        return run_helper(helper, &helper_args);
-    }
-
-    // Validate every operand BEFORE it becomes a network/fetch key. An operand
-    // that is not a bare package identifier cannot be a real AUR package (pacman
-    // and the helper would reject it too); never feed such a value to the AUR
-    // membership lookup or the PKGBUILD fetch. `is_aur_package`/`fetch_pkgbuild`
-    // re-validate internally, but rejecting here keeps garbage out of the gate
-    // entirely and surfaces it to the user.
-    let candidates = fetch_candidates(&packages);
-    for dropped in packages.iter().filter(|p| !candidates.contains(p)) {
+    if !plan.blocked.is_empty() {
+        for reason in &plan.blocked {
+            eprintln!("{} {}", "BLOCKED:".red().bold(), reason);
+        }
         eprintln!(
-            "{} ignoring invalid package operand (not scanned): {dropped:?}",
-            "warning:".yellow()
+            "Nothing was installed. Use '{helper}-unsafe' in your shell to bypass the scan deliberately."
         );
+        return ExitCode::FAILURE;
+    }
+    for n in &plan.notices {
+        eprintln!("{} {}", "notice:".yellow(), n);
     }
 
-    // Filter to only AUR packages. If the AUR membership check itself fails we
-    // assume AUR and scan -- failing toward more scanning, never less.
-    let mut aur_packages: Vec<String> = Vec::new();
-    for pkg in &candidates {
-        match is_aur_package(pkg).await {
-            Ok(true) => aur_packages.push(pkg.clone()),
-            Ok(false) => {}                           // Official repo package, skip
-            Err(_) => aur_packages.push(pkg.clone()), // could not determine -> fail closed, scan
+    let severity = env::var("AUR_SCAN_SEVERITY")
+        .unwrap_or_else(|_| "high".into())
+        .to_ascii_lowercase();
+    let mut names = plan.names.clone();
+    if env_is("AUR_SCAN_SCAN_GETPKGBUILD", "1") {
+        names.extend(plan.getpkgbuild.iter().cloned());
+    }
+
+    if plan.upgrade && !env_is("AUR_SCAN_SCAN_UPGRADES", "0") {
+        match enumerate_updates(helper) {
+            Ok(upd) => names.extend(upd),
+            Err(e) => {
+                return block(&format!(
+                    "could not list pending AUR updates ({helper} -Quaq failed: {e}); \
+                     refusing to upgrade unscanned"
+                ))
+            }
         }
     }
+    let mut seen = std::collections::HashSet::new();
+    names.retain(|n| seen.insert(n.clone()));
 
-    if aur_packages.is_empty() {
-        // No AUR packages, pass through
+    if names.is_empty() && plan.local_dirs.is_empty() {
         return run_helper(helper, &helper_args);
     }
+    if !valid_severity(&severity) {
+        return block(&format!(
+            "AUR_SCAN_SEVERITY={severity:?} is not one of critical|high|medium|low|info"
+        ));
+    }
 
-    println!();
+    // Race-free mode: a NAMED install that is not also an upgrade or local build.
+    if env_is("AUR_SCAN_MODE", "install")
+        && !plan.names.is_empty()
+        && !plan.upgrade
+        && plan.local_dirs.is_empty()
+    {
+        let mut argv = vec!["install".to_string()];
+        argv.extend(plan.names.iter().cloned());
+        return match run_aur_scan(&argv) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => block(&e),
+        };
+    }
+
+    let interactive = !env_is("AUR_SCAN_INTERACTIVE", "0") && io::stdin().is_terminal();
     println!(
-        "{} Pre-scanning {} AUR package(s)...",
+        "{} pre-checking {} package(s), {} local dir(s)...",
         "AUR Security Scanner:".cyan().bold(),
-        aur_packages.len()
+        names.len(),
+        plan.local_dirs.len()
     );
-    println!("{}", "=".repeat(60));
-
-    let client = AurClient::new().context("Failed to create AUR client")?;
-    // Same config discovery as `aur-scan` / the pacman hook (XDG then /etc).
-    // Built-in-only defaults would silently ignore threat-intel and other
-    // file settings (issue #25 / wrap path gap).
-    let scanner = Scanner::with_system_config().context("Failed to create scanner")?;
-
-    // Official-repo name corpus for name-impersonation comparison, read once
-    // for the whole invocation.
-    let official_names = aur_scanner_core::registry::load_official_names().await;
-
-    let mut high_found = false;
-    let mut critical_found = false;
-    // Packages we could not fetch or scan. These are UNREVIEWED -- a security
-    // gate must treat "could not analyze" as deny, not as a soft warning.
-    let mut unreviewed: Vec<String> = Vec::new();
-
-    for package in &aur_packages {
-        println!();
-        print!("{} {}... ", "Checking:".dimmed(), package.white().bold());
-        io::stdout().flush()?;
-
-        // Fetch PKGBUILD from AUR
-        let fetched = match client.fetch_pkgbuild(package).await {
-            Ok(f) => f,
-            Err(e) => {
-                println!("{}", format!("fetch failed: {}", e).red());
-                unreviewed.push(package.clone());
-                continue;
-            }
-        };
-
-        // Scan WITH registry context. `fetch_pkgbuild` already returned the
-        // package's AUR record in `fetched.info`, so this costs no extra RPC
-        // call -- the wrapper was previously running a strictly smaller
-        // analyzer set than `aur-scan check` for no reason, on the path every
-        // AUR-helper and Nushell user actually goes through.
-        let registry_ctx = Registry::From(
-            aur_scanner_core::registry::context_for(&fetched.info, official_names.clone(), &client)
-                .await,
-        );
-        let result = match scanner
-            .scan_pkgbuild(&fetched.pkgbuild_path, registry_ctx)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                println!("{}", format!("scan failed: {}", e).red());
-                unreviewed.push(package.clone());
-                continue;
-            }
-        };
-
-        // Filter to high and above
-        let findings: Vec<_> = result
-            .findings
-            .iter()
-            .filter(|f| f.severity <= Severity::High)
-            .collect();
-
-        if findings.is_empty() {
-            println!("{}", "OK".green());
-        } else {
-            let crit_count = findings
-                .iter()
-                .filter(|f| f.severity == Severity::Critical)
-                .count();
-            let high_count = findings
-                .iter()
-                .filter(|f| f.severity == Severity::High)
-                .count();
-
-            if crit_count > 0 {
-                critical_found = true;
-                print!("{} ", format!("{} CRITICAL", crit_count).red().bold());
-            }
-            if high_count > 0 {
-                high_found = true;
-                print!("{} ", format!("{} HIGH", high_count).yellow());
-            }
-            println!();
-
-            // Show critical findings
-            for finding in findings.iter().filter(|f| f.severity == Severity::Critical) {
-                println!(
-                    "  {} {} - {}",
-                    finding.id.red(),
-                    aur_scanner_core::textutil::sanitize_for_terminal(&finding.title),
-                    aur_scanner_core::textutil::sanitize_for_terminal(&finding.description)
-                );
-            }
+    match run_aur_scan(&check_argv(
+        &names,
+        &plan.local_dirs,
+        &severity,
+        interactive,
+    )) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!(
+                "{} scan failed or aborted. Not proceeding with {helper}.",
+                "BLOCKED:".red().bold()
+            );
+            return ExitCode::FAILURE;
         }
+        Err(e) => return block(&e),
     }
 
-    println!();
-    println!("{}", "=".repeat(60));
-
-    // A non-interactive stdin (pipe, CI, cron) cannot answer a safety prompt.
-    // Treat the inability to confirm as a refusal: never let an empty read be
-    // taken as "yes" and proceed past an unreviewed or flagged package.
-    let interactive = io::stdin().is_terminal();
-
-    // Unreviewed packages are the most dangerous: we have no idea what they do.
-    if !unreviewed.is_empty() {
-        println!(
-            "{} could not fetch/scan: {} (unreviewed)",
-            "BLOCKED:".red().bold(),
-            unreviewed.join(", ")
-        );
-        if !confirm_typed_yes(
-            interactive,
-            "Could not analyze the above package(s). Type 'yes' to install them UNREVIEWED, or press Enter to abort:",
-        )? {
-            println!("{}", "Installation aborted (unreviewed packages).".yellow());
-            return Ok(ExitCode::FAILURE);
-        }
-        println!(
-            "{}",
-            "User accepted installing unreviewed packages.".dimmed()
-        );
-    }
-
-    if critical_found {
-        println!("{}", "CRITICAL security issues detected!".red().bold());
-        if !confirm_typed_yes(
-            interactive,
-            "Type 'yes' to proceed anyway, or press Enter to abort:",
-        )? {
-            println!("{}", "Installation aborted.".yellow());
-            return Ok(ExitCode::FAILURE);
-        }
-        println!("{}", "User accepted risks.".dimmed());
-    } else if high_found {
-        // High findings default to NO and abort in non-interactive mode.
-        if !confirm_default_no(interactive, "High-severity issues found. Continue? [y/N]:")? {
-            println!("{}", "Installation aborted.".yellow());
-            return Ok(ExitCode::FAILURE);
-        }
-    }
-
-    println!();
-    // TOCTOU disclosure (defect #2): this wrapper scanned PKGBUILDs it fetched
-    // itself, but `run_helper` now hands the operation to the AUR helper, which
-    // RE-FETCHES and builds its OWN copy. The bytes built are therefore not
-    // guaranteed to be the bytes scanned -- a maintainer can update the PKGBUILD
-    // between the two fetches, and VCS (`-git`) sources move regardless. This
-    // pre-scan is advisory for the wrapper path. The race-free `aur-scan install`
-    // command fetches once and builds the exact directories it scanned; use it
-    // when a scan==build guarantee is required.
+    // TOCTOU disclosure: the helper re-fetches and builds its own copy, so for
+    // named packages this pre-scan is advisory. `aur-scan install` is race-free.
     println!(
         "{} the helper re-fetches and builds its own copy, so this pre-scan is {}. \
          For a scan==build guarantee use: {}",
@@ -349,64 +485,60 @@ async fn run() -> Result<ExitCode> {
         "advisory".yellow(),
         "aur-scan install <pkg>".white().bold()
     );
-    println!();
-    println!("{}", "Proceeding with installation...".green());
-    println!();
-
     run_helper(helper, &helper_args)
 }
 
-/// Require the user to type exactly `yes`. In non-interactive mode this is
-/// always a refusal (fail-closed): there is no one to confirm.
-fn confirm_typed_yes(interactive: bool, prompt: &str) -> Result<bool> {
-    if !interactive {
-        eprintln!(
-            "{} non-interactive; refusing without confirmation.",
-            "abort:".red()
-        );
-        return Ok(false);
-    }
-    print!("{} ", prompt.yellow());
-    io::stdout().flush()?;
-    let mut input = String::new();
-    if io::stdin().read_line(&mut input)? == 0 {
-        return Ok(false); // EOF == no confirmation
-    }
-    Ok(input.trim().eq_ignore_ascii_case("yes"))
+fn env_is(key: &str, val: &str) -> bool {
+    env::var(key).is_ok_and(|v| v == val)
 }
 
-/// `[y/N]` prompt that defaults to NO and refuses in non-interactive mode.
-fn confirm_default_no(interactive: bool, prompt: &str) -> Result<bool> {
-    if !interactive {
-        eprintln!(
-            "{} non-interactive; refusing without confirmation.",
-            "abort:".red()
-        );
-        return Ok(false);
+/// Run `aur-scan <argv>` (resolved through PATH, no shell). `Ok(true)` = exit 0.
+fn run_aur_scan(argv: &[String]) -> Result<bool, String> {
+    match Command::new("aur-scan")
+        .args(argv)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+    {
+        Ok(st) => Ok(st.success()),
+        Err(e) => Err(format!(
+            "could not run `aur-scan` ({e}); refusing to proceed unscanned"
+        )),
     }
-    print!("{} ", prompt.yellow());
-    io::stdout().flush()?;
-    let mut input = String::new();
-    if io::stdin().read_line(&mut input)? == 0 {
-        return Ok(false);
-    }
-    Ok(matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
-fn run_helper(helper: &str, args: &[&str]) -> Result<ExitCode> {
-    let status = Command::new(helper)
+fn enumerate_updates(helper: &str) -> Result<Vec<String>, String> {
+    let out = Command::new(helper)
+        .arg("-Quaq")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run {helper}: {e}"))?;
+    match parse_update_set(
+        out.status.code(),
+        &String::from_utf8_lossy(&out.stdout),
+        &String::from_utf8_lossy(&out.stderr),
+    ) {
+        UpdateSet::Names(n) => Ok(n),
+        UpdateSet::Failed(e) => Err(e),
+    }
+}
+
+fn run_helper(helper: &str, args: &[&str]) -> ExitCode {
+    match Command::new(helper)
         .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .context(format!("Failed to run {}", helper))?;
-
-    Ok(if status.success() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(status.code().unwrap_or(1) as u8)
-    })
+    {
+        Ok(st) if st.success() => ExitCode::SUCCESS,
+        Ok(st) => ExitCode::from(st.code().unwrap_or(1) as u8),
+        Err(e) => {
+            eprintln!("{} failed to run {helper}: {e}", "Error:".red().bold());
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn print_usage() {
@@ -416,7 +548,8 @@ fn print_usage() {
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  aur-scan-wrap paru -S package");
-    eprintln!("  aur-scan-wrap yay -S package1 package2");
+    eprintln!("  aur-scan-wrap yay -Syu");
+    eprintln!("  aur-scan-wrap paru -B ./pkgdir");
     eprintln!();
     eprintln!("Setup as alias:");
     eprintln!("  alias paru='aur-scan-wrap paru'");
@@ -427,130 +560,210 @@ fn print_usage() {
 mod tests {
     use super::*;
 
-    fn scanned(args: &[&str]) -> Option<Vec<String>> {
-        match classify(args) {
-            Operation::Install(p) => Some(p),
-            Operation::PassThrough => None,
-        }
+    fn no_dirs(_: &str) -> bool {
+        false
+    }
+    fn plan(args: &[&str]) -> Plan {
+        classify(args, &no_dirs)
+    }
+    fn names(args: &[&str]) -> Vec<String> {
+        let p = plan(args);
+        assert!(p.blocked.is_empty(), "unexpected block: {:?}", p.blocked);
+        p.names
+    }
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
     }
 
     #[test]
     fn installs_are_scanned() {
-        assert_eq!(scanned(&["-S", "firefox"]), Some(vec!["firefox".into()]));
-        assert_eq!(scanned(&["-Syu", "pkg"]), Some(vec!["pkg".into()]));
-        assert_eq!(scanned(&["--sync", "pkg"]), Some(vec!["pkg".into()]));
-        // bare operand, no operation (helpers treat as install)
-        assert_eq!(scanned(&["foo"]), Some(vec!["foo".into()]));
-        // end-of-options: the name after -- is still an operand
-        assert_eq!(scanned(&["-S", "--", "pkg"]), Some(vec!["pkg".into()]));
-        // yay's `-Y` (its default search-and-install) must be scanned (#12).
-        assert_eq!(scanned(&["-Y", "cheese"]), Some(vec!["cheese".into()]));
-        assert_eq!(scanned(&["--yay", "cheese"]), Some(vec!["cheese".into()]));
+        assert_eq!(names(&["-S", "firefox"]), s(&["firefox"]));
+        assert_eq!(names(&["-Syu", "pkg"]), s(&["pkg"]));
+        assert_eq!(names(&["--sync", "pkg"]), s(&["pkg"]));
+        assert_eq!(names(&["foo"]), s(&["foo"]));
+        assert_eq!(names(&["-S", "--", "pkg"]), s(&["pkg"]));
+        assert_eq!(names(&["-Y", "cheese"]), s(&["cheese"]));
+        assert_eq!(names(&["--yay", "cheese"]), s(&["cheese"]));
+        assert_eq!(names(&["-S", "a", "b", "c"]), s(&["a", "b", "c"]));
     }
 
     #[test]
     fn read_only_ops_pass_through() {
-        // These previously could flip scanning off via substring sniffing; now
-        // they are correctly classified and never misread as installs.
-        assert!(scanned(&["-Ss", "firefox"]).is_none()); // search
-        assert!(scanned(&["-Si", "firefox"]).is_none()); // info
-        assert!(scanned(&["-Sl"]).is_none()); // list
-        assert!(scanned(&["-Sg"]).is_none()); // groups
-        assert!(scanned(&["-Sc"]).is_none()); // clean
-        assert!(scanned(&["-Qi", "firefox"]).is_none()); // query
-        assert!(scanned(&["-Q"]).is_none());
-        assert!(scanned(&["-R", "firefox"]).is_none()); // remove
-        assert!(scanned(&["-Syu"]).is_none()); // upgrade, no operands
-
-        // yay/paru AUR extensions that only read: must not gate even with an
-        // operand (a malicious PKGBUILD fetched by -G is reviewed, not built).
-        assert!(scanned(&["-G", "firefox"]).is_none()); // getpkgbuild (download only)
-        assert!(scanned(&["--getpkgbuild", "firefox"]).is_none());
-        assert!(scanned(&["-P"]).is_none()); // show / print stats
-        assert!(scanned(&["-Y", "--gendb"]).is_none()); // -Y devel-db setup, no operands
+        for args in [
+            &["-Ss", "firefox"][..],
+            &["-Si", "firefox"],
+            &["-Sl"],
+            &["-Sg"],
+            &["-Sc"],
+            &["-Qi", "firefox"],
+            &["-Q"],
+            &["-R", "firefox"],
+            &["-Quaq"],
+            &["-P"],
+            &["-Y", "--gendb"],
+            &["--help"],
+            &["-h"],
+            &["--version"],
+        ] {
+            assert_eq!(plan(args), Plan::default(), "{args:?} must pass through");
+        }
+        // -G downloads a PKGBUILD only: never gates by default.
+        let g = plan(&["-G", "firefox"]);
+        assert!(!g.upgrade && g.names.is_empty() && g.blocked.is_empty());
+        assert_eq!(g.getpkgbuild, s(&["firefox"]));
     }
 
     #[test]
     fn unrelated_flags_do_not_disable_scanning() {
-        // The old code skipped scanning if any arg merely contained 'i' or 's'.
         assert_eq!(
-            scanned(&["-S", "--needed", "--noconfirm", "pkg"]),
-            Some(vec!["pkg".into()])
+            names(&["-S", "--needed", "--noconfirm", "pkg"]),
+            s(&["pkg"])
         );
-        assert_eq!(
-            scanned(&["-S", "--rebuild", "pkg"]),
-            Some(vec!["pkg".into()])
-        );
+        assert_eq!(names(&["-S", "--rebuild", "pkg"]), s(&["pkg"]));
+        assert_eq!(names(&["--noconfirm", "evilpkg"]), s(&["evilpkg"]));
+        assert_eq!(names(&["--needed", "pkg"]), s(&["pkg"]));
+    }
+
+    // Regression: `-Syu`, `-Sua` and bare `paru`/`yay` used to pass straight
+    // through unscanned (the old test asserted exactly that).
+    #[test]
+    fn upgrades_and_bare_invocations_are_gated() {
+        for args in [
+            &["-Syu"][..],
+            &["-Su"],
+            &["-Sua"],
+            &["-Syyuu"],
+            &["--sync", "--sysupgrade"],
+            &[],
+            &["--noconfirm"],
+            &["-Yu"],
+            &["-Y"],
+        ] {
+            assert!(plan(args).upgrade, "{args:?} must be treated as an upgrade");
+        }
+        assert!(!plan(&["-Sy"]).upgrade, "refresh only installs nothing");
+        // `-Syu pkg` is both.
+        let p = plan(&["-Syu", "pkg"]);
+        assert!(p.upgrade);
+        assert_eq!(p.names, s(&["pkg"]));
+    }
+
+    // Regression: `aur-scan-wrap paru -S aur/evil` used to warn "ignoring
+    // invalid package operand (not scanned)" and run the helper.
+    #[test]
+    fn repo_prefix_syntax() {
+        assert_eq!(names(&["-S", "aur/evil"]), s(&["evil"]));
+        assert!(names(&["-S", "core/glibc", "extra/vim"]).is_empty());
+        assert_eq!(names(&["-S", "core/glibc", "aur/evil"]), s(&["evil"]));
+        assert_eq!(parse_operand("aur/a/b"), Operand::Invalid("aur/a/b".into()));
     }
 
     #[test]
-    fn bare_operand_with_long_flag_is_still_scanned() {
-        // Regression for the fail-open: an install expressed as a bare operand
-        // plus a long flag (no -S) must NOT pass through unscanned.
-        assert_eq!(
-            scanned(&["--noconfirm", "evilpkg"]),
-            Some(vec!["evilpkg".into()])
-        );
-        assert_eq!(scanned(&["--needed", "pkg"]), Some(vec!["pkg".into()]));
-        // ...but a read-only/non-install op with a long flag still passes through.
-        assert!(scanned(&["--color=always", "-Ss", "firefox"]).is_none());
-        assert!(scanned(&["-Qi", "firefox"]).is_none());
-        assert!(scanned(&["-R", "firefox"]).is_none());
-    }
-
-    #[test]
-    fn upgrade_with_operands_is_scanned_but_refresh_only_is_not() {
-        // `-Syu pkg` installs pkg (scan it); `-Sy`/`-Syu` alone only refreshes.
-        assert_eq!(scanned(&["-Syu", "pkg"]), Some(vec!["pkg".into()]));
-        assert!(scanned(&["-Sy"]).is_none());
-        assert!(scanned(&["-Syyuu"]).is_none());
-    }
-
-    #[test]
-    fn multiple_operands_all_scanned() {
-        assert_eq!(
-            scanned(&["-S", "a", "b", "c"]),
-            Some(vec!["a".into(), "b".into(), "c".into()])
-        );
-    }
-
-    // --- fail-closed confirmation prompts (the security-critical contract) ---
-    // In non-interactive mode (pipe/cron/CI: no TTY to answer), every override
-    // prompt MUST refuse. An unattended run can never be talked into proceeding.
-    #[test]
-    fn confirm_typed_yes_refuses_when_non_interactive() {
-        assert!(!confirm_typed_yes(false, "continue?").unwrap());
-    }
-
-    #[test]
-    fn confirm_default_no_refuses_when_non_interactive() {
-        assert!(!confirm_default_no(false, "continue?").unwrap());
-    }
-
-    // --- operand validation before fetch (defect #2) -------------------------
-    // Illegal operands must never reach the AUR lookup / PKGBUILD fetch.
-    #[test]
-    fn fetch_candidates_keeps_only_valid_names() {
-        let operands: Vec<String> = [
-            "firefox",
-            "google-chrome",
-            "-rf",
+    fn unvalidatable_operands_block() {
+        for bad in [
             "../../etc/passwd",
             "a;b",
-            "",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        assert_eq!(
-            fetch_candidates(&operands),
-            vec!["firefox".to_string(), "google-chrome".to_string()]
-        );
+            "-rf",
+            "https://evil.example/x",
+            "./dir",
+            "/abs/path",
+            "aur/../x",
+            "$(id)",
+        ] {
+            let p = plan(&["-S", bad]);
+            // A leading-dash arg is an option, not an operand; everything else blocks.
+            if bad.starts_with('-') {
+                continue;
+            }
+            assert!(!p.blocked.is_empty(), "{bad:?} must block");
+        }
+        // Mixed: one good, one bad -> still blocked.
+        assert!(!plan(&["-S", "ok", "a;b"]).blocked.is_empty());
     }
 
     #[test]
-    fn fetch_candidates_passes_clean_set_unchanged() {
-        let operands: Vec<String> = ["paru", "yay"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(fetch_candidates(&operands), operands);
+    fn option_values_are_not_operands() {
+        // `--sudo doas` / `--aurdir /x` consume their value; it must neither be
+        // scanned nor (for a path) block the install.
+        let p = plan(&["-S", "--sudo", "doas", "--clonedir", "/tmp/x", "pkg"]);
+        assert!(p.blocked.is_empty());
+        assert_eq!(p.names, s(&["pkg"]));
+        // `=` form carries its value inline.
+        assert_eq!(names(&["--clonedir=/tmp/x", "-S", "pkg"]), s(&["pkg"]));
+        // A boolean flag must NOT swallow an operand.
+        assert_eq!(names(&["-S", "--needed", "pkg"]), s(&["pkg"]));
+    }
+
+    // Local builds.
+    #[test]
+    fn local_builds_are_scanned() {
+        let dirs = |p: &str| p == "mydir" || p == "." || p == "./d";
+        let p = classify(&["-B", "mydir"], &dirs);
+        assert_eq!(p.local_dirs, vec![PathBuf::from("mydir")]);
+        assert!(p.names.is_empty(), "-B operands are dirs, not AUR names");
+        let p = classify(&["-Ui"], &dirs);
+        assert_eq!(p.local_dirs, vec![PathBuf::from(".")]);
+        let p = classify(&["-U", "./d"], &dirs);
+        assert_eq!(p.local_dirs, vec![PathBuf::from("./d")]);
+        let p = classify(&["-U", "sub/PKGBUILD"], &dirs);
+        assert_eq!(p.local_dirs, vec![PathBuf::from("sub")]);
+        // -B on something that is not a directory cannot be scanned: block.
+        assert!(!classify(&["-B", "nope"], &dirs).blocked.is_empty());
+    }
+
+    #[test]
+    fn prebuilt_package_install_passes_with_notice() {
+        let p = plan(&["-U", "foo-1-1-x86_64.pkg.tar.zst"]);
+        assert!(p.blocked.is_empty() && p.local_dirs.is_empty() && p.names.is_empty());
+        assert_eq!(p.notices.len(), 1);
+    }
+
+    #[test]
+    fn update_set_fails_closed() {
+        assert_eq!(
+            parse_update_set(Some(0), "a\nb\n", ""),
+            UpdateSet::Names(s(&["a", "b"]))
+        );
+        // pacman-style "nothing pending": exit 1, completely silent.
+        assert_eq!(parse_update_set(Some(1), "", ""), UpdateSet::Names(vec![]));
+        // Network down / helper error: must NOT read as "no updates".
+        assert!(matches!(
+            parse_update_set(Some(1), "", "error: failed to connect"),
+            UpdateSet::Failed(_)
+        ));
+        assert!(matches!(
+            parse_update_set(Some(2), "", ""),
+            UpdateSet::Failed(_)
+        ));
+        assert!(matches!(
+            parse_update_set(None, "", ""),
+            UpdateSet::Failed(_)
+        ));
+        assert!(matches!(
+            parse_update_set(Some(0), "ok\n../evil\n", ""),
+            UpdateSet::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn check_argv_honours_severity_and_tty() {
+        let a = check_argv(&s(&["p"]), &[PathBuf::from("d")], "medium", false);
+        assert_eq!(
+            a,
+            s(&[
+                "--severity",
+                "medium",
+                "check",
+                "--no-confirm",
+                "--fail-on",
+                "medium",
+                "--local",
+                "d",
+                "p"
+            ])
+        );
+        let a = check_argv(&s(&["p"]), &[], "high", true);
+        assert_eq!(a, s(&["--severity", "high", "check", "p"]));
+        assert!(valid_severity("critical") && !valid_severity("hgih"));
     }
 }
