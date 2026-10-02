@@ -111,7 +111,7 @@ This scanner implements detection rules based on real-world attacks and security
 
 | Feature | Description |
 |---------|-------------|
-| **Static Analysis** | 138 detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
+| **Static Analysis** | 140 detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
 | **Install Script Scanning** | Analyzes `.install` scripts for persistence mechanisms |
 | **Source Verification** | Validates URLs, checksums, and download sources |
 | **AUR Integration** | Fetch and scan packages directly from AUR before installation |

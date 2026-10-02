@@ -6,6 +6,113 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+Fixes from an internal audit of 2.2.0-rc.2 against its own documentation. Every
+fail-open path below was reproduced before it was changed and ships with a test
+that failed on rc.2. Two new detection codes (140 total): `SCAN-001` and
+`TI-UNCHECKED-001`.
+
+### Security
+
+- **A package file the scanner could not read no longer counts as clean.** One
+  non-UTF-8 byte, or padding past the 2 MiB cap, made an `.install`, `.hook`,
+  or local `source=` script drop out of the scan with only a log line, so a
+  `curl | bash` scriptlet reported "No security issues found". Files are now
+  decoded lossily and read through a bounded reader; anything oversized,
+  unreadable, symlinked, or not a regular file (a FIFO, a link to `/dev/zero`)
+  produces the new Critical `SCAN-001`, which every gate treats as unreviewed
+  and `install --force` cannot override. Symlinks are never followed, so a
+  link can no longer leak another file's contents into a report.
+- **A `rules.d` file could silently switch off a built-in detection.** A
+  community rule reusing a built-in id replaced it, so a file dropped in
+  `~/.config/aur-scanner/rules.d/` by any earlier package's `build()` could turn
+  a Critical into nothing. Rules that reuse an existing id are now rejected
+  with a warning, and as root only `/usr/share` and `/etc` rule directories are
+  read.
+- **Dependencies were trusted by default.** Any name the AUR RPC didn't return
+  was shown as `[repo] (official, trusted)` without asking pacman, including
+  nonexistent names and dependencies only an AUR package `provides`, which the
+  helper then built unscanned. Classification now asks pacman; AUR providers
+  are found and scanned; anything left is `[UNRESOLVED]` and fails the run. A
+  tree cut short by the depth or size cap fails too.
+- **`aur-scan-wrap` passed what it couldn't parse straight to the helper.**
+  `paru -S aur/pkg` installed unscanned with exit 0. The wrapper now resolves
+  `repo/name` operands, blocks anything else it can't validate, and delegates
+  to `aur-scan check`, so it scans the full dependency tree and the upgrade set
+  (`-Syu`, `-Sua`, bare `paru`/`yay`) instead of named operands only. The
+  Nushell integration, which routes through the wrapper, gets the same gate.
+- **Install gates that failed open:** a failed `-Quaq` upgrade query, a missing
+  `aur-scan`, and local builds (`-B <dir>`, `-Ui`, `-U <dir>`) all ran the helper
+  unscanned in bash, zsh, fish, Nushell, and the wrapper. They are now refused
+  or scanned from disk; `<helper>-unsafe` remains the deliberate bypass (real
+  functions in fish, not abbreviations).
+- **`check` let piped input approve findings** and ignored `--fail-on` below
+  High in interactive mode. The prompt now appears whenever the gate trips, and
+  only a real terminal can answer it.
+- **`min_severity` disabled gates.** It filtered findings before every gate, so
+  `min_severity = "critical"` in the user config removed High findings from the
+  wrapper prompt, `install --gate high`, and JSON. It is now display-only.
+- **Split packages:** only the last `install=` was scanned, so a payload in the
+  main package's scriptlet went unseen. Every `install=` is now scanned.
+- **Detection hardening** for staged and indirect fetch-and-execute forms,
+  variable indirection across and within functions, inline encoded payloads
+  (bounded decoding), and cron persistence.
+
+### Fixed
+
+- **Pacman hook** found nothing in common setups and exited 0: doas, run0,
+  pkexec, root shells, home directories outside `/home`, and split packages.
+  It now finds the invoking user through sudo, doas, pkexec, or the login uid,
+  matches split packages through `.SRCINFO`, reads paru/yay cache settings,
+  warns per foreign package it couldn't scan or whose cached version differs,
+  and aborts instead in strict mode (`AUR_SCAN_HOOK_STRICT=1` or
+  `/etc/aur-scanner/hook-strict`).
+- **`install`** printed "All packages built and installed" after silently
+  skipping a repo package it was asked for; it now refuses non-AUR roots.
+  Declining or a missing terminal exits non-zero, dependencies are installed
+  `--asdeps`, and the scanned files are hashed again right before `makepkg`.
+  Packages whose sources `makepkg` fetches unpinned after the scan are listed.
+- **Change detection never ran for AUR packages in `check`:** the fetched copy
+  was deleted before the history comparison read it.
+- **`git clone`** now runs with a scrubbed environment, ignores system and
+  global git config, verifies objects, and is time-bounded.
+- **`timeout_seconds`** was documented but read by nothing. It now bounds the
+  AUR RPC, the clone, and each package's fetch and scan; a timeout fails closed.
+- **JSON and SARIF on stdout** were corrupted by log lines; logs go to stderr.
+  SARIF rules are unique and indexed, findings without a line no longer get a
+  made-up `startLine`, and URIs are relative to the scanned root.
+- **CycloneDX SBOM**: unique `bom-ref`s, no dangling `dependsOn`, percent-encoded
+  purls (epochs), and the real repository name instead of a guessed one.
+- **Duplicate findings** when two patterns of one rule matched the same line.
+- **Rule loader**: one bad regex no longer disables the whole directory;
+  unknown keys and pattern-less rules are rejected; `file_types =
+  ["source_file"]` now works.
+- **`aur-scan rules`** was a stale hand-written list; it is generated from the
+  catalog. `codes` rejects an unknown `--format` or `--category`.
+- **`aur-scan system`** always exited 0. It now fails on `--fail-on` (default
+  Critical), IOC matches, and packages it could not scan, which it lists.
+- **Threat intel**: VirusTotal lookups default to 4 per scan in declared order
+  (`vt_max_lookups`), stop after a rate-limit reply, and report what went
+  unchecked as `TI-UNCHECKED-001` instead of nothing. Response bodies are
+  capped and credentials in URLs are stripped before lookup.
+- **A malformed system IOC override** and an explicit `rules_path` that fails to
+  load are hard errors, like the config file. An analyzer error fails the scan
+  instead of dropping that analyzer's findings.
+- **False positives** at High/Critical on ordinary packages: a setuid
+  `chrome-sandbox` in Electron `-bin` packages (now Low), `systemctl
+  daemon-reload`, shipping a `modprobe.d` file, and reading
+  `${XDG_CONFIG_HOME:-~/.config}`.
+- **The printed dependency tree** is nested instead of flat.
+
+### Changed
+
+- Minimum supported Rust is **1.85**, declared in `rust-version` and checked in
+  CI; CI builds with `--locked`.
+- The root and `-git` PKGBUILDs conflict with `aur-scanner-rc`.
+- README and SECURITY.md corrected where they overstated the code: runtime
+  dependencies, the pacman hook's role and install path, the `install` TOCTOU
+  guarantee, threat-intel egress and cache wording, what the GitHub rulesets
+  enforce, and the `-git` package's signature check.
+
 ## [2.2.0-rc.2] - 2026-10-01
 
 Second 2.2.0 release candidate. No new detection codes (still 138); this cut
