@@ -192,14 +192,21 @@ fn component_json(
     component
 }
 
+/// bom-ref of the synthetic `metadata.component` describing the install request.
+/// Not a valid package name (`:` is outside the AUR charset), so it can never
+/// collide with a component.
+pub const REQUEST_REF: &str = "aur-scan:request";
+
 /// Build a CycloneDX 1.5 SBOM document. `scans` maps package name to its scan
 /// summary; `serial`/`timestamp` are supplied by the caller (kept out of here
 /// so the function stays deterministic and testable).
 ///
-/// Structure: the first requested root is `metadata.component` and is NOT
-/// repeated in `components` (bom-refs must be unique across the document); every
-/// other node is a component. `dependsOn` lists only refs that exist in the
-/// document, so a `--no-deps`/truncated tree never dangles.
+/// Structure: `metadata.component` describes the install request itself (ref
+/// [`REQUEST_REF`]) and depends on the requested roots; every resolved package,
+/// roots included, is in `components`. That keeps bom-refs unique across the
+/// document without leaving a single-package (`--no-deps`) SBOM with an empty
+/// `components` list. `dependsOn` lists only refs that exist in the document, so
+/// a `--no-deps`/truncated tree never dangles.
 pub fn to_cyclonedx(
     graph: &DependencyGraph,
     scans: &BTreeMap<String, ComponentScan>,
@@ -207,38 +214,48 @@ pub fn to_cyclonedx(
     serial: &str,
     timestamp: &str,
 ) -> serde_json::Value {
-    let primary: Option<&str> = graph.roots.first().map(|r| r.as_str());
-    let metadata_component = primary.map(|r| match graph.nodes.get(r) {
-        Some(n) => component_json(n, scans, "application"),
-        None => serde_json::json!({"type": "application", "bom-ref": r, "name": r}),
+    let roots: Vec<&String> = graph
+        .roots
+        .iter()
+        .filter(|r| graph.nodes.contains_key(r.as_str()))
+        .collect();
+    let metadata_component = (!graph.roots.is_empty()).then(|| {
+        serde_json::json!({
+            "type": "application",
+            "bom-ref": REQUEST_REF,
+            "name": graph.roots.join(" "),
+            "description": "Packages requested from the AUR, with their resolved dependency tree",
+        })
     });
 
     let components: Vec<serde_json::Value> = graph
         .nodes
         .values()
-        .filter(|n| Some(n.name.as_str()) != primary)
-        .map(|n| component_json(n, scans, "library"))
+        .map(|n| {
+            let kind = if graph.roots.contains(&n.name) {
+                "application"
+            } else {
+                "library"
+            };
+            component_json(n, scans, kind)
+        })
         .collect();
 
     // Every ref that exists in the document.
-    let mut refs: std::collections::BTreeSet<&str> =
-        graph.nodes.keys().map(|k| k.as_str()).collect();
-    if let Some(p) = primary {
-        refs.insert(p);
-    }
+    let refs: std::collections::BTreeSet<&str> = graph.nodes.keys().map(|k| k.as_str()).collect();
 
-    let dependencies: Vec<serde_json::Value> = graph
-        .nodes
-        .values()
-        .filter_map(|n| {
-            let deps: Vec<&String> = n
-                .depends
-                .iter()
-                .filter(|d| refs.contains(d.as_str()))
-                .collect();
-            (!deps.is_empty()).then(|| serde_json::json!({ "ref": n.name, "dependsOn": deps }))
-        })
-        .collect();
+    let mut dependencies: Vec<serde_json::Value> = Vec::new();
+    if metadata_component.is_some() && !roots.is_empty() {
+        dependencies.push(serde_json::json!({ "ref": REQUEST_REF, "dependsOn": roots }));
+    }
+    dependencies.extend(graph.nodes.values().filter_map(|n| {
+        let deps: Vec<&String> = n
+            .depends
+            .iter()
+            .filter(|d| refs.contains(d.as_str()))
+            .collect();
+        (!deps.is_empty()).then(|| serde_json::json!({ "ref": n.name, "dependsOn": deps }))
+    }));
 
     // Findings expressed as CycloneDX vulnerabilities, keyed by finding id and
     // pointing at the affected component.
@@ -447,14 +464,15 @@ mod tests {
         let bom = to_cyclonedx(&g, &scans, "0.1.1", "abc", "2026-06-13T00:00:00Z");
         assert_eq!(bom["bomFormat"], "CycloneDX");
         assert_eq!(bom["specVersion"], "1.5");
-        // Root lives in metadata.component only; 2 other nodes are components.
-        assert_eq!(bom["metadata"]["component"]["bom-ref"], "foo");
-        assert_eq!(bom["components"].as_array().unwrap().len(), 2);
-        assert!(bom["dependencies"]
-            .as_array()
-            .unwrap()
+        // metadata.component is the request; every package, root included, is
+        // a component, and the request depends on the root.
+        assert_eq!(bom["metadata"]["component"]["bom-ref"], REQUEST_REF);
+        assert_eq!(bom["components"].as_array().unwrap().len(), 3);
+        let deps = bom["dependencies"].as_array().unwrap();
+        assert!(deps.iter().any(|d| d["ref"] == "foo"));
+        assert!(deps
             .iter()
-            .any(|d| d["ref"] == "foo"));
+            .any(|d| d["ref"] == REQUEST_REF && d["dependsOn"][0] == "foo"));
         assert_refs_consistent(&bom);
     }
 
@@ -464,10 +482,16 @@ mod tests {
         let mut g = graph();
         g.nodes.retain(|k, _| k == "foo");
         let bom = to_cyclonedx(&g, &BTreeMap::new(), "0.1.1", "abc", "t");
-        assert_eq!(bom["components"].as_array().unwrap().len(), 0);
+        // The one scanned package is still a component: an SBOM of a single
+        // package must not have an empty `components` list.
+        let comps = bom["components"].as_array().unwrap();
+        assert_eq!(comps.len(), 1);
+        assert_eq!(comps[0]["bom-ref"], "foo");
         assert_refs_consistent(&bom);
-        // Nothing resolvable remains to depend on: no dangling edge is emitted.
-        assert!(bom["dependencies"].as_array().unwrap().is_empty());
+        // Only the request -> root edge; foo's unresolved children don't dangle.
+        let deps = bom["dependencies"].as_array().unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0]["ref"], REQUEST_REF);
     }
 
     #[test]

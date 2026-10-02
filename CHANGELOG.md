@@ -117,6 +117,17 @@ that failed on rc.2. Four new detection codes (142 total): `SCAN-001`,
   daemon-reload`, shipping a `modprobe.d` file, and reading
   `${XDG_CONFIG_HOME:-~/.config}`.
 - **The printed dependency tree** is nested instead of flat.
+- **`check --local` in an owned namespace** raised a Critical `SQUAT-004` even
+  when the configured maintainer was right. The real AUR maintainer is now
+  looked up; a local package with no AUR record is reported at High as
+  "publisher cannot be verified" instead of as a confirmed impostor.
+- **SBOM `metadata.component`** now describes the install request and depends
+  on the requested packages, which are all listed in `components`; a
+  single-package SBOM no longer ends up with an empty `components` list.
+- **A spawn allowlist test** replaces the string grep that guarded the
+  static-only invariant: every subprocess the shipped code can start must be
+  on a reviewed list. `ldd` is no longer treated as an inert command, since it
+  runs its target through the loader.
 - **Upgrade scanning** forwards the helper flags that change the update set
   (`--aururl`, `--config`, `--ignore`, `--root`, …) to `-Quaq`, and with
   `--devel` also scans installed VCS packages. More value-taking options are

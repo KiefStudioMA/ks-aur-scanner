@@ -154,7 +154,8 @@ const NON_EXEC: &[&str] = &[
     "bsdtar",
     "7z",
     "cmp",
-    "ldd",
+    // Not `ldd`: it runs its target through the dynamic loader, so `ldd` on a
+    // freshly cloned binary executes that binary.
     "objdump",
     "readelf",
     "namcap",

@@ -776,7 +776,10 @@ grep_ok "prebuilt eBPF object is flagged (BIN-003)" "BIN-003" aur-scan scan /tmp
 # Static-only invariant: the scanner must never invoke ldd/objdump on package
 # content. ldd is a shell script that eval-executes its target through the
 # loader, so calling it on a hostile -bin payload runs that payload.
-if grep -rnE '"(ldd|objdump|readelf|nm)"' "$SRC/crates" --include='*.rs' | grep -v '^.*tests\?/' | grep -q .; then
+# Matches a spawn of those tools, not the names appearing as data (the
+# remote-exec analyzer lists them as inert commands). The cargo test
+# every_spawned_program_is_allowlisted is the stronger, allowlist-based check.
+if grep -rnE '(Command::new|\.args?)\(\s*\[?\s*"(ldd|objdump|readelf|nm)"' "$SRC/crates" --include='*.rs' | grep -v '^.*tests\?/' | grep -q .; then
     fail "the scanner shells out to a binutils/ldd helper on package content"
 else
     pass "no ldd/objdump/readelf/nm invocation anywhere in the crates"

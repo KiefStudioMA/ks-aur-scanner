@@ -432,16 +432,52 @@ impl SquatAnalyzer {
             if !in_namespace {
                 continue;
             }
-            // A local directory has no registry identity: its maintainer is the
-            // overlay's "(local)" placeholder, meaning UNKNOWN. Unknown is not
-            // "an unauthorised account", so say nothing rather than raise a
-            // Critical about an account that does not exist.
+            // A local directory whose real AUR record could not be found (not
+            // published, or offline) keeps the overlay's "(local)" placeholder:
+            // its publisher is UNKNOWN. Unknown is not proof of an unauthorised
+            // account, so this is not the no-false-positive Critical below -- but
+            // a package claiming a namespace you own from a source nobody can
+            // vouch for is exactly what an impostor looks like, so it is never
+            // silent either.
             if reg
                 .maintainer
                 .as_deref()
                 .is_some_and(crate::overlay::is_local_maintainer)
             {
-                tracing::debug!("{name}: maintainer unknown (local overlay); skipping SQUAT-004");
+                findings.push(Finding {
+                    id: "SQUAT-004".to_string(),
+                    severity: Severity::High,
+                    category: Category::MaliciousCode,
+                    title: "Package occupies a namespace you own, and its publisher cannot be verified"
+                        .to_string(),
+                    description: format!(
+                        "'{name}' falls inside the '{}' namespace, which your configuration declares \
+                         is published by {}. This copy was scanned from a local directory and no \
+                         AUR record for it could be found (it is not published there, or the AUR \
+                         was unreachable), so nothing confirms who published it.",
+                        ns.prefix,
+                        ns.maintainers.join(", ")
+                    ),
+                    location: Location {
+                        file: file.to_path_buf(),
+                        line: None,
+                        column: None,
+                        snippet: Some(format!("pkgname={name}")),
+                    },
+                    recommendation: format!(
+                        "Only build this if you know where the directory came from. Your own \
+                         unpublished '{name}' is expected to show this; a copy from anywhere \
+                         else is an impersonation of '{}'.",
+                        ns.prefix
+                    ),
+                    cwe_id: Some("CWE-1007".to_string()),
+                    metadata: serde_json::json!({
+                        "namespace": ns.prefix,
+                        "authorised_maintainers": ns.maintainers,
+                        "actual_maintainer": serde_json::Value::Null,
+                        "publisher_verified": false,
+                    }),
+                });
                 continue;
             }
             let authorised = reg
@@ -735,9 +771,10 @@ mod tests {
     }
 
     #[test]
-    fn owned_namespace_ignores_the_local_overlay_marker() {
-        // `check --local`: the maintainer is the unknown-local placeholder, which
-        // must not be read as an unauthorised account.
+    fn owned_namespace_local_overlay_marker_is_unverified_not_silent() {
+        // `check --local` with no AUR record: the maintainer is the unknown-local
+        // placeholder. That must not be read as a confirmed unauthorised account
+        // (the Critical), and must not be silent either.
         let a = SquatAnalyzer::new();
         let mut r = reg();
         r.maintainer = Some(crate::overlay::LOCAL_MAINTAINER.to_string());
@@ -746,7 +783,10 @@ mod tests {
             maintainers: vec!["KiefStudio".into()],
         }];
         let f = a.check_owned_namespaces("aur-scanner-bin", &r, &owned, Path::new("PKGBUILD"));
-        assert!(f.is_empty(), "{:?}", ids(&f));
+        assert_eq!(ids(&f), vec!["SQUAT-004"]);
+        assert_eq!(f[0].severity, Severity::High);
+        assert!(f[0].title.contains("namespace you own"));
+        assert!(f[0].title.contains("cannot be verified"));
     }
 
     #[test]

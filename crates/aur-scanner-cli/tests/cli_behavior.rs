@@ -893,3 +893,66 @@ fn hidden_gate_finding_is_reported_and_json_stays_complete() {
     std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_dir_all(&clean).ok();
 }
+
+/// Static-only invariant, enforced at the spawn site: every subprocess the
+/// shipped code can start is one of a short, reviewed list. A helper like
+/// `ldd` executes its target through the loader, so spawning one on package
+/// content would run that content; this fails the moment any new program is
+/// spawned, whatever its name. Test modules (after `#[cfg(test)]`) are skipped.
+#[test]
+fn every_spawned_program_is_allowlisted() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // The argument to `Command::new(...)` exactly as written, and why it is safe.
+    let allowed: &[(&str, &str)] = &[
+        (
+            "\"git\"",
+            "hardened, time-bounded clone of the AUR package repo",
+        ),
+        ("\"pacman\"", "read-only sync/local database queries"),
+        ("\"/usr/bin/pacman\"", "the hook's read-only version query"),
+        (
+            "\"aur-scan\"",
+            "the wrapper delegating its decision to the CLI",
+        ),
+        (
+            "helper",
+            "the wrapper handing off to the user's AUR helper after the gate",
+        ),
+        (
+            "makepkg_bin",
+            "`install` building the scanned directory after the gate",
+        ),
+    ];
+    let mut offenders = Vec::new();
+    let mut walk = vec![root.join("crates")];
+    while let Some(dir) = walk.pop() {
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let p = e.path();
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            if p.is_dir() {
+                if name != "tests" && name != "target" {
+                    walk.push(p);
+                }
+                continue;
+            }
+            if !name.ends_with(".rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&p).unwrap();
+            let shipped = src.split("#[cfg(test)]").next().unwrap_or("");
+            for (i, _) in shipped.match_indices("Command::new(") {
+                let rest = &shipped[i + "Command::new(".len()..];
+                let arg = rest[..rest.find(')').unwrap_or(rest.len())].trim();
+                if !allowed.iter().any(|(a, _)| *a == arg) {
+                    offenders.push(format!("{}: Command::new({arg})", p.display()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "unreviewed subprocess spawn(s); add to the allowlist only with a reason \
+         that holds for hostile package content:\n{}",
+        offenders.join("\n")
+    );
+}
