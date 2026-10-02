@@ -137,8 +137,15 @@ impl PatternAnalyzer {
             // ANYWHERE in it, so one comment line hid a real `curl` on the next.
             // Each line is de-quoted the way the shell reads it (`"curl" url` is
             // `curl url`) and lower-cased so `CURL` cannot evade (audit HI-6).
+            //
+            // Also match the variable-resolved text (`c=curl; $c url`, a
+            // top-level `_c=curl` used here) and the bodies of top-level helper
+            // functions this one calls, so indirection cannot hide the fetch.
+            let resolved_text =
+                crate::resolve::resolved_function_text(&context.pkgbuild.raw_content, func_name);
             let lines: Vec<String> = logical_lines(&func_body.content)
                 .into_iter()
+                .chain(logical_lines(&resolved_text))
                 .filter(|(_, line)| !line.trim_start().starts_with('#'))
                 .map(|(_, line)| normalize_shell_quoting(&line).to_lowercase())
                 .collect();
