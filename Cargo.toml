@@ -59,7 +59,7 @@ colored = "2.1"
 
 # Hashing
 blake3 = "1.5"
-sha2 = "0.10"
+sha2 = "0.11"
 
 # Base64
 base64 = "0.22"
