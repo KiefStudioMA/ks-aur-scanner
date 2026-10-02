@@ -110,18 +110,23 @@ function _aur_scan_classify
                 set mods "$mods"p
             # Long options that take the NEXT argument as their value (only ones
             # that ALWAYS do: a boolean flag listed here would swallow an operand).
-            case '--root' '--dbpath' '--cachedir' '--logfile' '--gpgdir' '--hookdir' '--arch' '--color' '--config' '--sysroot' '--ignore' '--ignoregroup' '--assume-installed' '--overwrite' '--print-format' '--aururl' '--clonedir' '--builddir' '--makepkg' '--makepkgconf' '--pacman' '--pacmanconf' '--git' '--gitflags' '--sudo' '--sudoflags' '--asp' '--bat' '--batflags' '--fm' '--fmflags' '--editor' '--editorflags' '--mflags' '--gpg' '--gpgflags' '--answerclean' '--answerdiff' '--answeredit' '--answerupgrade' '--searchby' '--sortby' '--completioninterval'
+            case '--root' '--dbpath' '--cachedir' '--logfile' '--gpgdir' '--hookdir' '--arch' '--color' '--config' '--sysroot' '--ignore' '--ignoregroup' '--assume-installed' '--overwrite' '--print-format' '--ask' '--aururl' '--aurrpcurl' '--clonedir' '--builddir' '--makepkg' '--makepkgconf' '--pacman' '--pacman-conf' '--pacmanconf' '--git' '--gitflags' '--sudo' '--sudoflags' '--asp' '--bat' '--batflags' '--fm' '--fmflags' '--editor' '--editorflags' '--mflags' '--gpg' '--gpgflags' '--answerclean' '--answerdiff' '--answeredit' '--answerupgrade' '--searchby' '--sortby' '--completioninterval' '--requestsplitn' '--mode' '--limit' '--develsuffixes' '--develfile' '--ignoredevel' '--chrootflags' '--chrootpkgs' '--rootchrootpkgs' '--pkgctl'
                 set longs "$longs$a "
                 set skip 1
             case '--*'
                 # other long option (strip any =value)
                 set longs "$longs"(string replace -r '=.*' '' -- $a)" "
-            case '-b' '-r'
-                # pacman -b <dbpath> / -r <root>
-                set skip 1
             case '-*'
                 set -l rest (string sub -s 2 -- $a)
-                for c in (string split '' -- $rest)
+                set -l chars (string split '' -- $rest)
+                for i in (seq (count $chars))
+                    set -l c $chars[$i]
+                    # getopt: -b <dbpath> / -r <root> take a value: the rest of
+                    # this argument (-Sb/db) or, ending the group, the NEXT one.
+                    if string match -qr '^[br]$' -- $c
+                        test $i -eq (count $chars); and set skip 1
+                        break
+                    end
                     if string match -qr '[A-Z]' -- $c
                         set op "$op$c"
                     else

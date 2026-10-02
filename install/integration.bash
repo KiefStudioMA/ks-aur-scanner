@@ -72,15 +72,17 @@ _aur_scan_classify() {
             --print) mods="${mods}p" ;;
             # Long options that take the NEXT argument as their value (only ones
             # that ALWAYS do: a boolean flag listed here would swallow an operand).
-            --root|--dbpath|--cachedir|--logfile|--gpgdir|--hookdir|--arch|--color|--config|--sysroot|--ignore|--ignoregroup|--assume-installed|--overwrite|--print-format|--aururl|--clonedir|--builddir|--makepkg|--makepkgconf|--pacman|--pacmanconf|--git|--gitflags|--sudo|--sudoflags|--asp|--bat|--batflags|--fm|--fmflags|--editor|--editorflags|--mflags|--gpg|--gpgflags|--answerclean|--answerdiff|--answeredit|--answerupgrade|--searchby|--sortby|--completioninterval)
+            --root|--dbpath|--cachedir|--logfile|--gpgdir|--hookdir|--arch|--color|--config|--sysroot|--ignore|--ignoregroup|--assume-installed|--overwrite|--print-format|--ask|--aururl|--aurrpcurl|--clonedir|--builddir|--makepkg|--makepkgconf|--pacman|--pacman-conf|--pacmanconf|--git|--gitflags|--sudo|--sudoflags|--asp|--bat|--batflags|--fm|--fmflags|--editor|--editorflags|--mflags|--gpg|--gpgflags|--answerclean|--answerdiff|--answeredit|--answerupgrade|--searchby|--sortby|--completioninterval|--requestsplitn|--mode|--limit|--develsuffixes|--develfile|--ignoredevel|--chrootflags|--chrootpkgs|--rootchrootpkgs|--pkgctl)
                 longs="${longs}${a} "; skip=1 ;;
             --*) longs="${longs}${a%%=*} " ;;  # other long option
-            -b|-r) skip=1 ;;                   # pacman -b <dbpath> / -r <root>
             -*)
                 rest="${a#-}"
                 for (( i=0; i<${#rest}; i++ )); do
                     c="${rest:$i:1}"
                     case "$c" in
+                        # getopt: -b <dbpath> / -r <root> take a value: the rest of
+                        # this argument (-Sb/db) or, ending the group, the NEXT one.
+                        [br]) (( i == ${#rest} - 1 )) && skip=1; break ;;
                         [A-Z]) op="${op}${c}" ;;
                         *)     mods="${mods}${c}" ;;
                     esac

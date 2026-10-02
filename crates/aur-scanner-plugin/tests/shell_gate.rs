@@ -169,6 +169,110 @@ fn cases() -> Vec<Case> {
             Ran(None),
         ),
         case("--version passes", &["--version"], &[], Ran(None)),
+        // --- option values (paru/yay/pacman) --------------------------------
+        // Regression: these value-taking options were missing from the table, so
+        // their value ("aur", "4", ...) was scanned as a package and the real
+        // operand rode along as an extra, mis-classified word.
+        case(
+            "paru --mode value is not an operand",
+            &["-S", "--mode", "aur", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "--ask value is not an operand",
+            &["-S", "--ask", "4", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "--limit value is not an operand",
+            &["-S", "--limit", "5", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "--develsuffixes/--develfile/--chrootpkgs values are not operands",
+            &[
+                "-S",
+                "--develsuffixes",
+                "-git",
+                "--develfile",
+                "/tmp/d.toml",
+                "--chrootpkgs",
+                "base-devel",
+                "foo",
+            ],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "--aurrpcurl/--pkgctl/--pacman-conf values are not operands",
+            &[
+                "-S",
+                "--aurrpcurl",
+                "https://aur.example/rpc",
+                "--pkgctl",
+                "pkgctl",
+                "--pacman-conf",
+                "/tmp/p.conf",
+                "foo",
+            ],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "yay --editor/--requestsplitn/--answerdiff values are not operands",
+            &[
+                "-S",
+                "--editor",
+                "vim",
+                "--requestsplitn",
+                "150",
+                "--answerdiff",
+                "None",
+                "foo",
+            ],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "--opt=value forms keep the operand",
+            &[
+                "-S",
+                "--mode=aur",
+                "--ask=4",
+                "--editor=vim",
+                "--builddir=/tmp/b",
+                "foo",
+            ],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "optional-value options do not swallow the operand",
+            &["-S", "--removemake", "--rebuild", "--redownload", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "-b <dbpath> ending a group takes the next argument",
+            &["-Sb", "/tmp/db", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "-b<dbpath> attached is not an operand",
+            &["-Sb/tmp/db", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
+        case(
+            "-r <root> takes the next argument",
+            &["-r", "/tmp/root", "-S", "foo"],
+            &[],
+            Ran(Some((&["foo"], &[]))),
+        ),
         // --- upgrades -------------------------------------------------------
         // Regression: -Syu / -Sua / bare helper used to pass through unscanned.
         case(
@@ -603,6 +707,28 @@ fn run_all(gate: Gate) {
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// `aur-scan-wrap --help` / `-h` is the wrapper's own usage, exit 0, and never
+/// tries to run a helper called `--help`.
+#[test]
+fn wrapper_help_prints_usage() {
+    for flag in ["--help", "-h"] {
+        let sb = Sandbox::new(true);
+        let out = sb
+            .base_cmd(Command::new(env!("CARGO_BIN_EXE_aur-scan-wrap")), &[])
+            .arg(flag)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{flag}: {out:?}");
+        assert!(
+            text.contains("Usage: aur-scan-wrap <helper>"),
+            "{flag}: {text}"
+        );
+        let log = fs::read_to_string(&sb.log).unwrap();
+        assert!(log.is_empty(), "{flag}: nothing may run: {log:?}");
+    }
 }
 
 #[test]

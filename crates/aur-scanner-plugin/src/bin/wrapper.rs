@@ -36,8 +36,18 @@ use std::process::{Command, ExitCode, Stdio};
 /// Long options (pacman / paru / yay) that consume the NEXT argv element as
 /// their value in the `--opt value` form. Without this the value would be read
 /// as a package operand. Only options that ALWAYS take a value are listed:
-/// listing a boolean flag here would swallow a real operand (fail-open).
+/// listing a boolean (or optional-value) flag here would swallow a real operand
+/// (fail-open). The `--opt=value` form never consumes the next element.
+///
+/// Sources: paru `src/command_line.rs::takes_value` (TakesValue::Required) and
+/// yay `pkg/settings/parser/parser.go::hasParam`, plus pacman's own. The
+/// optional-value options (`--removemake`, `--redownload`, `--rebuild`,
+/// `--provides`, `--chroot`, `--localrepo`, `--sudoloop`, `--sign`,
+/// `--signdb`) only take a value through `=` and are deliberately absent.
+/// The same list is mirrored in `install/integration.{bash,zsh,fish}`; the
+/// `value_long_opts_match_the_shell_integrations` test keeps them in step.
 const VALUE_LONG_OPTS: &[&str] = &[
+    // pacman
     "root",
     "dbpath",
     "cachedir",
@@ -53,12 +63,16 @@ const VALUE_LONG_OPTS: &[&str] = &[
     "assume-installed",
     "overwrite",
     "print-format",
+    "ask",
+    // paru + yay
     "aururl",
+    "aurrpcurl",
     "clonedir",
     "builddir",
     "makepkg",
     "makepkgconf",
     "pacman",
+    "pacman-conf",
     "pacmanconf",
     "git",
     "gitflags",
@@ -81,6 +95,17 @@ const VALUE_LONG_OPTS: &[&str] = &[
     "searchby",
     "sortby",
     "completioninterval",
+    "requestsplitn",
+    // paru only
+    "mode",
+    "limit",
+    "develsuffixes",
+    "develfile",
+    "ignoredevel",
+    "chrootflags",
+    "chrootpkgs",
+    "rootchrootpkgs",
+    "pkgctl",
 ];
 
 /// Long options that select a read-only report (paru/yay `--stats`, `--news`,
@@ -204,16 +229,19 @@ fn classify(helper_args: &[&str], is_dir: &dyn Fn(&str) -> bool) -> Plan {
                 skip_value = true;
             }
         } else if let Some(short) = arg.strip_prefix('-').filter(|s| !s.is_empty()) {
-            for c in short.chars() {
+            for (i, c) in short.char_indices() {
+                // getopt: -b <dbpath> / -r <root> take a value. It is the rest
+                // of this argument (`-Sb/db`) or, when the option ends the
+                // group (`-Sb /db`), the NEXT argument.
+                if matches!(c, 'b' | 'r') {
+                    skip_value = i + c.len_utf8() == short.len();
+                    break;
+                }
                 if c.is_ascii_uppercase() {
                     op.push(c);
                 } else {
                     mods.push(c);
                 }
-            }
-            // pacman's -b <dbpath> / -r <root> take a separate value.
-            if matches!(short, "b" | "r") {
-                skip_value = true;
             }
         } else {
             operands.push((*arg).to_string());
@@ -408,6 +436,11 @@ fn main() -> ExitCode {
         print_usage();
         return ExitCode::FAILURE;
     }
+    if matches!(args[1].as_str(), "-h" | "--help") {
+        // The wrapper's own usage; `--help` is not a helper to run.
+        print_usage_to(&mut io::stdout());
+        return ExitCode::SUCCESS;
+    }
     let helper = &args[1];
     let helper_args: Vec<&str> = args[2..].iter().map(|s| s.as_str()).collect();
 
@@ -564,18 +597,26 @@ fn run_helper(helper: &str, args: &[&str]) -> ExitCode {
 }
 
 fn print_usage() {
-    eprintln!("AUR Security Scanner Wrapper");
-    eprintln!();
-    eprintln!("Usage: aur-scan-wrap <helper> [args...]");
-    eprintln!();
-    eprintln!("Examples:");
-    eprintln!("  aur-scan-wrap paru -S package");
-    eprintln!("  aur-scan-wrap yay -Syu");
-    eprintln!("  aur-scan-wrap paru -B ./pkgdir");
-    eprintln!();
-    eprintln!("Setup as alias:");
-    eprintln!("  alias paru='aur-scan-wrap paru'");
-    eprintln!("  alias yay='aur-scan-wrap yay'");
+    print_usage_to(&mut io::stderr());
+}
+
+fn print_usage_to(out: &mut dyn io::Write) {
+    let _ = writeln!(
+        out,
+        "AUR Security Scanner Wrapper
+
+Usage: aur-scan-wrap <helper> [args...]
+       aur-scan-wrap --help
+
+Examples:
+  aur-scan-wrap paru -S package
+  aur-scan-wrap yay -Syu
+  aur-scan-wrap paru -B ./pkgdir
+
+Setup as alias:
+  alias paru='aur-scan-wrap paru'
+  alias yay='aur-scan-wrap yay'"
+    );
 }
 
 #[cfg(test)]
@@ -751,6 +792,103 @@ mod tests {
         assert_eq!(names(&["--clonedir=/tmp/x", "-S", "pkg"]), s(&["pkg"]));
         // A boolean flag must NOT swallow an operand.
         assert_eq!(names(&["-S", "--needed", "pkg"]), s(&["pkg"]));
+    }
+
+    // Every option the helpers document as taking a required value must eat it.
+    #[test]
+    fn value_options_consume_their_value() {
+        for opt in VALUE_LONG_OPTS {
+            let long = format!("--{opt}");
+            assert_eq!(
+                names(&["-S", &long, "VALUE", "foo"]),
+                s(&["foo"]),
+                "{long} must consume its value"
+            );
+            let eq = format!("--{opt}=VALUE");
+            assert_eq!(names(&["-S", &eq, "foo"]), s(&["foo"]), "{eq}");
+        }
+        for opt in [
+            "mode",
+            "limit",
+            "ask",
+            "develsuffixes",
+            "develfile",
+            "chrootflags",
+            "chrootpkgs",
+            "rootchrootpkgs",
+            "aurrpcurl",
+            "pkgctl",
+            "pacman-conf",
+            "builddir",
+            "editor",
+            "editorflags",
+            "makepkg",
+            "makepkgconf",
+            "pacman",
+            "git",
+            "gitflags",
+            "gpg",
+            "gpgflags",
+            "config",
+            "requestsplitn",
+            "completioninterval",
+            "sortby",
+            "searchby",
+            "answerclean",
+            "answerdiff",
+            "answeredit",
+            "answerupgrade",
+        ] {
+            assert!(VALUE_LONG_OPTS.contains(&opt), "--{opt} missing");
+        }
+        // Optional-value and boolean options must NOT swallow an operand.
+        for flag in [
+            "--removemake",
+            "--redownload",
+            "--rebuild",
+            "--provides",
+            "--chroot",
+            "--localrepo",
+            "--sudoloop",
+            "--sign",
+            "--signdb",
+            "--topdown",
+            "--bottomup",
+            "--needed",
+            "--noconfirm",
+            "--devel",
+            "--nodevel",
+        ] {
+            assert_eq!(names(&["-S", flag, "foo"]), s(&["foo"]), "{flag}");
+        }
+        // getopt -b/-r: attached value, or the next argument when it ends the group.
+        assert_eq!(names(&["-Sb", "/db", "foo"]), s(&["foo"]));
+        assert_eq!(names(&["-Sb/db", "foo"]), s(&["foo"]));
+        assert_eq!(names(&["-r", "/root", "-S", "foo"]), s(&["foo"]));
+    }
+
+    /// The shell integrations carry a copy of the value-option list; it must be
+    /// the same set as `VALUE_LONG_OPTS` or the shells and the wrapper disagree.
+    #[test]
+    fn value_long_opts_match_the_shell_integrations() {
+        let want: std::collections::BTreeSet<String> =
+            VALUE_LONG_OPTS.iter().map(|o| format!("--{o}")).collect();
+        for file in ["integration.bash", "integration.zsh", "integration.fish"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../install")
+                .join(file);
+            let text = std::fs::read_to_string(&path).unwrap();
+            let line = text
+                .lines()
+                .find(|l| l.contains("--root") && l.contains("--dbpath"))
+                .unwrap_or_else(|| panic!("{file}: value-option line not found"));
+            let got: std::collections::BTreeSet<String> = line
+                .split(|c: char| c == '|' || c == ' ' || c == ')' || c == '\'')
+                .map(|t| t.trim_matches(|c| c == '\'' || c == ')').to_string())
+                .filter(|t| t.starts_with("--"))
+                .collect();
+            assert_eq!(got, want, "{file} value-option list drifted");
+        }
     }
 
     // Local builds.
