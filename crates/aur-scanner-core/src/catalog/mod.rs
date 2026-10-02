@@ -9,7 +9,7 @@
 //! collision, and the `codes`/`explain` commands and the docs are all
 //! generated from it -- they cannot drift from what the tool actually emits.
 
-use crate::rules::{get_builtin_rules, user_rule_dirs, Rule, RuleLoader};
+use crate::rules::{get_builtin_rules, load_community_rules, user_rule_dirs, Rule};
 use crate::types::{Category, Severity};
 use serde::Serialize;
 
@@ -77,19 +77,15 @@ impl Catalog {
         }
         // 2. Analyzer-owned codes (logic in Rust, metadata here).
         entries.extend(analyzer_codes());
-        // 3. Community rule files (standard dirs + any caller-supplied extras).
-        let loader = RuleLoader::new();
-        for dir in user_rule_dirs()
+        // 3. Community rule files (standard dirs + any caller-supplied extras),
+        //    through the SAME vetting loader the scan engine uses: a rule that
+        //    collides with a built-in or fails to compile is not listed, so the
+        //    catalog never advertises a detection that will not run.
+        let dirs = user_rule_dirs()
             .into_iter()
-            .chain(extra_dirs.iter().cloned())
-        {
-            if dir.is_dir() {
-                if let Ok(rules) = loader.load_from_directory(&dir) {
-                    for rule in rules {
-                        entries.push(CatalogEntry::from_rule(&rule, "user"));
-                    }
-                }
-            }
+            .chain(extra_dirs.iter().cloned());
+        for rule in load_community_rules(dirs) {
+            entries.push(CatalogEntry::from_rule(&rule, "user"));
         }
 
         entries.sort_by(|a, b| a.id.cmp(&b.id));
@@ -230,6 +226,8 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
           "An opt-in VirusTotal lookup reports engines detecting the declared sha256 of a source artifact as malicious.", "Do not build or install; review the VirusTotal report for this hash."),
         e("TI-URLHAUS-001", "URLhaus lists a source URL", Critical, MaliciousCode, "threat_intel", Some("CWE-494"),
           "An opt-in abuse.ch/URLhaus lookup lists a source= URL as a known malware/payload distribution URL.", "Do not build or install; the source URL is a known-bad distribution point."),
+        e("TI-UNCHECKED-001", "Threat-intel lookups incomplete", Info, Configuration, "threat_intel", None,
+          "Some source hashes or URLs were not checked by the opt-in threat-intel providers (per-scan lookup cap reached or provider rate limit), so a clean result does not cover them.", "Re-scan later (cached verdicts are reused), raise AUR_SCAN_VT_MAX_LOOKUPS if your key allows it, or review the remaining sources manually."),
         // -- provenance --
         e("PROV-001", "Package gained risky behavior", High, SuspiciousMetadata, "provenance", Some("CWE-506"),
           "The package introduced fetch/execute behavior it did not have at the previous scan.", "Review the PKGBUILD/install diff before building."),
@@ -323,80 +321,72 @@ mod tests {
         assert_eq!(before, ids.len(), "analyzer_codes has duplicate IDs");
     }
 
-    /// Audit guard: the complete set of analyzer-emitted IDs. If an analyzer
-    /// starts emitting a new ID (or stops), update this list AND the catalog so
-    /// the index stays 100% complete. Keeps docs honest.
+    /// Recursively collect `*.rs` files under `dir`.
+    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Finding-id string literals found in the non-test source of every module
+    /// that can emit a finding (everything except the rule definitions and this
+    /// catalog, which are the other two sources of ids).
+    fn emitted_ids_from_source() -> std::collections::BTreeSet<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_files(&root, &mut files);
+        let re = regex::Regex::new(r#""([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)""#).unwrap();
+        let mut ids = std::collections::BTreeSet::new();
+        for f in files {
+            let rel = f.strip_prefix(&root).unwrap().to_string_lossy().to_string();
+            if rel.starts_with("rules/") || rel.starts_with("catalog/") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&f).unwrap();
+            // Drop the unit-test module: its literals are fixtures, not emitters.
+            let code = src.split("#[cfg(test)]").next().unwrap();
+            for cap in re.captures_iter(code) {
+                let id = &cap[1];
+                // CWE references, hash-algorithm names and ELF machine names are not finding ids.
+                if id.starts_with("CWE-") || id.starts_with("SHA-") || id == "RISC-V" {
+                    continue;
+                }
+                ids.insert(id.to_string());
+            }
+        }
+        ids
+    }
+
+    /// Audit guard, derived mechanically from the source: every finding-id
+    /// literal an analyzer can emit must be a catalog entry, and every
+    /// analyzer-owned catalog code must have an emitter. No hand-kept list to
+    /// forget to update.
     #[test]
     fn catalog_covers_every_analyzer_emitted_id() {
-        const EMITTED: &[&str] = &[
-            "CHK-001",
-            "CHK-002",
-            "CHK-003",
-            "CHK-004",
-            "CHK-005",
-            "CHK-006",
-            "CHK-008",
-            "PRIV-001",
-            "PRIV-002",
-            "PRIV-003",
-            "PRIV-004",
-            "PRIV-005",
-            "PRIV-006",
-            "SRC-001",
-            "SRC-002",
-            "SRC-003",
-            "SRC-004",
-            "SRC-005",
-            "SRC-006",
-            "SRC-007",
-            "SRC-008",
-            "SRC-010",
-            "IOC-001",
-            "DEEP-001",
-            "DEEP-002",
-            "DEEP-003",
-            "EXEC-REMOTE",
-            "TI-VT-001",
-            "TI-URLHAUS-001",
-            "PROV-001",
-            "FUNC-001",
-            "META-002",
-            "META-003",
-            "META-004",
-            "META-005",
-            "META-006",
-            "BIN-001",
-            "BIN-002",
-            "BIN-003",
-            "BIN-004",
-            "BIN-005",
-            "SQUAT-001",
-            "SQUAT-002",
-            "SQUAT-003",
-            "SQUAT-004",
-            "OWN-001",
-            "OWN-002",
-            "OWN-003",
-            "OWN-004",
-            "DIFF-001",
-            "DIFF-002",
-            "DIFF-003",
-            "DIFF-004",
-            "DEP-001",
-            "SCAN-001",
-        ];
-        let catalog = Catalog::load();
-        for id in EMITTED {
+        let emitted = emitted_ids_from_source();
+        assert!(
+            emitted.len() > 25,
+            "source scan found too few ids ({}); the scan itself is broken",
+            emitted.len()
+        );
+        let mut known: std::collections::HashSet<String> =
+            get_builtin_rules().into_iter().map(|r| r.id).collect();
+        known.extend(analyzer_codes().into_iter().map(|c| c.id));
+        for id in &emitted {
             assert!(
-                catalog.get(id).is_some(),
-                "emitted code {id} missing from catalog"
+                known.contains(id),
+                "analyzer source emits {id} but it is missing from the catalog"
             );
         }
-        // And no phantom analyzer codes (every analyzer_codes id is in EMITTED).
         for c in analyzer_codes() {
             assert!(
-                EMITTED.contains(&c.id.as_str()),
-                "catalog has phantom analyzer code {}",
+                emitted.contains(&c.id),
+                "catalog has analyzer code {} that no analyzer source emits",
                 c.id
             );
         }

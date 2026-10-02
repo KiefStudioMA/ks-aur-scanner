@@ -72,6 +72,7 @@ aur-scan system
   - [High Severity](#high-severity)
   - [Medium Severity](#medium-severity)
   - [Low Severity](#low-severity)
+  - [Info Severity](#info-severity)
 - [Change Detection](#change-detection)
 - [Name Impersonation](#name-impersonation)
 - [Output Formats](#output-formats)
@@ -636,7 +637,7 @@ NeedsTargets
 
 ## Detection Rules Reference
 
-> The **139 built-in detection codes**, generated from the catalog
+> The **140 built-in detection codes**, generated from the catalog
 > (`aur-scan codes --format markdown`) — every ID is unique and audit-enforced.
 > (`EXAMPLE-001` is the community-rule sample; `PERM-001`/`PERM-002` are real
 > shipped community rules in the same directory, not built-ins.) Extend the
@@ -800,6 +801,12 @@ NeedsTargets
 | `SRC-006` | VCS source from non-standard host | Network Security | source | - |
 | `SRC-007` | VCS source not pinned to a commit | Network Security | source | CWE-494 |
 | `SRC-008` | Source host differs from upstream url host | Network Security | source | - |
+
+## INFO severity
+
+| Code | Name | Category | Detector | CWE |
+|------|------|----------|----------|-----|
+| `TI-UNCHECKED-001` | Threat-intel lookups incomplete | Configuration | threat_intel | - |
 
 ## Custom & Community Rules
 

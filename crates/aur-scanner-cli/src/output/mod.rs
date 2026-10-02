@@ -4,6 +4,8 @@ use anyhow::Result;
 use aur_scanner_core::textutil::sanitize_for_terminal;
 use aur_scanner_core::{Finding, OutputConfig, ScanResult, Severity};
 use colored::Colorize;
+use std::collections::HashMap;
+use std::path::{Component, Path};
 
 /// Output format options
 #[derive(Clone, Copy)]
@@ -123,9 +125,117 @@ fn format_json(result: &ScanResult) -> Result<String> {
     Ok(serde_json::to_string_pretty(result)?)
 }
 
+fn sarif_level(sev: Severity) -> &'static str {
+    match sev {
+        Severity::Critical | Severity::High => "error",
+        Severity::Medium => "warning",
+        _ => "note",
+    }
+}
+
+/// Longest directory that contains every scanned/reported file, used as the
+/// SARIF `%SRCROOT%` so artifact URIs are relative and stable across machines
+/// instead of leaking absolute local paths. `None` when there is no common
+/// directory (e.g. mixed absolute and relative paths).
+fn sarif_root(result: &ScanResult) -> Option<std::path::PathBuf> {
+    let mut dirs = result
+        .scanned_files
+        .iter()
+        .chain(result.findings.iter().map(|f| &f.location.file))
+        .map(|p| p.parent().map(Path::to_path_buf).unwrap_or_default());
+    let first = dirs.next()?;
+    let mut common: Vec<_> = first.components().collect();
+    for d in dirs {
+        let comps: Vec<_> = d.components().collect();
+        let n = common
+            .iter()
+            .zip(&comps)
+            .take_while(|(a, b)| a == b)
+            .count();
+        common.truncate(n);
+    }
+    if common.is_empty() && first.is_absolute() {
+        return None;
+    }
+    Some(common.iter().collect())
+}
+
+/// Percent-encode a path into a SARIF URI reference (forward slashes).
+/// Returns the URI and whether it is relative to the `%SRCROOT%` base.
+fn sarif_uri(path: &Path, root: Option<&Path>) -> (String, bool) {
+    let (rel, relative) = match root.and_then(|r| path.strip_prefix(r).ok()) {
+        Some(r) => (r, true),
+        None => (path, false),
+    };
+    let joined = rel
+        .components()
+        .filter(|c| !matches!(c, Component::RootDir | Component::CurDir))
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+    let joined = if relative || !path.is_absolute() {
+        joined
+    } else {
+        format!("/{joined}")
+    };
+    let mut out = String::new();
+    for b in joined.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    (out, relative)
+}
+
 fn format_sarif(result: &ScanResult) -> Result<String> {
     // SARIF (Static Analysis Results Interchange Format)
     // https://sarifweb.azurewebsites.net/
+
+    // One driver rule per distinct id (the schema requires unique items); each
+    // result points at its rule with `ruleIndex`.
+    let mut rules: Vec<serde_json::Value> = Vec::new();
+    let mut rule_index: HashMap<&str, usize> = HashMap::new();
+    for f in &result.findings {
+        rule_index.entry(f.id.as_str()).or_insert_with(|| {
+            rules.push(serde_json::json!({
+                "id": f.id,
+                "name": f.title,
+                "shortDescription": { "text": f.title },
+                "fullDescription": { "text": f.description },
+                "help": { "text": f.recommendation },
+                "defaultConfiguration": { "level": sarif_level(f.severity) }
+            }));
+            rules.len() - 1
+        });
+    }
+
+    let root = sarif_root(result);
+    let results: Vec<serde_json::Value> = result
+        .findings
+        .iter()
+        .map(|f| {
+            let (uri, relative) = sarif_uri(&f.location.file, root.as_deref());
+            let mut artifact = serde_json::json!({ "uri": uri });
+            if relative {
+                artifact["uriBaseId"] = serde_json::json!("%SRCROOT%");
+            }
+            let mut physical = serde_json::json!({ "artifactLocation": artifact });
+            // Only claim a line when the finding has one; a fabricated
+            // `startLine: 1` points reviewers at the wrong place.
+            if let Some(line) = f.location.line {
+                physical["region"] = serde_json::json!({ "startLine": line });
+            }
+            serde_json::json!({
+                "ruleId": f.id,
+                "ruleIndex": rule_index[f.id.as_str()],
+                "level": sarif_level(f.severity),
+                "message": { "text": f.description },
+                "locations": [{ "physicalLocation": physical }]
+            })
+        })
+        .collect();
 
     let sarif = serde_json::json!({
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
@@ -136,53 +246,10 @@ fn format_sarif(result: &ScanResult) -> Result<String> {
                     "name": "aur-scan",
                     "version": env!("CARGO_PKG_VERSION"),
                     "informationUri": "https://github.com/kiefstudio/aur-security-scanner",
-                    "rules": result.findings.iter().map(|f| {
-                        serde_json::json!({
-                            "id": f.id,
-                            "name": f.title,
-                            "shortDescription": {
-                                "text": f.title
-                            },
-                            "fullDescription": {
-                                "text": f.description
-                            },
-                            "help": {
-                                "text": f.recommendation
-                            },
-                            "defaultConfiguration": {
-                                "level": match f.severity {
-                                    Severity::Critical | Severity::High => "error",
-                                    Severity::Medium => "warning",
-                                    _ => "note",
-                                }
-                            }
-                        })
-                    }).collect::<Vec<_>>()
+                    "rules": rules
                 }
             },
-            "results": result.findings.iter().map(|f| {
-                serde_json::json!({
-                    "ruleId": f.id,
-                    "level": match f.severity {
-                        Severity::Critical | Severity::High => "error",
-                        Severity::Medium => "warning",
-                        _ => "note",
-                    },
-                    "message": {
-                        "text": f.description
-                    },
-                    "locations": [{
-                        "physicalLocation": {
-                            "artifactLocation": {
-                                "uri": f.location.file.to_string_lossy()
-                            },
-                            "region": {
-                                "startLine": f.location.line.unwrap_or(1)
-                            }
-                        }
-                    }]
-                })
-            }).collect::<Vec<_>>()
+            "results": results
         }]
     });
 
@@ -240,5 +307,69 @@ mod tests {
         assert!(out.contains("Recommendation: review"), "rec stays: {out}");
         // The finding header (severity + id + title) is never gated away.
         assert!(out.contains("ENV-003") && out.contains("Bashrc/profile modification"));
+    }
+
+    fn result_with(findings: Vec<Finding>, scanned: Vec<PathBuf>) -> ScanResult {
+        serde_json::from_value(serde_json::json!({
+            "package_name": "p",
+            "package_version": "1-1",
+            "findings": findings,
+            "scanned_files": scanned,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "scan_duration_ms": 0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn sarif_rules_are_unique_and_indexed() {
+        let mut a = sample_finding();
+        a.location.file = PathBuf::from("/work/pkg/PKGBUILD");
+        let mut b = a.clone();
+        b.location.line = Some(9);
+        let mut c = a.clone();
+        c.id = "OTHER-1".into();
+        let res = result_with(vec![a, b, c], vec![PathBuf::from("/work/pkg/PKGBUILD")]);
+        let v: serde_json::Value = serde_json::from_str(&format_sarif(&res).unwrap()).unwrap();
+        let rules = v["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 2, "duplicate rules: {rules:?}");
+        let results = v["runs"][0]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3);
+        for r in results {
+            let idx = r["ruleIndex"].as_u64().unwrap() as usize;
+            assert_eq!(rules[idx]["id"], r["ruleId"]);
+        }
+    }
+
+    #[test]
+    fn sarif_omits_region_without_line_and_uses_relative_uri() {
+        let mut f = sample_finding();
+        f.location.file = PathBuf::from("/work/pkg/PKGBUILD");
+        f.location.line = None;
+        let res = result_with(vec![f], vec![PathBuf::from("/work/pkg/PKGBUILD")]);
+        let v: serde_json::Value = serde_json::from_str(&format_sarif(&res).unwrap()).unwrap();
+        let loc = &v["runs"][0]["results"][0]["locations"][0]["physicalLocation"];
+        assert!(loc.get("region").is_none(), "fabricated region: {loc}");
+        assert_eq!(loc["artifactLocation"]["uri"], "PKGBUILD");
+        assert_eq!(loc["artifactLocation"]["uriBaseId"], "%SRCROOT%");
+    }
+
+    #[test]
+    fn sarif_uri_is_relative_to_common_root_and_encoded() {
+        let mut a = sample_finding();
+        a.location.file = PathBuf::from("/work/my pkg/PKGBUILD");
+        let mut b = sample_finding();
+        b.location.file = PathBuf::from("/work/my pkg/sub/x.install");
+        let res = result_with(vec![a, b], vec![PathBuf::from("/work/my pkg/PKGBUILD")]);
+        let v: serde_json::Value = serde_json::from_str(&format_sarif(&res).unwrap()).unwrap();
+        let uri = |i: usize| {
+            v["runs"][0]["results"][i]["locations"][0]["physicalLocation"]["artifactLocation"]
+                ["uri"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(uri(0), "PKGBUILD");
+        assert_eq!(uri(1), "sub/x.install");
     }
 }

@@ -42,7 +42,7 @@ pub async fn run(
     // Cross-reference installed package names against the IOC database FIRST.
     // This catches wholly-malicious packages by name even if their PKGBUILD is
     // not cached locally -- directly answering "am I affected?".
-    let ioc_db = aur_scanner_core::threat_intel::IocDatabase::load();
+    let ioc_db = aur_scanner_core::threat_intel::IocDatabase::try_load()?;
     let name_hits: Vec<(&String, String)> = packages
         .iter()
         .filter_map(|p| {

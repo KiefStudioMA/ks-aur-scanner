@@ -7,6 +7,7 @@ mod output;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
@@ -195,9 +196,9 @@ enum Commands {
         #[arg(long)]
         category: Option<String>,
 
-        /// Output format: text, markdown, json
-        #[arg(long, default_value = "text")]
-        format: String,
+        /// Output format
+        #[arg(long, value_enum, default_value = "text")]
+        format: CodesFormat,
     },
 
     /// Show or query the IOC (indicator of compromise) database
@@ -261,6 +262,15 @@ impl From<DiffFormatArg> for commands::diff::DiffFormat {
     }
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum CodesFormat {
+    Text,
+    Markdown,
+    /// Alias of `markdown`
+    Md,
+    Json,
+}
+
 #[derive(Clone, ValueEnum)]
 enum OutputFormat {
     Text,
@@ -289,10 +299,18 @@ async fn main() -> Result<()> {
         "aur_scanner=warn,aur_scanner_core=warn"
     };
 
+    // Logs go to STDERR, never stdout: stdout carries the report (`--format
+    // json` / `sarif`), and a package can trigger warnings (e.g. a hostile
+    // `install=` path), which must not corrupt the document. ANSI colour only
+    // when stderr is a terminal and colour is not disabled.
+    let ansi =
+        std::io::stderr().is_terminal() && !cli.no_color && std::env::var_os("NO_COLOR").is_none();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)),
         )
+        .with_writer(std::io::stderr)
+        .with_ansi(ansi)
         .with_target(false)
         .without_time()
         .init();
@@ -325,7 +343,7 @@ async fn main() -> Result<()> {
     // work out what is wrong with it.
     match &cli.command {
         Commands::Rules { severity, details } => {
-            return commands::rules::run(severity.clone().map(Into::into), *details);
+            return commands::rules::run(severity.clone().map(Into::into), *details, &[]);
         }
         Commands::Explain { code } => return commands::explain::run(code),
         Commands::Ioc { check } => return commands::ioc::run(check.as_deref()),
@@ -453,7 +471,12 @@ async fn main() -> Result<()> {
             // Honor a config-supplied custom rules dir so `codes` lists rules the
             // scan engine would actually load.
             let extra_dirs: Vec<PathBuf> = file_config.rules_path.clone().into_iter().collect();
-            commands::codes::run(category.as_deref(), &format, &extra_dirs)
+            let format = match format {
+                CodesFormat::Text => commands::codes::CodesFormat::Text,
+                CodesFormat::Markdown | CodesFormat::Md => commands::codes::CodesFormat::Markdown,
+                CodesFormat::Json => commands::codes::CodesFormat::Json,
+            };
+            commands::codes::run(category.as_deref(), format, &extra_dirs)
         }
         Commands::Diff {
             old,

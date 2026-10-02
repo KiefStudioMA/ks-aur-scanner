@@ -71,7 +71,7 @@ impl Scanner {
             })?;
         }
         let rule_engine = Arc::new(engine);
-        let ioc_db = Arc::new(IocDatabase::load());
+        let ioc_db = Arc::new(IocDatabase::try_load()?);
 
         let mut analyzers: Vec<Arc<dyn SecurityAnalyzer>> = vec![
             Arc::new(analyzer::PatternAnalyzer::new(rule_engine.clone())),
@@ -380,7 +380,12 @@ fn build_threat_intel_analyzer(config: &ScanConfig) -> Option<analyzer::ThreatIn
     };
     let ttl = std::time::Duration::from_secs(ti.cache_duration_hours.saturating_mul(3600));
 
-    analyzer::ThreatIntelAnalyzer::new(vt_key, urlhaus_key, cache, ttl)
+    analyzer::ThreatIntelAnalyzer::new(vt_key, urlhaus_key, cache, ttl).map(|a| {
+        match ti.vt_max_lookups {
+            Some(cap) => a.with_vt_lookup_cap(cap),
+            None => a,
+        }
+    })
 }
 
 /// How much of a binary to read. The ELF header, section header table and

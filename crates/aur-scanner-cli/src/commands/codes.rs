@@ -1,14 +1,22 @@
 //! List all detection codes, generated from the authoritative catalog.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use colored::Colorize;
 
 use aur_scanner_core::catalog::Catalog;
 use aur_scanner_core::Severity;
 
+/// Output format of `aur-scan codes`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CodesFormat {
+    Text,
+    Markdown,
+    Json,
+}
+
 pub fn run(
     category: Option<&str>,
-    format: &str,
+    format: CodesFormat,
     extra_rule_dirs: &[std::path::PathBuf],
 ) -> Result<()> {
     let catalog = Catalog::load_with(extra_rule_dirs);
@@ -17,16 +25,32 @@ pub fn run(
         eprintln!("{} {}", "catalog error:".red().bold(), e);
     }
 
+    // An unknown category is an error (exit non-zero), not an empty listing:
+    // a typo must not look like "no codes in that category".
+    if let Some(c) = category {
+        let want = c.to_lowercase();
+        if !catalog
+            .categories()
+            .iter()
+            .any(|cat| cat.to_lowercase().contains(&want))
+        {
+            bail!(
+                "unknown category '{c}'. Valid categories: {}",
+                catalog.categories().join(", ")
+            );
+        }
+    }
+
     match format {
-        "json" => {
+        CodesFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&catalog)?);
             return Ok(());
         }
-        "markdown" | "md" => {
+        CodesFormat::Markdown => {
             print_markdown(&catalog);
             return Ok(());
         }
-        _ => {}
+        CodesFormat::Text => {}
     }
 
     println!("{}", "AUR Security Scanner - Detection Codes".bold());
