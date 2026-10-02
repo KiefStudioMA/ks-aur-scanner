@@ -249,6 +249,8 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
           "backup= lists a security-sensitive path (sudoers/ssh/pam.d/ld.so/etc.), a persistent root-level tamper surface.", "Packages should not own/back up authentication, linker, or privilege files."),
         e("DEP-001", "Provides a core package name (dependency confusion)", High, SuspiciousMetadata, "metadata", Some("CWE-427"),
           "provides= a curated core package name from a package that is not that package's own alternate, satisfying a dependency in its place.", "Remove the provides unless this is the legitimate provider."),
+        e("SCAN-001", "Package file could not be analyzed", Critical, Configuration, "scanner", Some("CWE-693"),
+          "A file the package declares or ships (install script, .hook, a local source=() entry, a sidecar script) could not be fully analyzed: it was unreadable, not a regular file (symlink, FIFO, device), or larger than the 2 MiB scan cap so only a prefix was read. Content that was not read cannot be reported clean, and padding a file past the cap or planting a symlink is exactly how a payload would hide.", "Do not install. Inspect the named file by hand; a legitimate package has no reason to ship an oversized, unreadable, or symlinked script."),
         e("DEEP-003", "Unicode bidirectional control characters", Critical, Obfuscation, "deep", Some("CWE-94"),
           "Bidi control characters reorder how text DISPLAYS without changing what executes, so a reviewer can read different code than makepkg runs (Trojan Source, CVE-2021-42574). Shell source has no legitimate use for an explicit directional override.", "Strip the bidi characters and re-read the file before trusting any review of it."),
         e("SRC-010", "Source is a different owner's copy of the upstream repo", High, NetworkSecurity, "source", Some("CWE-494"),
@@ -381,6 +383,7 @@ mod tests {
             "DIFF-003",
             "DIFF-004",
             "DEP-001",
+            "SCAN-001",
         ];
         let catalog = Catalog::load();
         for id in EMITTED {

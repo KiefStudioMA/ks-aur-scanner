@@ -159,6 +159,10 @@ pub struct Finding {
     pub metadata: serde_json::Value,
 }
 
+/// Finding code emitted when a file the package ships or declares could not be
+/// read, was not a regular file, or was only partly analyzed.
+pub const UNANALYZABLE_CODE: &str = "SCAN-001";
+
 /// Result of scanning a package
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -200,6 +204,28 @@ impl ScanResult {
             .iter()
             .filter(|f| f.severity == severity)
             .collect()
+    }
+
+    /// A copy of this result holding only findings at or above `min`
+    /// (display filtering).
+    ///
+    /// `min_severity` used to drop findings inside the scan, BEFORE any gate
+    /// ran, so a user-writable config of `min_severity = "critical"` silently
+    /// disabled every High gate. The scan now always returns the full set; this
+    /// is the one sanctioned way to narrow what is *shown*. Gates
+    /// (`--fail-on`, install, hook, wrapper) must evaluate the unfiltered
+    /// result.
+    pub fn visible(&self, min: Severity) -> ScanResult {
+        let mut out = self.clone();
+        out.findings.retain(|f| f.severity.is_at_least(min));
+        out
+    }
+
+    /// Whether any file the package declared could not be fully analyzed
+    /// (`SCAN-001`). Callers that distinguish "reviewed and risky" from "never
+    /// reviewed" (install's `--force` rule) should treat this as unscannable.
+    pub fn has_unanalyzable(&self) -> bool {
+        self.findings.iter().any(|f| f.id == UNANALYZABLE_CODE)
     }
 
     /// Count findings by severity

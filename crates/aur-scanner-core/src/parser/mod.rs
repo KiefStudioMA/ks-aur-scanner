@@ -60,8 +60,15 @@ pub struct ParsedPkgbuild {
     pub source: Vec<SourceEntry>,
     /// Checksums
     pub checksums: Checksums,
-    /// Install script name
+    /// Install script name (the last `install=` seen; kept for callers that
+    /// want a single value). See [`Self::installs`] for every declaration.
     pub install: Option<String>,
+    /// EVERY `install=` value in the file: the global assignment plus any made
+    /// inside `package_foo()` functions of a split package. makepkg lets each
+    /// split package carry its own scriptlet, so keeping only the last one left
+    /// the others unscanned.
+    #[serde(default)]
+    pub installs: Vec<String>,
     /// Changelog file
     pub changelog: Option<String>,
     /// Backup files
@@ -327,6 +334,11 @@ pub struct ParsedInstallScript {
     pub path: PathBuf,
     /// Detected hooks
     pub hooks: Vec<InstallHook>,
+    /// What kind of file this is, so a finding can describe it accurately.
+    /// `.install` scriptlets and ALPM `.hook` files are `InstallScript`;
+    /// patches and sidecar scripts pulled in from `source=()` or found next to
+    /// the PKGBUILD are `SourceFile`.
+    pub file_type: crate::types::FileType,
 }
 
 /// Hook defined in an install script

@@ -30,6 +30,12 @@ lazy_static! {
     // Function patterns
     static ref FUNC_START: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\s*\)\s*\{?"#).unwrap();
 
+    // `install=NAME` assigned inside a function body (split packages). Requires
+    // a statement boundary before the name so `noinstall=` / `$install=` do not
+    // match.
+    static ref FUNC_INSTALL: Regex =
+        Regex::new(r#"(?m)(?:^|[;{&|\s])install=(["']?)([^"'\s;}]+)"#).unwrap();
+
     // Comment pattern
     static ref COMMENT: Regex = Regex::new(r#"^\s*#"#).unwrap();
 }
@@ -261,6 +267,14 @@ impl PkgbuildParser for StaticParser {
             if let Some(caps) = FUNC_START.captures(code) {
                 let name = caps.get(1).unwrap().as_str().to_string();
                 if let Some((body, end_idx)) = self.extract_function(&lines, i) {
+                    // Split packages set `install=` inside `package_foo()`;
+                    // the function body is swallowed whole below, so harvest
+                    // those assignments here or they never reach the scanner.
+                    for caps in FUNC_INSTALL.captures_iter(&body) {
+                        let v = caps.get(2).unwrap().as_str().to_string();
+                        pkgbuild.install = Some(v.clone());
+                        pkgbuild.installs.push(v);
+                    }
                     pkgbuild.functions.insert(
                         name.clone(),
                         FunctionBody {
@@ -352,7 +366,10 @@ impl StaticParser {
             "epoch" => pkgbuild.epoch = Some(value.to_string()),
             "pkgdesc" => pkgbuild.pkgdesc = Some(value.to_string()),
             "url" => pkgbuild.url = Some(value.to_string()),
-            "install" => pkgbuild.install = Some(value.to_string()),
+            "install" => {
+                pkgbuild.install = Some(value.to_string());
+                pkgbuild.installs.push(value.to_string());
+            }
             "changelog" => pkgbuild.changelog = Some(value.to_string()),
             _ => {
                 pkgbuild

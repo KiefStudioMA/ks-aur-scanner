@@ -636,7 +636,7 @@ NeedsTargets
 
 ## Detection Rules Reference
 
-> The **138 built-in detection codes**, generated from the catalog
+> The **139 built-in detection codes**, generated from the catalog
 > (`aur-scan codes --format markdown`) — every ID is unique and audit-enforced.
 > (`EXAMPLE-001` is the community-rule sample; `PERM-001`/`PERM-002` are real
 > shipped community rules in the same directory, not built-ins.) Extend the
@@ -690,6 +690,7 @@ NeedsTargets
 | `PRIV-003` | Sudoers modification | Privilege Escalation | privilege | CWE-250 |
 | `PRIV-007` | Privileged account manipulation | Privilege Escalation | rules | CWE-269 |
 | `PRIV-008` | Password manipulation | Privilege Escalation | rules | CWE-269 |
+| `SCAN-001` | Package file could not be analyzed | Configuration | scanner | CWE-693 |
 | `SHELL-001` | Bash reverse shell | Malicious Code | rules | CWE-506 |
 | `SHELL-002` | Netcat reverse shell | Malicious Code | rules | CWE-506 |
 | `SHELL-003` | Python reverse shell | Malicious Code | rules | CWE-506 |
