@@ -3,10 +3,14 @@
 //! the scan passes, build them in dependency order with `makepkg` -- from the
 //! same directories that were scanned.
 //!
-//! This closes the time-of-check/time-of-use gap that a "scan then call paru"
-//! wrapper has (paru re-fetches and builds its own copy). Dependency ordering
-//! is computed from our own resolved graph, so we never reimplement makepkg --
-//! we just invoke it per package in a valid order.
+//! This closes the re-fetch gap that a "scan then call paru" wrapper has (paru
+//! re-clones and builds its own copy), and every scanned directory is hashed at
+//! scan time and re-verified immediately before `makepkg` runs. It does NOT
+//! cover what `makepkg` itself fetches later: `source=` downloads, VCS checkouts
+//! and `pkgver()` run after the scan. Packages with such sources are called out
+//! before the build. Dependency ordering is computed from our own resolved
+//! graph, so we never reimplement makepkg -- we just invoke it per package in a
+//! valid order (dependencies get `--asdeps`).
 
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -14,9 +18,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
-use aur_scanner_core::aur::{AurClient, PackageInfoSource};
-use aur_scanner_core::depgraph::{self, ResolveOptions};
+use aur_scanner_core::aur::{
+    package_deadline, snapshot_changes, snapshot_dir, with_deadline, AurClient, PackageInfoSource,
+};
+use aur_scanner_core::depgraph::{self, DependencyGraph, PackageSource, ResolveOptions};
 use aur_scanner_core::history::{History, Scope};
+use aur_scanner_core::parser::{ParsedPkgbuild, PkgbuildParser, Protocol, StaticParser};
 use aur_scanner_core::registry;
 use aur_scanner_core::sbom::{self, ComponentScan};
 use aur_scanner_core::validate::validate_package_name;
@@ -159,12 +166,149 @@ where
     env
 }
 
+/// Requested roots that are not AUR packages (an official repo package, a
+/// virtual name, or something unresolvable). `install` builds AUR packages only:
+/// silently skipping these while reporting success would install nothing.
+fn non_aur_roots(graph: &DependencyGraph) -> Vec<String> {
+    graph
+        .roots
+        .iter()
+        .filter(|r| {
+            graph
+                .nodes
+                .get(r.as_str())
+                .map(|n| n.source != PackageSource::Aur)
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect()
+}
+
+/// One package base to build, in order.
+#[derive(Debug, PartialEq, Eq)]
+struct BuildStep {
+    base: String,
+    /// Pulled in as a dependency (installed `--asdeps`), not requested.
+    as_dep: bool,
+}
+
+/// Order the package bases so every base's AUR dependencies (looking through
+/// virtual providers, and across split packages) are built first. Cycles are
+/// broken deterministically. A base is a root if any requested name lives in it.
+fn build_plan(graph: &DependencyGraph, node_base: &BTreeMap<String, String>) -> Vec<BuildStep> {
+    let roots: std::collections::BTreeSet<&str> = graph
+        .roots
+        .iter()
+        .filter_map(|r| node_base.get(r.as_str()).map(|b| b.as_str()))
+        .collect();
+
+    fn emit<'a>(
+        base: &'a str,
+        graph: &DependencyGraph,
+        node_base: &'a BTreeMap<String, String>,
+        done: &mut std::collections::BTreeSet<&'a str>,
+        out: &mut Vec<&'a str>,
+    ) {
+        if !done.insert(base) {
+            return; // already emitted, or in progress (a cycle)
+        }
+        for (name, b) in node_base {
+            if b != base {
+                continue;
+            }
+            if let Some(node) = graph.nodes.get(name) {
+                for dep in depgraph::aur_dependencies(graph, node) {
+                    if let Some(db) = node_base.get(dep) {
+                        emit(db, graph, node_base, done, out);
+                    }
+                }
+            }
+        }
+        out.push(base);
+    }
+
+    let mut done = std::collections::BTreeSet::new();
+    let mut order: Vec<&str> = Vec::new();
+    for name in depgraph::topo_order(graph) {
+        if let Some(b) = node_base.get(&name) {
+            emit(b, graph, node_base, &mut done, &mut order);
+        }
+    }
+    order
+        .into_iter()
+        .map(|b| BuildStep {
+            base: b.to_string(),
+            as_dep: !roots.contains(b),
+        })
+        .collect()
+}
+
+/// Why a scanned package still counts as never reviewed, if it does.
+fn unreviewed_reason(result: &aur_scanner_core::ScanResult) -> Option<&'static str> {
+    result
+        .has_unanalyzable()
+        .then_some("contains a file that could not be analyzed (SCAN-001)")
+}
+
+/// `makepkg` arguments for one step.
+fn makepkg_args(as_dep: bool, noconfirm: bool) -> Vec<&'static str> {
+    let mut a = vec!["-si"];
+    if as_dep {
+        a.push("--asdeps");
+    }
+    if noconfirm {
+        a.push("--noconfirm");
+    }
+    a
+}
+
+/// Things `makepkg` will fetch or run AFTER this scan, which the scan of the
+/// package repository cannot cover: unchecksummed downloads, unpinned VCS
+/// checkouts and a `pkgver()` function. Returned as printable lines.
+fn late_fetch_notices(pkg: &ParsedPkgbuild) -> Vec<String> {
+    let sums = [
+        &pkg.checksums.md5sums,
+        &pkg.checksums.sha1sums,
+        &pkg.checksums.sha256sums,
+        &pkg.checksums.sha512sums,
+        &pkg.checksums.b2sums,
+    ];
+    let mut out = Vec::new();
+    for (i, src) in pkg.source.iter().enumerate() {
+        // Files shipped in the package repository are covered by the scan/hash.
+        if src.protocol == Protocol::File {
+            continue;
+        }
+        if src.is_vcs() {
+            if !src.is_vcs_pinned_commit() {
+                out.push(format!(
+                    "{}: VCS source is not pinned to a commit; makepkg fetches whatever it points at when you build",
+                    src.url
+                ));
+            }
+        } else if !sums.iter().any(|v| matches!(v.get(i), Some(Some(_)))) {
+            out.push(format!(
+                "{}: downloaded at build time with checksum SKIP (not integrity-checked)",
+                src.url
+            ));
+        }
+    }
+    if pkg.functions.contains_key("pkgver") {
+        out.push(
+            "pkgver() runs during the build and can fetch or execute code that was not scanned"
+                .to_string(),
+        );
+    }
+    out
+}
+
 pub async fn run(args: InstallArgs) -> Result<()> {
     if args.package_names.is_empty() {
         anyhow::bail!("no packages specified");
     }
-    let client = AurClient::new().context("Failed to create AUR client")?;
     // Same config discovery as `scan` / `check` / hook / wrap (XDG then /etc).
+    let timeout_seconds = args.config.timeout_seconds;
+    let client = AurClient::with_timeout(timeout_seconds).context("Failed to create AUR client")?;
     let scanner = Scanner::new(args.config.clone()).context("Failed to create scanner")?;
 
     banner::print_header("Race-Free Install");
@@ -181,6 +325,17 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         .context("Failed to resolve dependency tree")?;
     let (aur_count, repo_count) = graph.counts();
     println!("  {aur_count} AUR package(s), {repo_count} repo/virtual dependencies");
+
+    // Only AUR packages can be built here. Refuse (loudly, non-zero) rather than
+    // skip them and report success after installing nothing.
+    let not_aur = non_aur_roots(&graph);
+    if !not_aur.is_empty() {
+        anyhow::bail!(
+            "not AUR packages, nothing to build: {}. `aur-scan install` only builds AUR packages; \
+             install official repo packages with `pacman -S` (names that nothing provides are unresolved)",
+            not_aur.join(", ")
+        );
+    }
 
     // 2. Fetch each unique AUR package base ONCE into the workspace.
     let workspace = args
@@ -252,6 +407,19 @@ pub async fn run(args: InstallArgs) -> Result<()> {
 
     let mut gate_tripped = false;
     let mut unscannable: Vec<String> = Vec::new();
+    // Dependencies we could not classify, or a tree that was cut off, are
+    // unreviewed packages: --force must not build around them.
+    unscannable.extend(graph.blocking_issues());
+    for n in graph.ambiguous() {
+        unscannable.push(format!(
+            "ambiguous provider for {:?} ({}): install the one you want explicitly",
+            n.name,
+            n.depends.join(", ")
+        ));
+    }
+    // Scan-time hash of every scanned directory, re-checked before its build.
+    let mut snapshots: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    let mut late_notices: Vec<(String, Vec<String>)> = Vec::new();
     for base in base_dirs.keys().cloned().collect::<Vec<_>>() {
         let dir = workspace.join(&base);
         // Defense in depth: `base` is a validated single component, so the clone
@@ -270,11 +438,6 @@ pub async fn run(args: InstallArgs) -> Result<()> {
 
         print!("{} {} ", "Fetching:".dimmed(), base.white());
         io::stdout().flush().ok();
-        if let Err(e) = client.clone_repo(&base, &dir).await {
-            println!("{}", format!("clone failed: {e}").red());
-            unscannable.push(base.clone()); // cannot fetch -> never reviewed
-            continue;
-        }
         // Registry context for this package base. `install` is the path that
         // actually BUILDS, so running it with a smaller analyzer set than
         // `check` -- as this did until the wiring was audited -- inverted the
@@ -286,11 +449,18 @@ pub async fn run(args: InstallArgs) -> Result<()> {
             None => Registry::None,
         };
         let pkgbuild_path = dir.join("PKGBUILD");
-        let mut result = match scanner.scan_pkgbuild(&pkgbuild_path, registry_ctx).await {
+        // Overall per-package deadline from `timeout_seconds`; elapsing means the
+        // package was never reviewed (fail closed).
+        let fetched_and_scanned = with_deadline(package_deadline(timeout_seconds), async {
+            client.clone_repo(&base, &dir).await?;
+            scanner.scan_pkgbuild(&pkgbuild_path, registry_ctx).await
+        })
+        .await;
+        let mut result = match fetched_and_scanned {
             Ok(r) => r,
             Err(e) => {
-                println!("{}", format!("scan failed: {e}").red());
-                unscannable.push(base.clone()); // cannot scan -> never reviewed
+                println!("{}", format!("fetch/scan failed: {e}").red());
+                unscannable.push(base.clone()); // never reviewed
                 continue;
             }
         };
@@ -313,14 +483,17 @@ pub async fn run(args: InstallArgs) -> Result<()> {
                 Scope::Aur,
                 aur_scanner_core::history::analysis_fingerprint(scanner.min_severity()),
             ) {
-                Ok(diff_findings) => result.findings.extend(
-                    diff_findings
-                        .into_iter()
-                        .filter(|f| f.severity <= scanner.min_severity()),
-                ),
+                // Gates see the full set: `min_severity` is display-only.
+                Ok(diff_findings) => result.findings.extend(diff_findings),
                 Err(e) => tracing::debug!("history comparison for {base} failed: {e}"),
             }
             result.findings.sort_by_key(|f| f.severity);
+        }
+        // A file the scanner could not analyze (SCAN-001) was never reviewed:
+        // that is a hard stop, which --force must not override.
+        if let Some(why) = unreviewed_reason(&result) {
+            println!("{}", why.red());
+            unscannable.push(format!("{base} ({why})"));
         }
         let scan = ComponentScan::from_findings(&result.findings);
         let trips = result
@@ -339,6 +512,25 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         for (name, b) in &node_base {
             if b == &base {
                 scans.insert(name.clone(), scan.clone());
+            }
+        }
+        // Pin what was scanned: the build must run on exactly these bytes.
+        match snapshot_dir(&dir) {
+            Ok(snap) => {
+                snapshots.insert(base.clone(), snap);
+            }
+            Err(e) => {
+                println!("{}", format!("could not hash scanned files: {e}").red());
+                unscannable.push(base.clone());
+                continue;
+            }
+        }
+        if let Ok(text) = std::fs::read_to_string(dir.join("PKGBUILD")) {
+            if let Ok(parsed) = StaticParser::new().parse(&text) {
+                let notices = late_fetch_notices(&parsed);
+                if !notices.is_empty() {
+                    late_notices.push((base.clone(), notices));
+                }
             }
         }
         base_dirs.insert(base, dir);
@@ -370,6 +562,25 @@ pub async fn run(args: InstallArgs) -> Result<()> {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+    }
+
+    for note in &graph.notes {
+        println!("{} {}", "note:".yellow(), note);
+    }
+    if !late_notices.is_empty() {
+        println!();
+        println!(
+            "{}",
+            "NOTICE: the scan covers the files in each package repository. makepkg will still \
+             fetch and run the following AFTER this scan; that content is NOT covered:"
+                .yellow()
+                .bold()
+        );
+        for (base, lines) in &late_notices {
+            for l in lines {
+                println!("  {} {}", base.white().bold(), l);
+            }
+        }
     }
 
     if let Some(path) = &args.sbom_path {
@@ -442,7 +653,9 @@ pub async fn run(args: InstallArgs) -> Result<()> {
                  refusing to build without interactive consent."
                     .yellow()
             );
-            return Ok(());
+            anyhow::bail!(
+                "no interactive consent (stdin is not a terminal and --noconfirm not given)"
+            );
         }
         // Interactive TTY: prompt and require an explicit yes.
         ConsentGate::Prompt => {
@@ -457,28 +670,37 @@ pub async fn run(args: InstallArgs) -> Result<()> {
             io::stdin().read_line(&mut input)?;
             if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
                 println!("{}", "Aborted by user. Nothing was built.".yellow());
-                return Ok(());
+                anyhow::bail!("aborted by user; nothing was built");
             }
         }
     }
 
-    let order = depgraph::topo_order(&graph);
+    let plan = build_plan(&graph, &node_base);
     let mut built: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for name in &order {
-        let base = match node_base.get(name) {
-            Some(b) => b.clone(),
-            None => continue,
-        };
-        if !built.insert(base.clone()) {
-            continue; // base already built (split package / shared)
-        }
+    for step in &plan {
+        let base = step.base.clone();
         let dir = match base_dirs.get(&base) {
             Some(d) if d.join("PKGBUILD").is_file() => d.clone(),
             _ => {
-                eprintln!("{} {} not fetched; skipping", "warning:".yellow(), base);
-                continue;
+                anyhow::bail!(
+                    "{base} was not fetched; refusing to continue (built so far: {built:?})"
+                );
             }
         };
+        // Re-verify the scanned bytes immediately before building: abort if
+        // anything in the directory changed since the scan.
+        let before = snapshots
+            .get(&base)
+            .with_context(|| format!("no scan-time snapshot for {base}"))?;
+        let changed = snapshot_changes(&dir, before)
+            .with_context(|| format!("re-hashing {}", dir.display()))?;
+        if !changed.is_empty() {
+            anyhow::bail!(
+                "{base} changed after it was scanned ({}); refusing to build unscanned content",
+                changed.join(", ")
+            );
+        }
+        built.insert(base.clone());
         println!();
         println!("{} {}", "Building:".cyan().bold(), base.white().bold());
         // Resolve makepkg to an absolute path rather than letting it be looked
@@ -491,16 +713,14 @@ pub async fn run(args: InstallArgs) -> Result<()> {
             .copied()
             .unwrap_or("makepkg");
         let mut cmd = tokio::process::Command::new(makepkg_bin);
-        cmd.arg("-si").current_dir(&dir);
+        cmd.args(makepkg_args(step.as_dep, args.noconfirm))
+            .current_dir(&dir);
         // Sanitize the build environment (audit ME-4): do not let a poisoned
         // ambient PATH/GNUPGHOME/GIT_*/BUILDDIR undo the clean scan by redirecting
         // makepkg's trusted helpers. Start empty and apply only the allowlist.
         cmd.env_clear();
         for (k, v) in sanitized_build_env(std::env::vars()) {
             cmd.env(k, v);
-        }
-        if args.noconfirm {
-            cmd.arg("--noconfirm");
         }
         let status = cmd.status().await.context("failed to launch makepkg")?;
         if !status.success() {
@@ -671,5 +891,177 @@ mod tests {
         assert_eq!(get("LANG").as_deref(), Some("en_US.UTF-8"));
         assert_eq!(get("MAKEFLAGS").as_deref(), Some("-j4"));
         assert_eq!(get("EVIL"), None, "non-allowlisted vars must be dropped");
+    }
+
+    // --- refuse non-AUR roots, build order, --asdeps, notices ------------------
+
+    fn aur_node(name: &str, deps: &[&str]) -> depgraph::PackageNode {
+        depgraph::PackageNode {
+            name: name.to_string(),
+            source: PackageSource::Aur,
+            package_base: Some(name.to_string()),
+            depends: deps.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn graph_of(roots: &[&str], nodes: Vec<depgraph::PackageNode>) -> DependencyGraph {
+        DependencyGraph {
+            roots: roots.iter().map(|s| s.to_string()).collect(),
+            nodes: nodes.into_iter().map(|n| (n.name.clone(), n)).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn bases(g: &DependencyGraph) -> BTreeMap<String, String> {
+        g.aur_packages()
+            .iter()
+            .map(|n| (n.name.clone(), n.package_base.clone().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn repo_and_virtual_roots_are_refused() {
+        // `paru -S firefox` with AUR_SCAN_MODE=install: firefox is a repo package.
+        let mut firefox = aur_node("firefox", &[]);
+        firefox.source = PackageSource::Repo;
+        let mut ghost = aur_node("ghost", &[]);
+        ghost.source = PackageSource::Unresolved;
+        let mut virt = aur_node("virt", &["thing-git"]);
+        virt.source = PackageSource::Provided;
+        let g = graph_of(
+            &["firefox", "ghost", "virt", "mine", "absent"],
+            vec![
+                firefox,
+                ghost,
+                virt,
+                aur_node("mine", &[]),
+                aur_node("thing-git", &[]),
+            ],
+        );
+        assert_eq!(
+            non_aur_roots(&g),
+            vec!["firefox", "ghost", "virt", "absent"]
+        );
+        let ok = graph_of(&["mine"], vec![aur_node("mine", &[])]);
+        assert!(non_aur_roots(&ok).is_empty());
+    }
+
+    #[test]
+    fn dependencies_build_first_and_get_asdeps() {
+        // app -> lib -> base (all AUR), plus app -> virt -> prov (virtual).
+        let mut virt = aur_node("virt", &["prov"]);
+        virt.source = PackageSource::Provided;
+        let g = graph_of(
+            &["app"],
+            vec![
+                aur_node("app", &["lib", "virt"]),
+                aur_node("lib", &["base"]),
+                aur_node("base", &[]),
+                virt,
+                aur_node("prov", &[]),
+            ],
+        );
+        let plan = build_plan(&g, &bases(&g));
+        let names: Vec<&str> = plan.iter().map(|s| s.base.as_str()).collect();
+        let pos = |n: &str| names.iter().position(|x| *x == n).unwrap();
+        assert!(pos("base") < pos("lib") && pos("lib") < pos("app"));
+        assert!(pos("prov") < pos("app"));
+        assert_eq!(names.len(), 4);
+        for step in &plan {
+            assert_eq!(step.as_dep, step.base != "app", "{step:?}");
+        }
+    }
+
+    #[test]
+    fn split_package_base_waits_for_all_member_dependencies() {
+        // base `multi` ships `multi-a` and `multi-b`; `multi-b` needs `late`.
+        let mut a = aur_node("multi-a", &[]);
+        a.package_base = Some("multi".into());
+        let mut b = aur_node("multi-b", &["late"]);
+        b.package_base = Some("multi".into());
+        let g = graph_of(&["multi-a"], vec![a, b, aur_node("late", &[])]);
+        let plan = build_plan(&g, &bases(&g));
+        let names: Vec<&str> = plan.iter().map(|s| s.base.as_str()).collect();
+        assert_eq!(names, vec!["late", "multi"]);
+        assert!(!plan[1].as_dep, "a base containing a root is explicit");
+    }
+
+    #[test]
+    fn makepkg_args_mark_dependencies() {
+        assert_eq!(makepkg_args(false, false), vec!["-si"]);
+        assert_eq!(makepkg_args(true, false), vec!["-si", "--asdeps"]);
+        assert_eq!(
+            makepkg_args(true, true),
+            vec!["-si", "--asdeps", "--noconfirm"]
+        );
+    }
+
+    #[test]
+    fn unpinned_and_unchecked_sources_are_called_out() {
+        let text = "pkgname=a\npkgver=1\npkgrel=1\n\
+source=('local.patch' 'https://x.example/a.tar.gz' 'git+https://x.example/r.git' \
+'git+https://x.example/p.git#commit=0123456789abcdef0123456789abcdef01234567')\n\
+sha256sums=('aaaa' 'SKIP' 'SKIP' 'SKIP')\n\
+pkgver() { echo 1; }\n";
+        let parsed = StaticParser::new().parse(text).unwrap();
+        let n = late_fetch_notices(&parsed);
+        assert!(
+            n.iter()
+                .any(|l| l.contains("a.tar.gz") && l.contains("SKIP")),
+            "{n:?}"
+        );
+        assert!(
+            n.iter()
+                .any(|l| l.contains("r.git") && l.contains("not pinned")),
+            "{n:?}"
+        );
+        assert!(
+            !n.iter().any(|l| l.contains("p.git")),
+            "pinned commit is fine: {n:?}"
+        );
+        assert!(!n.iter().any(|l| l.contains("local.patch")), "{n:?}");
+        assert!(n.iter().any(|l| l.contains("pkgver()")), "{n:?}");
+
+        let clean = "pkgname=a\npkgver=1\npkgrel=1\nsource=('https://x.example/a.tar.gz')\nsha256sums=('aaaa')\n";
+        let parsed = StaticParser::new().parse(clean).unwrap();
+        assert!(late_fetch_notices(&parsed).is_empty());
+    }
+
+    #[test]
+    fn unanalyzable_file_is_unreviewed_and_force_cannot_override() {
+        use aur_scanner_core::{Category, Finding, Location, ScanResult};
+        let finding = |id: &str| Finding {
+            id: id.to_string(),
+            severity: Severity::Critical,
+            category: Category::Persistence,
+            title: "t".into(),
+            description: "d".into(),
+            location: Location {
+                file: PathBuf::from("x.install"),
+                line: None,
+                column: None,
+                snippet: None,
+            },
+            recommendation: "r".into(),
+            cwe_id: None,
+            metadata: serde_json::Value::Null,
+        };
+        let mk = |ids: &[&str]| ScanResult {
+            package_name: "p".into(),
+            package_version: "1-1".into(),
+            findings: ids.iter().map(|i| finding(i)).collect(),
+            scanned_files: vec![],
+            timestamp: "2026-01-01T00:00:00Z".parse().unwrap(),
+            scan_duration_ms: 0,
+        };
+        assert!(unreviewed_reason(&mk(&["EXEC-001"])).is_none());
+        let r = mk(&["SCAN-001"]);
+        assert!(unreviewed_reason(&r).is_some());
+        // Feeding it into the gate: blocked even with --force.
+        assert_eq!(
+            gate_outcome(unreviewed_reason(&r).is_some(), false, true),
+            GateOutcome::BlockUnscannable
+        );
     }
 }

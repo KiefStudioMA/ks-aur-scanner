@@ -4,7 +4,7 @@
 //! and a human-readable dependency tree, so a user can review the full set of
 //! packages -- and any findings against them -- *before* installing.
 
-use crate::depgraph::{DependencyGraph, PackageSource};
+use crate::depgraph::{DependencyGraph, PackageNode, PackageSource};
 use crate::types::Finding;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -89,20 +89,117 @@ pub fn new_serial() -> String {
     )
 }
 
-fn purl(name: &str, version: Option<&str>, source: PackageSource) -> String {
-    let repo = match source {
-        PackageSource::Aur => "aur",
-        PackageSource::Repo => "repo",
-    };
-    match version {
-        Some(v) => format!("pkg:alpm/arch/{name}@{v}?repository={repo}"),
-        None => format!("pkg:alpm/arch/{name}?repository={repo}"),
+/// Percent-encode a purl name/version/qualifier value: everything outside the
+/// RFC 3986 unreserved set is escaped (so an epoch `1:2.0` becomes `1%3A2.0` and
+/// `c++` becomes `c%2B%2B`).
+fn purl_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
     }
+    out
+}
+
+/// Package URL for a node, or `None` when the node is not a concrete package
+/// (an unresolved or virtual name has no honest purl). The `repository`
+/// qualifier is only emitted when known: `aur` for AUR packages, the real sync
+/// repo name for repo packages.
+fn purl(n: &PackageNode) -> Option<String> {
+    let repo = match n.source {
+        PackageSource::Aur => Some("aur"),
+        PackageSource::Repo => n.repository.as_deref(),
+        PackageSource::Provided | PackageSource::Unresolved => return None,
+    };
+    let mut p = format!("pkg:alpm/arch/{}", purl_encode(&n.name));
+    if let Some(v) = &n.version {
+        p.push('@');
+        p.push_str(&purl_encode(v));
+    }
+    if let Some(r) = repo {
+        p.push_str("?repository=");
+        p.push_str(&purl_encode(r));
+    }
+    Some(p)
+}
+
+fn component_json(
+    n: &PackageNode,
+    scans: &BTreeMap<String, ComponentScan>,
+    ty: &str,
+) -> serde_json::Value {
+    let mut properties = vec![
+        serde_json::json!({"name": "aur-scan:source", "value": match n.source {
+            PackageSource::Aur => "aur",
+            PackageSource::Repo => "repo",
+            PackageSource::Provided => "provided",
+            PackageSource::Unresolved => "unresolved",
+        }}),
+        serde_json::json!({"name": "aur-scan:depth", "value": n.depth.to_string()}),
+    ];
+    if n.orphaned {
+        properties.push(serde_json::json!({"name": "aur-scan:orphaned", "value": "true"}));
+    }
+    if n.ambiguous {
+        properties.push(serde_json::json!({"name": "aur-scan:ambiguous", "value": "true"}));
+    }
+    if let Some(note) = &n.note {
+        properties.push(serde_json::json!({"name": "aur-scan:note", "value": note}));
+    }
+    if let Some(m) = &n.maintainer {
+        properties.push(serde_json::json!({"name": "aur-scan:maintainer", "value": m}));
+    }
+    if let Some(scan) = scans.get(&n.name) {
+        properties.push(serde_json::json!({
+            "name": "aur-scan:findings",
+            "value": format!("{} critical, {} high", scan.critical, scan.high)
+        }));
+        for (id, sev) in &scan.findings {
+            properties.push(serde_json::json!({
+                "name": "aur-scan:finding", "value": format!("{id} ({sev})")
+            }));
+        }
+        // Mark the opaque boundary: the SBOM is incomplete past a node
+        // that fetches/executes external code, by design.
+        if scan.opaque {
+            properties.push(serde_json::json!({
+                "name": "aur-scan:opaque",
+                "value": "true (fetches/executes external code; SBOM incomplete past this node)"
+            }));
+            for url in &scan.remote_urls {
+                properties.push(serde_json::json!({
+                    "name": "aur-scan:remote-source", "value": url
+                }));
+            }
+        }
+    }
+
+    let mut component = serde_json::json!({
+        "type": ty,
+        "bom-ref": n.name,
+        "name": n.name,
+        "properties": properties,
+    });
+    if let Some(p) = purl(n) {
+        component["purl"] = serde_json::json!(p);
+    }
+    if let Some(v) = &n.version {
+        component["version"] = serde_json::json!(v);
+    }
+    component
 }
 
 /// Build a CycloneDX 1.5 SBOM document. `scans` maps package name to its scan
 /// summary; `serial`/`timestamp` are supplied by the caller (kept out of here
 /// so the function stays deterministic and testable).
+///
+/// Structure: the first requested root is `metadata.component` and is NOT
+/// repeated in `components` (bom-refs must be unique across the document); every
+/// other node is a component. `dependsOn` lists only refs that exist in the
+/// document, so a `--no-deps`/truncated tree never dangles.
 pub fn to_cyclonedx(
     graph: &DependencyGraph,
     scans: &BTreeMap<String, ComponentScan>,
@@ -110,67 +207,37 @@ pub fn to_cyclonedx(
     serial: &str,
     timestamp: &str,
 ) -> serde_json::Value {
+    let primary: Option<&str> = graph.roots.first().map(|r| r.as_str());
+    let metadata_component = primary.map(|r| match graph.nodes.get(r) {
+        Some(n) => component_json(n, scans, "application"),
+        None => serde_json::json!({"type": "application", "bom-ref": r, "name": r}),
+    });
+
     let components: Vec<serde_json::Value> = graph
         .nodes
         .values()
-        .map(|n| {
-            let mut properties = vec![
-                serde_json::json!({"name": "aur-scan:source", "value": match n.source {
-                    PackageSource::Aur => "aur",
-                    PackageSource::Repo => "repo",
-                }}),
-                serde_json::json!({"name": "aur-scan:depth", "value": n.depth.to_string()}),
-            ];
-            if n.orphaned {
-                properties.push(serde_json::json!({"name": "aur-scan:orphaned", "value": "true"}));
-            }
-            if let Some(m) = &n.maintainer {
-                properties.push(serde_json::json!({"name": "aur-scan:maintainer", "value": m}));
-            }
-            if let Some(scan) = scans.get(&n.name) {
-                properties.push(serde_json::json!({
-                    "name": "aur-scan:findings",
-                    "value": format!("{} critical, {} high", scan.critical, scan.high)
-                }));
-                for (id, sev) in &scan.findings {
-                    properties.push(serde_json::json!({
-                        "name": "aur-scan:finding", "value": format!("{id} ({sev})")
-                    }));
-                }
-                // Mark the opaque boundary: the SBOM is incomplete past a node
-                // that fetches/executes external code, by design.
-                if scan.opaque {
-                    properties.push(serde_json::json!({
-                        "name": "aur-scan:opaque",
-                        "value": "true (fetches/executes external code; SBOM incomplete past this node)"
-                    }));
-                    for url in &scan.remote_urls {
-                        properties.push(serde_json::json!({
-                            "name": "aur-scan:remote-source", "value": url
-                        }));
-                    }
-                }
-            }
-
-            let mut component = serde_json::json!({
-                "type": "library",
-                "bom-ref": n.name,
-                "name": n.name,
-                "purl": purl(&n.name, n.version.as_deref(), n.source),
-                "properties": properties,
-            });
-            if let Some(v) = &n.version {
-                component["version"] = serde_json::json!(v);
-            }
-            component
-        })
+        .filter(|n| Some(n.name.as_str()) != primary)
+        .map(|n| component_json(n, scans, "library"))
         .collect();
+
+    // Every ref that exists in the document.
+    let mut refs: std::collections::BTreeSet<&str> =
+        graph.nodes.keys().map(|k| k.as_str()).collect();
+    if let Some(p) = primary {
+        refs.insert(p);
+    }
 
     let dependencies: Vec<serde_json::Value> = graph
         .nodes
         .values()
-        .filter(|n| !n.depends.is_empty())
-        .map(|n| serde_json::json!({ "ref": n.name, "dependsOn": n.depends }))
+        .filter_map(|n| {
+            let deps: Vec<&String> = n
+                .depends
+                .iter()
+                .filter(|d| refs.contains(d.as_str()))
+                .collect();
+            (!deps.is_empty()).then(|| serde_json::json!({ "ref": n.name, "dependsOn": deps }))
+        })
         .collect();
 
     // Findings expressed as CycloneDX vulnerabilities, keyed by finding id and
@@ -187,20 +254,20 @@ pub fn to_cyclonedx(
         }
     }
 
+    let mut metadata = serde_json::json!({
+        "timestamp": timestamp,
+        "tools": [{"vendor": "Kief Studio", "name": "aur-scan", "version": tool_version}],
+    });
+    if let Some(c) = metadata_component {
+        metadata["component"] = c;
+    }
+
     serde_json::json!({
         "bomFormat": "CycloneDX",
         "specVersion": "1.5",
         "serialNumber": format!("urn:uuid:{serial}"),
         "version": 1,
-        "metadata": {
-            "timestamp": timestamp,
-            "tools": [{"vendor": "Kief Studio", "name": "aur-scan", "version": tool_version}],
-            "component": graph.roots.first().map(|r| serde_json::json!({
-                "type": "application",
-                "bom-ref": r,
-                "name": r,
-            })),
-        },
+        "metadata": metadata,
         "components": components,
         "dependencies": dependencies,
         "vulnerabilities": vulnerabilities,
@@ -212,38 +279,51 @@ pub fn render_tree(graph: &DependencyGraph, scans: &BTreeMap<String, ComponentSc
     let mut out = String::new();
     let mut seen = std::collections::BTreeSet::new();
     for root in &graph.roots {
-        render_node(graph, scans, root, "", true, &mut seen, &mut out);
+        render_node(graph, scans, root, "", None, &mut seen, &mut out);
     }
     out
 }
 
+/// `last` is `None` for a root (no connector), else whether this is the last
+/// sibling. `prefix` grows by one column group per level.
 #[allow(clippy::too_many_arguments)]
 fn render_node(
     graph: &DependencyGraph,
     scans: &BTreeMap<String, ComponentScan>,
     name: &str,
     prefix: &str,
-    last: bool,
+    last: Option<bool>,
     seen: &mut std::collections::BTreeSet<String>,
     out: &mut String,
 ) {
-    let connector = if prefix.is_empty() {
-        ""
-    } else if last {
-        "└─ "
-    } else {
-        "├─ "
+    let connector = match last {
+        None => "",
+        Some(true) => "└─ ",
+        Some(false) => "├─ ",
     };
 
     let node = graph.nodes.get(name);
     let tag = match node.map(|n| n.source) {
         Some(PackageSource::Aur) => "[AUR]",
         Some(PackageSource::Repo) => "[repo]",
+        Some(PackageSource::Provided) => "[AUR virtual]",
+        Some(PackageSource::Unresolved) => "[UNRESOLVED]",
         None => "[not scanned]",
     };
     let mut annot = String::new();
-    if node.map(|n| n.orphaned).unwrap_or(false) {
-        annot.push_str(" ORPHAN");
+    if let Some(n) = node {
+        if n.orphaned {
+            annot.push_str(" ORPHAN");
+        }
+        if n.ambiguous {
+            annot.push_str(" AMBIGUOUS (several providers; all scanned)");
+        }
+        if n.source == PackageSource::Unresolved {
+            annot.push_str(&format!(
+                " !! {}",
+                n.note.as_deref().unwrap_or("could not be resolved")
+            ));
+        }
     }
     if let Some(scan) = scans.get(name) {
         if scan.critical > 0 || scan.high > 0 {
@@ -259,23 +339,33 @@ fn render_node(
         }
     }
 
+    // Avoid infinite recursion on cycles / shared deps: a repeat is shown once
+    // more, marked, and not expanded again.
+    let first_visit = seen.insert(name.to_string());
+    if !first_visit && node.is_some_and(|n| !n.depends.is_empty()) {
+        annot.push_str(" (*)");
+    }
     out.push_str(&format!("{prefix}{connector}{tag} {name}{annot}\n"));
-
-    // Avoid infinite recursion on cycles / shared deps.
-    if !seen.insert(name.to_string()) {
+    if !first_visit {
         return;
     }
     if let Some(node) = node {
-        let child_prefix = if prefix.is_empty() {
-            String::new()
-        } else if last {
-            format!("{prefix}   ")
-        } else {
-            format!("{prefix}│  ")
+        let child_prefix = match last {
+            None => String::new(),
+            Some(true) => format!("{prefix}   "),
+            Some(false) => format!("{prefix}│  "),
         };
         let n = node.depends.len();
         for (i, child) in node.depends.iter().enumerate() {
-            render_node(graph, scans, child, &child_prefix, i + 1 == n, seen, out);
+            render_node(
+                graph,
+                scans,
+                child,
+                &child_prefix,
+                Some(i + 1 == n),
+                seen,
+                out,
+            );
         }
     }
 }
@@ -291,11 +381,8 @@ mod tests {
             version: Some("1.0".to_string()),
             source,
             package_base: Some(name.to_string()),
-            maintainer: None,
-            orphaned: false,
             depends: deps.iter().map(|s| s.to_string()).collect(),
-            kinds: vec![],
-            depth: 0,
+            ..Default::default()
         }
     }
 
@@ -306,11 +393,50 @@ mod tests {
             node("foo", PackageSource::Aur, &["bar", "glibc"]),
         );
         nodes.insert("bar".into(), node("bar", PackageSource::Aur, &[]));
-        nodes.insert("glibc".into(), node("glibc", PackageSource::Repo, &[]));
+        let mut glibc = node("glibc", PackageSource::Repo, &[]);
+        glibc.repository = Some("core".into());
+        nodes.insert("glibc".into(), glibc);
         DependencyGraph {
             roots: vec!["foo".into()],
             nodes,
-            truncated: vec![],
+            ..Default::default()
+        }
+    }
+
+    /// Every bom-ref in the document (metadata + components), asserting uniqueness.
+    fn all_refs(bom: &serde_json::Value) -> std::collections::BTreeSet<String> {
+        let mut refs = std::collections::BTreeSet::new();
+        let mut add = |c: &serde_json::Value| {
+            let r = c["bom-ref"].as_str().unwrap().to_string();
+            assert!(refs.insert(r.clone()), "duplicate bom-ref {r}");
+        };
+        if let Some(c) = bom["metadata"].get("component") {
+            add(c);
+        }
+        for c in bom["components"].as_array().unwrap() {
+            add(c);
+        }
+        refs
+    }
+
+    fn assert_refs_consistent(bom: &serde_json::Value) {
+        let refs = all_refs(bom);
+        for d in bom["dependencies"].as_array().unwrap() {
+            assert!(
+                refs.contains(d["ref"].as_str().unwrap()),
+                "dangling ref {d}"
+            );
+            for t in d["dependsOn"].as_array().unwrap() {
+                assert!(
+                    refs.contains(t.as_str().unwrap()),
+                    "dangling dependsOn {t} in {d}"
+                );
+            }
+        }
+        for v in bom["vulnerabilities"].as_array().unwrap() {
+            for a in v["affects"].as_array().unwrap() {
+                assert!(refs.contains(a["ref"].as_str().unwrap()));
+            }
         }
     }
 
@@ -321,13 +447,54 @@ mod tests {
         let bom = to_cyclonedx(&g, &scans, "0.1.1", "abc", "2026-06-13T00:00:00Z");
         assert_eq!(bom["bomFormat"], "CycloneDX");
         assert_eq!(bom["specVersion"], "1.5");
-        assert_eq!(bom["components"].as_array().unwrap().len(), 3);
-        // dependencies edge for foo present
+        // Root lives in metadata.component only; 2 other nodes are components.
+        assert_eq!(bom["metadata"]["component"]["bom-ref"], "foo");
+        assert_eq!(bom["components"].as_array().unwrap().len(), 2);
         assert!(bom["dependencies"]
             .as_array()
             .unwrap()
             .iter()
             .any(|d| d["ref"] == "foo"));
+        assert_refs_consistent(&bom);
+    }
+
+    #[test]
+    fn bom_refs_unique_and_depends_on_never_dangle_with_no_deps() {
+        // --no-deps: only the root was resolved, but it still lists children.
+        let mut g = graph();
+        g.nodes.retain(|k, _| k == "foo");
+        let bom = to_cyclonedx(&g, &BTreeMap::new(), "0.1.1", "abc", "t");
+        assert_eq!(bom["components"].as_array().unwrap().len(), 0);
+        assert_refs_consistent(&bom);
+        // Nothing resolvable remains to depend on: no dangling edge is emitted.
+        assert!(bom["dependencies"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn purl_encodes_epoch_and_only_claims_known_repos() {
+        let mut g = graph();
+        g.nodes.get_mut("bar").unwrap().version = Some("1:2.0-3".into());
+        let mut ghost = node("zz-ghost", PackageSource::Unresolved, &[]);
+        ghost.version = None;
+        g.nodes.insert("zz-ghost".into(), ghost);
+        g.nodes.insert(
+            "c++".into(),
+            node("c++", PackageSource::Repo, &[]), // repo unknown
+        );
+        let bom = to_cyclonedx(&g, &BTreeMap::new(), "0.1.1", "abc", "t");
+        let comps = bom["components"].as_array().unwrap();
+        let by = |n: &str| comps.iter().find(|c| c["name"] == n).unwrap();
+        assert_eq!(
+            by("bar")["purl"],
+            "pkg:alpm/arch/bar@1%3A2.0-3?repository=aur"
+        );
+        assert_eq!(
+            by("glibc")["purl"],
+            "pkg:alpm/arch/glibc@1.0?repository=core"
+        );
+        // Unknown repo: no qualifier. Unresolved: no purl at all.
+        assert_eq!(by("c++")["purl"], "pkg:alpm/arch/c%2B%2B@1.0");
+        assert!(by("zz-ghost").get("purl").is_none());
     }
 
     #[test]
@@ -369,11 +536,46 @@ mod tests {
     }
 
     #[test]
+    fn tree_is_nested_with_connectors() {
+        // app -> lib -> base, app -> tool
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "app".into(),
+            node("app", PackageSource::Aur, &["lib", "tool"]),
+        );
+        nodes.insert("lib".into(), node("lib", PackageSource::Aur, &["base"]));
+        nodes.insert("base".into(), node("base", PackageSource::Aur, &[]));
+        nodes.insert("tool".into(), node("tool", PackageSource::Aur, &[]));
+        let g = DependencyGraph {
+            roots: vec!["app".into()],
+            nodes,
+            ..Default::default()
+        };
+        let tree = render_tree(&g, &BTreeMap::new());
+        let expected = "[AUR] app\n├─ [AUR] lib\n│  └─ [AUR] base\n└─ [AUR] tool\n";
+        assert_eq!(tree, expected);
+    }
+
+    #[test]
+    fn tree_shows_unresolved_loudly() {
+        let mut g = graph();
+        let mut ghost = node("ghost", PackageSource::Unresolved, &[]);
+        ghost.note = Some("no such package".into());
+        g.nodes.insert("ghost".into(), ghost);
+        g.nodes.get_mut("foo").unwrap().depends.push("ghost".into());
+        let tree = render_tree(&g, &BTreeMap::new());
+        assert!(tree.contains("[UNRESOLVED] ghost"), "{tree}");
+        assert!(tree.contains("no such package"), "{tree}");
+    }
+
+    #[test]
     fn opaque_boundary_is_surfaced_in_tree_and_sbom() {
-        let g = graph();
+        let mut g = graph();
+        // Make the opaque package a non-root so it is in components[].
+        g.nodes.get_mut("bar").unwrap().depends = vec![];
         let mut scans = BTreeMap::new();
         scans.insert(
-            "foo".to_string(),
+            "bar".to_string(),
             ComponentScan {
                 findings: vec![("EXEC-REMOTE".into(), "CRITICAL".into())],
                 critical: 1,
@@ -386,13 +588,13 @@ mod tests {
         assert!(tree.contains("OPAQUE: runs code from https://evil.example/x.sh"));
 
         let bom = to_cyclonedx(&g, &scans, "0.1.1", "s", "t");
-        let foo = bom["components"]
+        let bar = bom["components"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|c| c["name"] == "foo")
+            .find(|c| c["name"] == "bar")
             .unwrap();
-        let props = foo["properties"].as_array().unwrap();
+        let props = bar["properties"].as_array().unwrap();
         assert!(props.iter().any(|p| p["name"] == "aur-scan:opaque"));
         assert!(props
             .iter()
