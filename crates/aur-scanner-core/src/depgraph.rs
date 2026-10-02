@@ -860,8 +860,9 @@ async fn classify_non_aur(
     ))
 }
 
-/// AUR dependencies of `node`, looking through virtual (provided) nodes.
-fn aur_deps<'g>(graph: &'g DependencyGraph, node: &'g PackageNode) -> Vec<&'g str> {
+/// AUR dependencies of `node`, looking through virtual (provided) nodes. Build
+/// ordering must follow these, not just `node.depends`.
+pub fn aur_dependencies<'g>(graph: &'g DependencyGraph, node: &'g PackageNode) -> Vec<&'g str> {
     let mut out: Vec<&str> = Vec::new();
     for dep in &node.depends {
         match graph.nodes.get(dep) {
@@ -906,7 +907,7 @@ pub fn topo_order(graph: &DependencyGraph) -> Vec<String> {
         .values()
         .filter(|n| aur.contains(n.name.as_str()))
     {
-        for dep in aur_deps(graph, node) {
+        for dep in aur_dependencies(graph, node) {
             if aur.contains(dep) {
                 dependents.entry(dep).or_default().push(node.name.as_str());
                 *indeg.get_mut(node.name.as_str()).unwrap() += 1;
