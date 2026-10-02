@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.2.0-rc.2] - 2026-10-01
+
+Second 2.2.0 release candidate. No new detection codes (still 138); this cut
+gets testers the fixes made since rc.1, including the `FUNC-001` comment bypass
+and the 2.1.1 security fixes merged forward. Install `aur-scanner-rc`.
+
 Fixes from an external review of the release candidate. All eight items were
 reproduced against the branch before being changed, and the two regex findings
 were settled with fixture tests rather than by reading.
@@ -664,6 +670,8 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
+[2.2.0-rc.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0-rc.2
+[2.1.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.1
 [2.2.0-rc.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0-rc.1
 [2.1.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0
 [2.1.0-rc.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0-rc.2
