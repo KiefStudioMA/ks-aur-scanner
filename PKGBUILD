@@ -19,7 +19,7 @@ license=('GPL-3.0-or-later')
 depends=('gcc-libs' 'openssl')
 makedepends=('cargo' 'clang')
 provides=('aur-scan')
-conflicts=('aur-scanner-git' 'ks-aur-scanner')
+conflicts=('aur-scanner-git' 'ks-aur-scanner' 'aur-scanner-rc')
 options=('!debug' '!strip')
 # No source array: this builds the checked-out tree in place.
 

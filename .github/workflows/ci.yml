@@ -40,13 +40,29 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Tests (unit + CLI integration)
-        run: cargo test --all --all-features
+        run: cargo test --locked --all --all-features
 
       - name: Release build
-        run: cargo build --all --release
+        run: cargo build --locked --all --release
+
+  # The declared minimum supported Rust version (`rust-version` in Cargo.toml)
+  # has to actually build. Without this job the README's MSRV drifts silently
+  # every time code or a dependency starts using a newer toolchain feature.
+  msrv:
+    name: msrv (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-09-12
+        with:
+          toolchain: "1.85"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo check --locked --workspace --all-targets
 
   # Formatting is a hard gate. Applied repo-wide with `cargo fmt --all`.
   fmt:
