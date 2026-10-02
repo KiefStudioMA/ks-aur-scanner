@@ -71,7 +71,7 @@ impl Scanner {
             })?;
         }
         let rule_engine = Arc::new(engine);
-        let ioc_db = Arc::new(IocDatabase::load());
+        let ioc_db = Arc::new(IocDatabase::try_load()?);
 
         let mut analyzers: Vec<Arc<dyn SecurityAnalyzer>> = vec![
             Arc::new(analyzer::PatternAnalyzer::new(rule_engine.clone())),

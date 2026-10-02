@@ -520,7 +520,7 @@ pub fn load_community_rules<I: IntoIterator<Item = std::path::PathBuf>>(dirs: I)
 /// True when this process runs with root's effective uid. Uses the owner of
 /// `/proc/self` (the process's effective uid) so no libc dependency is needed;
 /// if that cannot be determined it fails safe and reports privileged.
-fn running_as_root() -> bool {
+pub(crate) fn running_as_root() -> bool {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata("/proc/self")
         .map(|m| m.uid() == 0)

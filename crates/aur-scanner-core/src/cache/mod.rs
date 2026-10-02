@@ -1,4 +1,12 @@
-//! Caching module for threat intelligence results
+//! Caching module for threat intelligence results.
+//!
+//! **Security model, stated plainly.** Entries carry a keyed-hash tag so
+//! corruption and tampering by a *different user, or by a writer that can drop
+//! a file but not read the key*, is detected and treated as a cache miss. The
+//! key sits in the same user-owned cache directory as the entries, so this does
+//! **not** authenticate against a process running as the same user: such a
+//! process can read the key and forge a valid entry. The real boundary is the
+//! `0700` cache directory (other users); same-user compromise is out of scope.
 
 use crate::error::Result;
 use serde::{de::DeserializeOwned, Serialize};
@@ -21,14 +29,18 @@ pub trait Cache: Send + Sync {
 pub struct DiskCache {
     directory: PathBuf,
     max_size_bytes: usize,
-    /// Per-user key authenticating stored verdicts (audit ME-2).
+    /// Per-user key for the integrity tag on stored verdicts (audit ME-2). Stored
+    /// beside the entries, so it detects corruption and other-user tampering,
+    /// not a same-user attacker.
     mac_key: [u8; 32],
 }
 
-/// On-disk wrapper binding a cache entry to a MAC. The MAC is computed over the
-/// exact serialized `data` bytes with the per-user key, so an entry that was not
-/// written by this user's scanner (a planted/flipped verdict) fails verification
-/// and is treated as a cache MISS rather than trusted data.
+/// On-disk wrapper binding a cache entry to an integrity tag (keyed BLAKE3). The
+/// tag is computed over the exact serialized `data` bytes with the per-user key,
+/// so a corrupted entry, or one altered by another user or by a writer without
+/// access to the key, fails verification and is treated as a cache MISS. This is
+/// an integrity check, not authentication against same-user code (which can read
+/// the key; see the module docs).
 #[derive(serde::Serialize, serde::Deserialize)]
 struct MacEnvelope {
     /// The serialized inner `CacheEntry` JSON.
@@ -167,18 +179,16 @@ impl DiskCache {
     }
 }
 
-/// Load the per-user cache MAC key, creating it (32 CSPRNG bytes, `0600`) on
-/// first use (audit ME-2).
+/// Load the per-user cache integrity key, creating it (32 CSPRNG bytes, `0600`)
+/// on first use (audit ME-2).
 ///
-/// The key authenticates stored security verdicts: an entry whose MAC does not
-/// verify under this key was not written by this user's scanner, so it is treated
-/// as a cache MISS rather than trusted data -- closing the "local writer flips
-/// malicious->benign between scan and consume" gap. The key file lives in the
-/// `0700` cache dir as `0600`, so another *user* cannot read it to forge an entry.
-/// (A same-user process that can read the key is outside this boundary -- the
-/// `0700` dir is the cross-user boundary; the MAC additionally defeats a
-/// constrained writer that can drop a file but not read the key, and detects
-/// tampering/corruption.)
+/// An entry whose tag does not verify under this key is treated as a cache MISS
+/// rather than trusted data, which detects corruption and a flipped
+/// malicious->benign verdict written by another *user* (the key file is `0600`
+/// in a `0700` dir) or by a constrained writer that can drop a file but not read
+/// the key. It does NOT defend against a process running as this same user: that
+/// process can read the key and mint a valid entry, so the key lives in the same
+/// trust domain as the data it protects. Do not rely on it as authentication.
 fn load_or_create_mac_key(dir: &std::path::Path) -> Result<[u8; 32]> {
     let key_path = dir.join(MAC_KEY_FILE);
     // Reuse an existing key only if it is a regular file of exactly 32 bytes.
@@ -252,9 +262,9 @@ impl Cache for DiskCache {
             Err(_) => return Ok(None),
         };
 
-        // Authenticate before trusting: the file is a MAC envelope. An entry whose
-        // MAC does not verify under our per-user key (a planted or flipped verdict)
-        // is a cache MISS, not data. A non-envelope/old-format file also fails here
+        // Verify before trusting: the file is a tagged envelope. An entry whose
+        // tag does not verify under our per-user key (corrupted, or planted or
+        // flipped by another user) is a cache MISS, not data. A non-envelope/old-format file also fails here
         // and is discarded. (audit ME-2)
         let envelope: MacEnvelope = match serde_json::from_str(&content) {
             Ok(e) => e,
@@ -321,9 +331,9 @@ impl Cache for DiskCache {
             value,
         };
 
-        // Serialize the entry, then bind it to a MAC under the per-user key so a
-        // later local tamper (flip malicious->benign) is detected on read and
-        // treated as a miss (audit ME-2).
+        // Serialize the entry, then tag it under the per-user key so later
+        // corruption or other-user tampering is detected on read and treated as
+        // a miss (audit ME-2). Not authentication against same-user code.
         let data = serde_json::to_string(&entry)?;
         let mac = self.mac(data.as_bytes()).to_hex().to_string();
         let envelope = MacEnvelope { data, mac };
