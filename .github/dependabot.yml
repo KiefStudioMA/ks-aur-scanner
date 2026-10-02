@@ -15,10 +15,14 @@ updates:
       day: monday
     cooldown:
       default-days: 7
+    # Minor and patch updates are API-compatible, so they batch into one PR that
+    # should pass CI as-is. Semver-major updates stay out of the group and open
+    # one PR each, because each needs code changes and its own review.
     groups:
-      cargo:
+      cargo-minor-patch:
         patterns: ["*"]
-    open-pull-requests-limit: 5
+        update-types: ["minor", "patch"]
+    open-pull-requests-limit: 10
 
   - package-ecosystem: github-actions
     directory: /
@@ -27,6 +31,11 @@ updates:
       day: monday
     cooldown:
       default-days: 7
+    # dtolnay/rust-toolchain publishes no release tags, so Dependabot proposes
+    # whatever commit master points at that day and the cooldown cannot apply.
+    # Bump that pin by hand to a master commit at least 7 days old.
+    ignore:
+      - dependency-name: "dtolnay/rust-toolchain"
     groups:
       actions:
         patterns: ["*"]
