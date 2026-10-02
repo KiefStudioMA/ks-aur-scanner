@@ -39,6 +39,10 @@ struct Case {
     severity: Option<&'static str>,
     /// Optional: text that must appear in the gate's output (a refusal reason).
     text_has: Option<&'static str>,
+    /// Exact log lines that must be present (e.g. the `-Quaq` argv).
+    log_has: &'static [&'static str],
+    /// Log-line prefixes that must NOT be present.
+    log_lacks: &'static [&'static str],
 }
 
 const fn case(
@@ -56,6 +60,8 @@ const fn case(
         skip_wrapper: false,
         severity: None,
         text_has: None,
+        log_has: &[],
+        log_lacks: &[],
     }
 }
 
@@ -405,6 +411,125 @@ fn cases() -> Vec<Case> {
             &[("AUR_SCAN_SCAN_UPGRADES", "0")],
             Ran(None),
         ),
+        // --- update enumeration honours the user's flags ---------------------
+        // Regression: `-Quaq` ran bare, so --aururl/--config/--ignore/... did not
+        // reach it and the scanned update set could differ from what gets built.
+        Case {
+            log_has: &["QUAQ -Quaq --aururl https://aur.example --config /tmp/p.conf"],
+            ..case(
+                "-Quaq gets --aururl and --config",
+                &[
+                    "-Syu",
+                    "--aururl",
+                    "https://aur.example",
+                    "--config",
+                    "/tmp/p.conf",
+                ],
+                &[UPD],
+                Ran(Some((&["foo", "bar"], &[]))),
+            )
+        },
+        Case {
+            log_has: &["QUAQ -Quaq --aururl=https://x --nodevel --ignore baz"],
+            ..case(
+                "-Quaq gets --opt=value, --nodevel and --ignore",
+                &["-Su", "--aururl=https://x", "--nodevel", "--ignore", "baz"],
+                &[UPD],
+                Ran(Some((&["foo", "bar"], &[]))),
+            )
+        },
+        Case {
+            log_has: &["QUAQ -Quaq --dbpath /tmp/db"],
+            ..case(
+                "-Quaq gets -b <dbpath>",
+                &["-Sub", "/tmp/db"],
+                &[UPD],
+                Ran(Some((&["foo", "bar"], &[]))),
+            )
+        },
+        Case {
+            log_has: &["QUAQ -Quaq"],
+            ..case(
+                "-Quaq does not get build-only flags",
+                &[
+                    "-Syu",
+                    "--rebuild",
+                    "--redownload",
+                    "--noconfirm",
+                    "--needed",
+                ],
+                &[UPD],
+                Ran(Some((&["foo", "bar"], &[]))),
+            )
+        },
+        // --- --devel: VCS updates are not listable, so scan installed VCS pkgs
+        Case {
+            log_has: &["QUAQ -Quaq", "PACMAN -Qmq"],
+            ..case(
+                "--devel also scans installed -git/-svn/-hg/-bzr packages",
+                &["-Syu", "--devel"],
+                &[UPD, ("STUB_FOREIGN", "a-git b c-svn d-hg e-bzr f-gitx")],
+                Ran(Some((
+                    &["foo", "bar", "a-git", "c-svn", "d-hg", "e-bzr"],
+                    &[],
+                ))),
+            )
+        },
+        Case {
+            log_has: &["PACMAN -Qmq --dbpath /tmp/db"],
+            ..case(
+                "--devel passes the db flags to pacman, not helper flags",
+                &[
+                    "-Syu",
+                    "--devel",
+                    "--dbpath",
+                    "/tmp/db",
+                    "--config",
+                    "/tmp/p.conf",
+                ],
+                &[UPD, ("STUB_FOREIGN", "a-git")],
+                Ran(Some((&["foo", "bar", "a-git"], &[]))),
+            )
+        },
+        Case {
+            log_lacks: &["PACMAN"],
+            ..case(
+                "--nodevel after --devel skips the VCS listing",
+                &["-Syu", "--devel", "--nodevel"],
+                &[UPD, ("STUB_FOREIGN", "a-git")],
+                Ran(Some((&["foo", "bar"], &[]))),
+            )
+        },
+        Case {
+            log_lacks: &["PACMAN"],
+            ..case(
+                "no --devel, no VCS listing",
+                &["-Syu"],
+                &[UPD, ("STUB_FOREIGN", "a-git")],
+                Ran(Some((&["foo", "bar"], &[]))),
+            )
+        },
+        Case {
+            log_lacks: &["PACMAN"],
+            ..case(
+                "--devel on a named install is not an upgrade",
+                &["-S", "--devel", "foo"],
+                &[("STUB_FOREIGN", "a-git")],
+                Ran(Some((&["foo"], &[]))),
+            )
+        },
+        case(
+            "--devel with no installed VCS packages (silent exit 1) proceeds",
+            &["-Syu", "--devel"],
+            &[UPD, ("STUB_PACMAN_RC", "1")],
+            Ran(Some((&["foo", "bar"], &[]))),
+        ),
+        case(
+            "--devel blocks when pacman cannot be queried",
+            &["-Syu", "--devel"],
+            &[UPD, ("STUB_PACMAN_RC", "2")],
+            Blocked,
+        ),
         // --- read-only ------------------------------------------------------
         case("search passes", &["-Ss", "foo"], &[], Ran(None)),
         case("query passes", &["-Qi", "foo"], &[], Ran(None)),
@@ -563,13 +688,25 @@ exit "${STUB_SCAN_RC:-0}""#,
         }
         let helper = r#"n=$(basename "$0")
 if [ "$1" = "-Quaq" ]; then
-  echo "QUAQ" >> "$STUB_LOG"
+  echo "QUAQ $*" >> "$STUB_LOG"
   [ -n "$STUB_UPDATES" ] && printf '%s\n' $STUB_UPDATES
   [ -n "$STUB_QUAQ_ERR" ] && echo "$STUB_QUAQ_ERR" >&2
   exit "${STUB_QUAQ_RC:-0}"
 fi
 echo "RAN $n $*" >> "$STUB_LOG"
 exit 0"#;
+        // pacman is stubbed too (and shadows the real one): only the read-only
+        // `-Qmq` listing is answered, anything else is logged and refused.
+        stub(
+            "pacman",
+            r#"if [ "$1" = "-Qmq" ]; then
+  echo "PACMAN $*" >> "$STUB_LOG"
+  [ -n "$STUB_FOREIGN" ] && printf '%s\n' $STUB_FOREIGN
+  exit "${STUB_PACMAN_RC:-0}"
+fi
+echo "PACMAN-BAD $*" >> "$STUB_LOG"
+exit 99"#,
+        );
         stub("paru", helper);
         stub("yay", helper);
         // nushell routes through the real wrapper binary.
@@ -736,6 +873,19 @@ fn run_all(gate: Gate) {
         let ran: Vec<&String> = log.iter().filter(|l| l.starts_with("RAN ")).collect();
         let scans: Vec<&String> = log.iter().filter(|l| l.starts_with("SCAN ")).collect();
         let mut why = None;
+        for want in c.log_has {
+            if !log.iter().any(|l| l == want) {
+                why = Some(format!("log lacks {want:?}: {log:?}"));
+            }
+        }
+        for bad in c.log_lacks {
+            if log.iter().any(|l| l.starts_with(bad)) {
+                why = Some(format!("log must not contain {bad:?}: {log:?}"));
+            }
+        }
+        if log.iter().any(|l| l.starts_with("PACMAN-BAD")) {
+            why = Some(format!("unexpected pacman call: {log:?}"));
+        }
         match c.expect {
             Expect::Blocked => {
                 if ok || !ran.is_empty() {

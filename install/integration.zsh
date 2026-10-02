@@ -27,6 +27,19 @@ _aur_scan_valid_name() {
     [[ ${#1} -le 256 && "$1" =~ $re ]]
 }
 
+# Options that change WHICH AUR packages are upgradeable (or where the list
+# comes from). They are copied onto the `<helper> -Quaq` enumeration so the
+# scanned update set is the set the real run will build. Mirrors
+# UPDATE_FLAG_OPTS in aur-scan-wrap (a test keeps them in step). --repo/--mode/
+# --aur are not forwarded: -Quaq already asks for the AUR side and widening can
+# only over-scan; --rebuild/--redownload/--noconfirm do not change the set.
+_aur_scan_fwd_opt() {
+    case "$1" in
+        --aururl|--aurrpcurl|--config|--ignore|--ignoregroup|--assume-installed|--arch|--dbpath|--root|--sysroot|--pacman|--pacman-conf|--pacmanconf|--develsuffixes|--develfile|--ignoredevel|--nodevel) return 0 ;;
+    esac
+    return 1
+}
+
 # Classify a pacman/helper invocation by its OPERATION (not by substring
 # sniffing, which could let an unrelated flag silently disable scanning). It
 # fills, fail-closed:
@@ -36,6 +49,9 @@ _aur_scan_valid_name() {
 #   _AUR_SCAN_LOCAL        local build dirs (`-B dir`, `-Ui`, `-U dir`) to scan
 #   _AUR_SCAN_NOTICES      prebuilt-package installs that cannot be pre-scanned
 #   _AUR_SCAN_BLOCK        reasons the invocation must be refused (cannot be validated)
+#   _AUR_SCAN_UPD_FLAGS    user flags to copy onto the `<helper> -Quaq` update listing
+#   _AUR_SCAN_DEVEL        `--devel` is in effect: VCS updates cannot be listed reliably,
+#                          so installed foreign -git/-svn/-hg/-bzr packages are scanned too
 #   _AUR_SCAN_MENU         the helper will show a search menu and install the pick
 #                          (`paru <term>`, `yay <term>`, `yay -Y <term>`, `-S --interactive`);
 #                          the pick is made AFTER the gate, so it is refused unless
@@ -51,9 +67,16 @@ _aur_scan_classify() {
     _AUR_SCAN_NOTICES=()
     _AUR_SCAN_BLOCK=()
     _AUR_SCAN_MENU=0
+    _AUR_SCAN_UPD_FLAGS=()
+    _AUR_SCAN_DEVEL=0
+    local fwd_next=0 long_flag
     local op="" mods="" longs=" " eoo=0 skip=0 a rest i c
     for a in "$@"; do
-        if [[ "$skip" == "1" ]]; then skip=0; continue; fi
+        if [[ "$skip" == "1" ]]; then
+            skip=0
+            if [[ "$fwd_next" == "1" ]]; then fwd_next=0; _AUR_SCAN_UPD_FLAGS+=("$a"); fi
+            continue
+        fi
         if [[ "$eoo" == "1" ]]; then _AUR_SCAN_PKGS+=("$a"); continue; fi
         case "$a" in
             --) eoo=1 ;;
@@ -76,11 +99,16 @@ _aur_scan_classify() {
             --groups) mods="${mods}g" ;;
             --clean) mods="${mods}c" ;;
             --print) mods="${mods}p" ;;
+            --devel) _AUR_SCAN_DEVEL=1; longs="${longs}--devel " ;;
+            --nodevel) _AUR_SCAN_DEVEL=0; _AUR_SCAN_UPD_FLAGS+=("$a"); longs="${longs}--nodevel " ;;
             # Long options that take the NEXT argument as their value (only ones
             # that ALWAYS do: a boolean flag listed here would swallow an operand).
             --root|--dbpath|--cachedir|--logfile|--gpgdir|--hookdir|--arch|--color|--config|--sysroot|--ignore|--ignoregroup|--assume-installed|--overwrite|--print-format|--ask|--aururl|--aurrpcurl|--clonedir|--builddir|--makepkg|--makepkgconf|--pacman|--pacman-conf|--pacmanconf|--git|--gitflags|--sudo|--sudoflags|--asp|--bat|--batflags|--fm|--fmflags|--editor|--editorflags|--mflags|--gpg|--gpgflags|--answerclean|--answerdiff|--answeredit|--answerupgrade|--searchby|--sortby|--completioninterval|--requestsplitn|--mode|--limit|--develsuffixes|--develfile|--ignoredevel|--chrootflags|--chrootpkgs|--rootchrootpkgs|--pkgctl)
-                longs="${longs}${a} "; skip=1 ;;
-            --*) longs="${longs}${a%%=*} " ;;  # other long option
+                longs="${longs}${a} "; skip=1
+                if _aur_scan_fwd_opt "$a"; then _AUR_SCAN_UPD_FLAGS+=("$a"); fwd_next=1; fi ;;
+            --*)                               # other long option (maybe --opt=value)
+                longs="${longs}${a%%=*} "
+                if _aur_scan_fwd_opt "${a%%=*}"; then _AUR_SCAN_UPD_FLAGS+=("$a"); fi ;;
             -*)
                 rest="${a#-}"
                 for (( i=0; i<${#rest}; i++ )); do
@@ -88,7 +116,14 @@ _aur_scan_classify() {
                     case "$c" in
                         # getopt: -b <dbpath> / -r <root> take a value: the rest of
                         # this argument (-Sb/db) or, ending the group, the NEXT one.
-                        [br]) (( i == ${#rest} - 1 )) && skip=1; break ;;
+                        [br])
+                            long_flag="--dbpath"; [[ "$c" == r ]] && long_flag="--root"
+                            if (( i == ${#rest} - 1 )); then
+                                skip=1; fwd_next=1; _AUR_SCAN_UPD_FLAGS+=("$long_flag")
+                            else
+                                _AUR_SCAN_UPD_FLAGS+=("${long_flag}=${rest:$((i+1))}")
+                            fi
+                            break ;;
                         [A-Z]) op="${op}${c}" ;;
                         *)     mods="${mods}${c}" ;;
                     esac
@@ -208,7 +243,7 @@ _aur_scan_updates() {
     local helper="$1" errf out err rc line
     _AUR_SCAN_UPDATES=()
     errf=$(mktemp) || { echo "AUR Security Scanner: cannot create a temp file; refusing." >&2; return 1; }
-    out=$(command "$helper" -Quaq 2>"$errf"); rc=$?
+    out=$(command "$helper" -Quaq "${_AUR_SCAN_UPD_FLAGS[@]}" 2>"$errf"); rc=$?
     err=$(<"$errf"); rm -f "$errf"
     if (( rc != 0 )); then
         if ! { (( rc == 1 )) && [[ -z "${out//[[:space:]]/}" && -z "${err//[[:space:]]/}" ]]; }; then
@@ -224,6 +259,43 @@ _aur_scan_updates() {
             return 1
         fi
         _AUR_SCAN_UPDATES+=("$line")
+    done <<< "$out"
+    return 0
+}
+
+# `--devel`: `-Quaq` cannot list VCS updates reliably, so list the installed
+# foreign VCS packages (`pacman -Qmq`, -git/-svn/-hg/-bzr) into _AUR_SCAN_VCS and
+# scan them too. Returns 1 (BLOCK) when pacman cannot be queried.
+_aur_scan_vcs_installed() {
+    local errf out err rc line a skipn=0
+    local -a pflags=()
+    _AUR_SCAN_VCS=()
+    for a in "${_AUR_SCAN_UPD_FLAGS[@]}"; do
+        if [[ "$skipn" == "1" ]]; then pflags+=("$a"); skipn=0; continue; fi
+        case "$a" in
+            --dbpath|--root|--sysroot) pflags+=("$a"); skipn=1 ;;
+            --dbpath=*|--root=*|--sysroot=*) pflags+=("$a") ;;
+        esac
+    done
+    errf=$(mktemp) || { echo "AUR Security Scanner: cannot create a temp file; refusing." >&2; return 1; }
+    out=$(command pacman -Qmq "${pflags[@]}" 2>"$errf"); rc=$?
+    err=$(<"$errf"); rm -f "$errf"
+    if (( rc != 0 )); then
+        if ! { (( rc == 1 )) && [[ -z "${out//[[:space:]]/}" && -z "${err//[[:space:]]/}" ]]; }; then
+            echo "AUR Security Scanner: 'pacman -Qmq' failed (${err%%$'\n'*}); cannot list installed VCS packages." >&2
+            return 1
+        fi
+    fi
+    while IFS= read -r line; do
+        line="${line//[[:space:]]/}"
+        [[ -z "$line" ]] && continue
+        if ! _aur_scan_valid_name "$line"; then
+            echo "AUR Security Scanner: unexpected package entry '$line'; refusing." >&2
+            return 1
+        fi
+        case "$line" in
+            *-git|*-svn|*-hg|*-bzr) _AUR_SCAN_VCS+=("$line") ;;
+        esac
     done <<< "$out"
     return 0
 }
@@ -288,6 +360,13 @@ _aur_scan_gate() {
             return 1
         fi
         _to_scan+=("${_AUR_SCAN_UPDATES[@]}")
+        if [[ "$_AUR_SCAN_DEVEL" == "1" ]]; then
+            if ! _aur_scan_vcs_installed; then
+                echo "Not proceeding with $helper (--devel: cannot list installed VCS packages)." >&2
+                return 1
+            fi
+            _to_scan+=("${_AUR_SCAN_VCS[@]}")
+        fi
     fi
 
     if [[ ${#_to_scan[@]} -gt 0 || ${#_AUR_SCAN_LOCAL[@]} -gt 0 ]]; then
