@@ -41,6 +41,138 @@ pub fn logical_lines(content: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// Split one logical shell line into simple statements at UNQUOTED `;`, `&&`,
+/// `||` and a lone `&` (background), returning `(statement, separator)` pairs so
+/// the original line can be rebuilt by concatenation. Quote-aware (`'..'`,
+/// `".."`, backslash escapes, backticks) and does not split inside `$( .. )`,
+/// `<( .. )`, `>( .. )` or `name=( .. )` groups, nor inside `${ .. }`. A trailing
+/// `# comment` is left attached to the last statement. Used so several
+/// assignments / commands on one line (`c=curl; s=sh; $c url | $s`) are seen in
+/// order.
+pub fn split_statements(line: &str) -> Vec<(String, String)> {
+    let b: Vec<char> = line.chars().collect();
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut cur = String::new();
+    let (mut sq, mut dq, mut bt) = (false, false, false);
+    let mut depth = 0i32; // () and ${} groups
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == '\\' && !sq && i + 1 < b.len() {
+            cur.push(c);
+            cur.push(b[i + 1]);
+            i += 2;
+            continue;
+        }
+        if sq {
+            if c == '\'' {
+                sq = false;
+            }
+            cur.push(c);
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' if !dq => sq = true,
+            '"' => dq = !dq,
+            '`' => bt = !bt,
+            '#' if !dq
+                && !bt
+                && depth == 0
+                && (cur.is_empty() || cur.ends_with(char::is_whitespace)) =>
+            {
+                cur.extend(&b[i..]);
+                break;
+            }
+            '(' if !dq => {
+                let prev = cur.chars().last();
+                let grouped = matches!(prev, Some('$' | '<' | '>' | '='))
+                    || prev.is_some_and(|p| p.is_alphanumeric() || p == '_');
+                if grouped || depth > 0 {
+                    depth += 1;
+                }
+            }
+            ')' if !dq && depth > 0 => depth -= 1,
+            '{' if !dq && cur.ends_with('$') => depth += 1,
+            '}' if !dq && depth > 0 => depth -= 1,
+            _ => {}
+        }
+        if !dq && !bt && depth == 0 {
+            let two: String = b[i..(i + 2).min(b.len())].iter().collect();
+            let sep = if two == "&&" || two == "||" {
+                Some(two)
+            } else if c == ';' {
+                Some(";".to_string())
+            } else if c == '&' && !cur.ends_with(['>', '<', '|']) && b.get(i + 1) != Some(&'>') {
+                Some("&".to_string())
+            } else {
+                None
+            };
+            if let Some(sep) = sep {
+                let adv = sep.chars().count();
+                out.push((std::mem::take(&mut cur), sep));
+                i += adv;
+                continue;
+            }
+        }
+        cur.push(c);
+        i += 1;
+    }
+    out.push((cur, String::new()));
+    out
+}
+
+/// Split a statement into shell words at unquoted whitespace, keeping quoting
+/// intact (so each word can later be normalized) and keeping `$( .. )`, `( .. )`
+/// and `${ .. }` groups and backtick spans together as part of one word.
+pub fn split_words(stmt: &str) -> Vec<String> {
+    let b: Vec<char> = stmt.chars().collect();
+    let mut words: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let (mut sq, mut dq, mut bt) = (false, false, false);
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == '\\' && !sq && i + 1 < b.len() {
+            cur.push(c);
+            cur.push(b[i + 1]);
+            i += 2;
+            continue;
+        }
+        if sq {
+            if c == '\'' {
+                sq = false;
+            }
+            cur.push(c);
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' if !dq => sq = true,
+            '"' => dq = !dq,
+            '`' => bt = !bt,
+            '(' if !dq => depth += 1,
+            ')' if !dq && depth > 0 => depth -= 1,
+            '{' if !dq && cur.ends_with('$') => depth += 1,
+            '}' if !dq && depth > 0 => depth -= 1,
+            _ => {}
+        }
+        if c.is_whitespace() && !sq && !dq && !bt && depth == 0 {
+            if !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(c);
+        }
+        i += 1;
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+    words
+}
+
 /// A small stateful scanner that tracks shell brace depth while ignoring braces
 /// that appear inside single/double quotes (with backslash escapes) or in a `#`
 /// comment. Function and install-hook body extraction relies on brace balance
@@ -387,6 +519,35 @@ pub const CMD_START: &str = r"(?:^|[\s;&|(){}`])(?:/\S+/)?";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_statements_respects_quotes_and_groups() {
+        let s =
+            |l: &str| -> Vec<String> { split_statements(l).into_iter().map(|(a, _)| a).collect() };
+        assert_eq!(s("a=1; b=2 && c"), ["a=1", " b=2 ", " c"]);
+        assert_eq!(s("echo 'a;b' \"c && d\""), ["echo 'a;b' \"c && d\""]);
+        assert_eq!(s("x=$(a; b); y"), ["x=$(a; b)", " y"]);
+        assert_eq!(
+            s("cmd=(a b); \"${cmd[@]}\""),
+            ["cmd=(a b)", " \"${cmd[@]}\""]
+        );
+        assert_eq!(s("ls 2>&1 | cat"), ["ls 2>&1 | cat"]);
+        // rebuilding from statements + separators is lossless
+        let l = "a=1; b=$(x | y) && c || d & e";
+        let rebuilt: String = split_statements(l)
+            .into_iter()
+            .map(|(a, b)| a + &b)
+            .collect();
+        assert_eq!(rebuilt, l);
+    }
+
+    #[test]
+    fn split_words_keeps_groups_together() {
+        assert_eq!(
+            split_words("local c=curl s=\"a b\" arr=(x y) z=$(a b)"),
+            ["local", "c=curl", "s=\"a b\"", "arr=(x y)", "z=$(a b)"]
+        );
+    }
 
     #[test]
     fn deobfuscates_ansic_and_quote_splitting() {
