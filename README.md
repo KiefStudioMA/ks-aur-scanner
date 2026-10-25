@@ -111,7 +111,7 @@ This scanner implements detection rules based on real-world attacks and security
 
 | Feature | Description |
 |---------|-------------|
-| **Static Analysis** | 142 detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
+| **Static Analysis** | 143 detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
 | **Install Script Scanning** | Analyzes `.install` scripts for persistence mechanisms |
 | **Source Verification** | Validates URLs, checksums, and download sources |
 | **AUR Integration** | Fetch and scan packages directly from AUR before installation |
@@ -696,7 +696,7 @@ NeedsTargets
 
 ## Detection Rules Reference
 
-> The **142 built-in detection codes**, generated from the catalog
+> The **143 built-in detection codes**, generated from the catalog
 > (`aur-scan codes --format markdown`) — every ID is unique and audit-enforced.
 > (`EXAMPLE-001` is the community-rule sample; `PERM-001`/`PERM-002` are real
 > shipped community rules in the same directory, not built-ins.) Extend the
@@ -867,6 +867,7 @@ NeedsTargets
 
 | Code | Name | Category | Detector | CWE |
 |------|------|----------|----------|-----|
+| `CHK-007` | Placeholder checksum: this package will not pass makepkg's integrity check | Cryptography | checksum | CWE-354 |
 | `TI-UNCHECKED-001` | Threat-intel lookups incomplete | Configuration | threat_intel | - |
 
 ## Custom & Community Rules

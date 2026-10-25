@@ -299,6 +299,8 @@ pub fn analyzer_codes() -> Vec<CatalogEntry> {
         e("SRC-008", "Source host differs from upstream url host", Low, NetworkSecurity, "source", None,
           "url= and a source= are both on known forges but different ones (a personal-fork-vs-upstream signal).", "Verify the source forge is the project's official one."),
         // -- checksum analyzer (hash shape) --
+        e("CHK-007", "Placeholder checksum: this package will not pass makepkg's integrity check", Info, Cryptography, "checksum", Some("CWE-354"),
+          "A checksum consists of repeated identical hex digits (e.g. all zeros or all identical hex characters), acting as a placeholder that fails makepkg integrity verification.", "Replace placeholder checksums with real hashes generated with updpkgsums."),
         e("CHK-008", "Malformed or wrong-length checksum", Medium, Cryptography, "checksum", Some("CWE-354"),
           "A checksum is not valid hex of the algorithm's expected length (md5=32, sha1=40, sha256=64, sha512/b2=128).", "Regenerate checksums with updpkgsums; a malformed hash silently disables integrity verification."),
     ]
