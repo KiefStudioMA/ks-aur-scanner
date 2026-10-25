@@ -207,12 +207,6 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
             });
         }
 
-        // CHK-008 — a present checksum that is not valid hex of the algorithm's
-        // expected length (md5=32, sha1=40, sha256=64, sha512/b2=128). A
-        // wrong-length or non-hex hash can never match the fetched bytes, so
-        // makepkg's integrity check is silently defeated (whether by tamper or a
-        // copy-paste error). `SKIP` is stored as `None` and is handled by
-        // CHK-004/005, so it is not considered malformed here.
         let algos: [(&str, usize, &[Option<String>]); 5] = [
             ("md5", 32, checksums.md5sums.as_slice()),
             ("sha1", 40, checksums.sha1sums.as_slice()),
@@ -220,6 +214,52 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
             ("sha512", 128, checksums.sha512sums.as_slice()),
             ("b2", 128, checksums.b2sums.as_slice()),
         ];
+
+        // CHK-007 — Trivial or placeholder checksum (e.g. 64 zeros, all 'a's, or obvious mock).
+        // A placeholder checksum bypasses naive length checks but provides zero real integrity verification.
+        let mut placeholder_sources: Vec<String> = Vec::new();
+        for (algo, len, arr) in algos {
+            for sum in arr.iter().flatten() {
+                let s = sum.trim();
+                if s.eq_ignore_ascii_case("SKIP") {
+                    continue;
+                }
+                if s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    let first = s.as_bytes()[0];
+                    if s.bytes().all(|b| b == first) {
+                        placeholder_sources.push(format!("{algo}sums has trivial repeated '{s}'"));
+                    }
+                }
+            }
+        }
+        if !placeholder_sources.is_empty() {
+            findings.push(Finding {
+                id: "CHK-007".to_string(),
+                severity: Severity::High,
+                category: Category::Cryptography,
+                title: "Trivial or placeholder checksum used".to_string(),
+                description: format!(
+                    "One or more checksums are trivial repeated characters (e.g. all zeros or all identical hex digits), which act as placeholders rather than genuine integrity hashes: {}.",
+                    placeholder_sources.join("; ")
+                ),
+                location: Location {
+                    file: context.file_path.clone(),
+                    line: None,
+                    column: None,
+                    snippet: None,
+                },
+                recommendation: "Compute real checksums with updpkgsums before distributing or installing.".to_string(),
+                cwe_id: Some("CWE-354".to_string()),
+                metadata: serde_json::json!({ "placeholders": placeholder_sources }),
+            });
+        }
+
+        // CHK-008 — a present checksum that is not valid hex of the algorithm's
+        // expected length (md5=32, sha1=40, sha256=64, sha512/b2=128). A
+        // wrong-length or non-hex hash can never match the fetched bytes, so
+        // makepkg's integrity check is silently defeated (whether by tamper or a
+        // copy-paste error). `SKIP` is stored as `None` and is handled by
+        // CHK-004/005, so it is not considered malformed here.
         let mut malformed: Vec<String> = Vec::new();
         for (algo, len, arr) in algos {
             for sum in arr.iter().flatten() {
@@ -620,6 +660,26 @@ sha256sums=('SKIP')
         assert!(
             findings.iter().any(|f| f.id == "CHK-005"),
             "Non-VCS source with SKIP should trigger CHK-005"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trivial_placeholder_checksum_detected() {
+        let analyzer = ChecksumAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+source=("https://example.com/file.tar.gz")
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+"#,
+        );
+
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(
+            findings.iter().any(|f| f.id == "CHK-007"),
+            "Trivial repeated all-zeros checksum should trigger CHK-007"
         );
     }
 }
