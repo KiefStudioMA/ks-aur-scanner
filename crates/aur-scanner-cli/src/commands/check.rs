@@ -293,6 +293,9 @@ pub async fn run(args: CheckArgs) -> Result<()> {
     // overlay the AUR RPC so the full tree still resolves.
     let opts = ResolveOptions {
         include_optional: args.include_optional,
+        // `check` runs before an AUR helper, which may fill a dependency with a
+        // different package that provides it: scan those too.
+        include_alternatives: true,
         // --no-deps => expand nothing past the roots.
         max_depth: if args.resolve_deps {
             ResolveOptions::default().max_depth

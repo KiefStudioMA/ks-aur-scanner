@@ -48,6 +48,11 @@ pub enum DepKind {
     Check,
     /// Optional dependency (`optdepends`).
     Optional,
+    /// Another AUR package that `provides` a dependency's name. An AUR helper
+    /// can offer it in place of the package with that exact name (and a
+    /// bootstrap package for a dependency cycle is usually the one picked), so
+    /// it is scanned too. See [`ResolveOptions::include_alternatives`].
+    Alternative,
 }
 
 /// Where a package comes from.
@@ -84,6 +89,10 @@ pub struct PackageNode {
     pub maintainer: Option<String>,
     /// Whether the package is orphaned (a hijack risk factor).
     pub orphaned: bool,
+    /// Other AUR packages that declare this package's name in `provides=`,
+    /// when [`ResolveOptions::include_alternatives`] is on. Each is a node of
+    /// its own, scanned like any other.
+    pub alternatives: Vec<String>,
     /// Resolved child dependency names. For a [`PackageSource::Provided`] node
     /// these are the AUR packages that provide it.
     pub depends: Vec<String>,
@@ -185,6 +194,16 @@ pub struct ResolveOptions {
     pub max_depth: usize,
     /// Maximum number of nodes (safety bound).
     pub max_nodes: usize,
+    /// Also resolve and scan the other AUR packages that `provide` each AUR
+    /// dependency's name (default false).
+    ///
+    /// `check` runs before an AUR helper, and the helper decides what fills a
+    /// dependency: for `gprbuild` it offers both `gprbuild` and
+    /// `gprbuild-bootstrap`, and the bootstrap is the one a dependency cycle
+    /// forces. Scanning only the exact name left the package that actually
+    /// gets built unscanned. `install` builds exact names itself, so it leaves
+    /// this off and never builds an alternative it did not choose.
+    pub include_alternatives: bool,
 }
 
 impl Default for ResolveOptions {
@@ -195,6 +214,7 @@ impl Default for ResolveOptions {
             include_optional: false,
             max_depth: 16,
             max_nodes: 2000,
+            include_alternatives: false,
         }
     }
 }
@@ -633,6 +653,37 @@ pub async fn resolve_with(
                     // explicit --no-deps "roots only" opt-out.
                     truncated.push(name.clone());
                 }
+
+                // A dependency (never a root: a helper installs a requested
+                // name exactly) may be filled by another AUR package that
+                // provides it. A failed lookup fails the resolution, so the
+                // run fails closed rather than skipping the alternatives.
+                if opts.include_alternatives && *depth > 0 {
+                    let mut alts: Vec<String> = source
+                        .find_providers(name)
+                        .await?
+                        .into_iter()
+                        .filter(|c| c != name && is_valid_package_name(c))
+                        .collect();
+                    alts.sort();
+                    alts.dedup();
+                    if alts.len() > MAX_PROVIDERS {
+                        truncated.push(name.clone());
+                        alts.truncate(MAX_PROVIDERS);
+                    }
+                    if !alts.is_empty() {
+                        if *depth < opts.max_depth && nodes.len() < opts.max_nodes {
+                            for a in &alts {
+                                queue.push_back((a.clone(), DepKind::Alternative, depth + 1));
+                            }
+                        } else {
+                            truncated.push(name.clone());
+                        }
+                        if let Some(n) = nodes.get_mut(name) {
+                            n.alternatives = alts;
+                        }
+                    }
+                }
             } else {
                 // Not an AUR package by name. NEVER assume it is official.
                 let mut wanted: Vec<VersionConstraint> = edges
@@ -730,6 +781,13 @@ pub async fn resolve_with(
             }
             _ => {}
         }
+    }
+    for n in nodes.values().filter(|n| !n.alternatives.is_empty()) {
+        notes.push(format!(
+            "{} is also provided by {}; a helper may offer them instead, so they are scanned too",
+            n.name,
+            n.alternatives.join(", ")
+        ));
     }
     for n in nodes.values().filter(|n| n.ambiguous) {
         notes.push(format!(
@@ -1324,6 +1382,74 @@ mod tests {
             .blocking_issues()
             .iter()
             .any(|m| m.contains("truncated")));
+    }
+
+    fn providing(mut i: AurPackageInfo, what: &[&str]) -> AurPackageInfo {
+        i.provides = what.iter().map(|s| s.to_string()).collect();
+        i
+    }
+
+    #[tokio::test]
+    async fn a_dependency_s_alternative_providers_are_scanned() {
+        // GHSA-xp97-gh99-hghq: xmlada needs gprbuild, and the helper fills it
+        // with gprbuild-bootstrap (provides=gprbuild). Only gprbuild was scanned.
+        let source = src(vec![
+            info("xmlada", &["gprbuild"], &[], Some("m")),
+            info("gprbuild", &["xmlada"], &[], Some("m")),
+            providing(
+                info("gprbuild-bootstrap", &[], &[], Some("m")),
+                &["gprbuild"],
+            ),
+        ]);
+        let opts = ResolveOptions {
+            include_alternatives: true,
+            ..Default::default()
+        };
+        let g = resolve_with(
+            &source,
+            &FakeRepo::default(),
+            &["xmlada".to_string()],
+            &opts,
+        )
+        .await
+        .unwrap();
+        let aur: Vec<&str> = g.aur_packages().iter().map(|n| n.name.as_str()).collect();
+        assert!(aur.contains(&"gprbuild-bootstrap"), "got {aur:?}");
+        assert_eq!(g.nodes["gprbuild"].alternatives, vec!["gprbuild-bootstrap"]);
+        assert!(g.nodes["gprbuild-bootstrap"]
+            .kinds
+            .contains(&DepKind::Alternative));
+        assert!(g.blocking_issues().is_empty(), "{:?}", g.blocking_issues());
+    }
+
+    #[tokio::test]
+    async fn alternatives_are_off_by_default_and_never_for_roots() {
+        let source = src(vec![
+            info("app", &["lib"], &[], Some("m")),
+            info("lib", &[], &[], Some("m")),
+            providing(info("lib-git", &[], &[], Some("m")), &["lib"]),
+            providing(info("app-bin", &[], &[], Some("m")), &["app"]),
+        ]);
+        // `install` builds exact names and must not pull in a provider.
+        let g = resolve_with(
+            &source,
+            &FakeRepo::default(),
+            &["app".to_string()],
+            &ResolveOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert!(!g.nodes.contains_key("lib-git"));
+        // With it on, the dependency's provider is added; the root's is not.
+        let opts = ResolveOptions {
+            include_alternatives: true,
+            ..Default::default()
+        };
+        let g = resolve_with(&source, &FakeRepo::default(), &["app".to_string()], &opts)
+            .await
+            .unwrap();
+        assert!(g.nodes.contains_key("lib-git"));
+        assert!(!g.nodes.contains_key("app-bin"));
     }
 
     #[tokio::test]

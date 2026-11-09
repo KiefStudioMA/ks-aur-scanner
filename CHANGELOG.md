@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Security
+
+- **`check` now scans the packages an AUR helper can substitute for a
+  dependency.** A dependency was scanned only under its exact name, but helpers
+  also offer every AUR package that `provides` that name, and for a dependency
+  cycle the substitute is the one that gets built: `xmlada` needs `gprbuild`,
+  and `gprbuild-bootstrap` (`provides=gprbuild`) is what fills it. That package
+  was never scanned. `check` (and so the shell wrapper and the `aur-scan-wrap`
+  gate in front of the helper) now resolves and scans those providers for every
+  dependency, and notes which ones were added. `install` builds exact names
+  itself and is unchanged. Reported by @kohlrak
+  ([GHSA-xp97-gh99-hghq](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-xp97-gh99-hghq)).
+
 ### Fixed
 
 - **PERSIST-002 no longer fires on `REUSE.toml`.** The rule matched the bare
