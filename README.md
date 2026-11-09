@@ -269,7 +269,10 @@ findings per node (`!! 2C/1H`). AUR packages are resolved recursively.
 A dependency counts as `[repo]` only when **pacman** says a sync repository
 satisfies it (provides and version constraints included). A name that only an
 AUR package `provides` (common for `-git`/`-bin`) is resolved through the AUR
-and every provider is scanned. Anything neither can satisfy is shown
+and every provider is scanned. `check` also scans the other AUR packages that
+`provide` an AUR dependency's name, because the helper can offer any of them in
+its place (a bootstrap package for a dependency cycle is the usual one); they
+are listed in the notes. Anything neither can satisfy is shown
 `[UNRESOLVED]` and fails the run, as does a tree cut short by the depth or size
 cap: an unscanned package is never reported as clean. Version constraints the
 AUR version doesn't meet are printed as notes. `timeout_seconds` bounds each
@@ -923,9 +926,11 @@ change is the signal.
 
 `check` and `install` record a small fingerprint of every package they scan
 (under `$XDG_CACHE_HOME/aur-scan/history`, owner-readable only, mode 0700) and
-compare the next scan against it. A `--local` directory claiming a package name
-you did not explicitly request is scanned but **not** recorded, so it cannot
-overwrite a real package's baseline:
+compare the next scan against it. Each record is filed under the package base
+the AUR returned for that package, never under the name its PKGBUILD declares,
+so one package cannot write another's baseline. `--local` scans are kept in a
+separate namespace: re-scanning your own directory diffs against its last scan
+and can never touch an AUR package's record. What it reports:
 
 | Code | Fires when | Severity |
 |------|-----------|----------|
@@ -1360,20 +1365,20 @@ ks-aur-scanner/
 | `lazy_static` | 1.5 | Compile-time regex |
 | `serde` | 1.0 | Serialization |
 | `serde_json` | 1.0 | JSON support |
-| `toml` | 0.8 | Configuration parsing |
-| `thiserror` | 1.0 | Error handling |
+| `toml` | 1.2 | Configuration parsing |
+| `thiserror` | 2.0 | Error handling |
 | `anyhow` | 1.0 | Error context |
 | `tracing` | 0.1 | Logging |
 | `tracing-subscriber` | 0.3 | Log formatting |
 | `clap` | 4.5 | CLI argument parsing |
-| `reqwest` | 0.12 | HTTP client (native-tls) |
+| `reqwest` | 0.13 | HTTP client (native-tls) |
 | `chrono` | 0.4 | Date/time handling |
-| `colored` | 2.1 | Terminal colors |
+| `colored` | 3.1 | Terminal colors |
 | `blake3` | 1.5 | Fast hashing |
 | `sha2` | 0.10 | SHA-256 checksums |
-| `base64` | 0.22 | Base64 encoding |
+| `base64` | 0.23 | Base64 encoding |
 | `clap_complete` | 4.5 | Shell completion generation |
-| `dirs` | 5.0 / 6.0 | Standard config and cache paths |
+| `dirs` | 7.0 | Standard config and cache paths |
 | `tempfile` | 3.14 | Scratch directories for fetched packages |
 | `url` | 2.5 | URL parsing |
 | `libc` | 0.2 | Invoking-user lookup and safe file opens in the pacman hook |
@@ -1572,6 +1577,14 @@ Some of the above were brought in by cherry-pick rather than the merge button �
 - [**@LunarEclipse363**](https://github.com/LunarEclipse363) — [#2](https://github.com/KiefStudioMA/ks-aur-scanner/issues/2): detecting third-party package-manager calls in install hooks, which shaped the install-hook detection (`ATOMIC-002`)
 - [**@zebulon2**](https://github.com/zebulon2) — [#10](https://github.com/KiefStudioMA/ks-aur-scanner/issues/10): reported the obfuscated `bun install` payload class the anti-evasion hardening targets
 - [**@nikoraasu**](https://github.com/nikoraasu) — [#12](https://github.com/KiefStudioMA/ks-aur-scanner/issues/12): diagnosed that the shell wrapper only gated `-S`-style operations, shaping the operation classifier and broader AUR-helper coverage
+- [**@salvoza**](https://github.com/salvoza) and [**@innateessence**](https://github.com/innateessence) — [#54](https://github.com/KiefStudioMA/ks-aur-scanner/issues/54), [#56](https://github.com/KiefStudioMA/ks-aur-scanner/issues/56): the `PERSIST-002` false positive on `REUSE.toml` that blocked installs (fixed in 2.2.2)
+
+**Security reports:**
+
+- **AD** — [GHSA-9m24-g9qq-3v4r](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-9m24-g9qq-3v4r): scan history keyed by a PKGBUILD's own name let packages overwrite each other's change-detection baseline (fixed in 2.2.1)
+- [**@kohlrak**](https://github.com/kohlrak) — [GHSA-xp97-gh99-hghq](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-xp97-gh99-hghq): `check` didn't scan the provider an AUR helper substitutes for a dependency, such as a bootstrap package (fixed in 2.2.2)
+- [**@gulamovzavohir02-glitch**](https://github.com/gulamovzavohir02-glitch) — [GHSA-fhwf-r4qr-cvm5](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-fhwf-r4qr-cvm5): `$pkgbase` in `install=` resolved to the wrong scriptlet (fixed in 2.2.0)
+- [**@Disklo**](https://github.com/Disklo) — [GHSA-79wh-jgjx-rrjg](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-79wh-jgjx-rrjg): ANSI-C quoting and quote-splitting evaded `ATOMIC-002`, reported with a patch (fixed in 1.1.0)
 
 Sent a PR? Add yourself here. See the full list on the [contributors page](https://github.com/KiefStudioMA/ks-aur-scanner/graphs/contributors).
 
