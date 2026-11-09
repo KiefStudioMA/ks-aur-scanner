@@ -26,7 +26,8 @@ All notable changes to this project are documented here. The format is based on
   different package than the one it is filed under, and deletes records left
   under illegal names (such as `$_pkgname.json`) the next time it prunes.
   Expect one silent first scan for packages whose old record was filed under a
-  different name.
+  different name. Reported by AD, with a clean reproduction against
+  `amitools` and `tradingview`. Thank you.
 - **A decoded line break can no longer hide a payload from variable
   resolution.** The resolver substitutes values into a copy of the PKGBUILD
   that must keep one line per input line, because analyzers match it by line
