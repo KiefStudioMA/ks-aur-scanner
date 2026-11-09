@@ -6,6 +6,37 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-11-09
+
+### Security
+
+- **`check` now scans the packages an AUR helper can substitute for a
+  dependency.** A dependency was scanned only under its exact name, but helpers
+  also offer every AUR package that `provides` that name, and for a dependency
+  cycle the substitute is the one that gets built: `xmlada` needs `gprbuild`,
+  and `gprbuild-bootstrap` (`provides=gprbuild`) is what fills it. That package
+  was never scanned. `check` (and so the shell wrapper and the `aur-scan-wrap`
+  gate in front of the helper) now resolves and scans those providers for every
+  dependency, and notes which ones were added. `install` builds exact names
+  itself and is unchanged. Reported by @kohlrak
+  ([GHSA-xp97-gh99-hghq](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-xp97-gh99-hghq)).
+
+### Fixed
+
+- **PERSIST-002 no longer fires on `REUSE.toml`.** The rule matched the bare
+  text `.timer`, so the `"*.timer"` glob in the REUSE licence file from the
+  standard Arch packaging template was reported as a Critical systemd timer
+  and, with the pacman hook on `AbortOnFail`, blocked the install. A bare
+  `*.timer` glob no longer matches on its own; a named timer unit still does,
+  as does a timer glob copied or linked into a systemd directory. Thanks to
+  @salvoza (#54) and @innateessence (#56) for the reports.
+
+### Added
+
+- PERSIST-002 also catches a timer enabled by linking it into
+  `timers.target.wants`, and a transient timer created with
+  `systemd-run --on-calendar`/`--on-boot` and the other `--on-*` triggers.
+
 ## [2.2.1] - 2026-11-09
 
 ### Security
@@ -28,6 +59,7 @@ All notable changes to this project are documented here. The format is based on
   Expect one silent first scan for packages whose old record was filed under a
   different name. Reported by AD, with a clean reproduction against
   `amitools` and `tradingview`. Thank you.
+  ([GHSA-9m24-g9qq-3v4r](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-9m24-g9qq-3v4r))
 - **A decoded line break can no longer hide a payload from variable
   resolution.** The resolver substitutes values into a copy of the PKGBUILD
   that must keep one line per input line, because analyzers match it by line
@@ -36,6 +68,7 @@ All notable changes to this project are documented here. The format is based on
   `c=curl; $c URL | sh` turned two Critical findings into "No security issues
   found". Line breaks in substituted values are now flattened into command
   separators. New malicious fixture: `newline-shift`.
+  ([GHSA-w3p6-4wj2-7q48](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-w3p6-4wj2-7q48))
 - Updated tokio to 1.54.1 (RUSTSEC-2026-0386), and futures to 0.3.34 and hyper
   to 1.12.0, which drops the unmaintained `pin-utils` (RUSTSEC-2026-0441).
 
@@ -96,7 +129,12 @@ that failed on rc.2. Four new detection codes (142 total): `SCAN-001`,
 - **Files the scan never read**: every text file in the package directory is
   now scanned, plus any path the PKGBUILD reaches through `$startdir` or
   `$srcdir`, not just files with a script extension. A declared `install=`
-  that is missing or a directory is `SCAN-001`.
+  that is missing or a directory is `SCAN-001`. `$pkgbase` in `install=` now
+  expands to the PKGBUILD's own `pkgbase` rather than the first `pkgname`,
+  which let a split PKGBUILD show the scanner a benign scriptlet while makepkg
+  ran another. Independently reported by
+  [@gulamovzavohir02-glitch](https://github.com/gulamovzavohir02-glitch)
+  ([GHSA-fhwf-r4qr-cvm5](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-fhwf-r4qr-cvm5)).
 - **Kernel modules loaded from an install scriptlet** were not checked at all.
   Module commands there are now `PRIV-005`, and loading a module the package
   itself ships is the new Critical `PRIV-009`.
@@ -693,6 +731,9 @@ orphaned-package takeover that pulled the `atomic-lockfile` infostealer through 
 install hook) and [@zebulon2](https://github.com/zebulon2)
 ([#10](https://github.com/KiefStudioMA/ks-aur-scanner/issues/10) — the obfuscated
 `bun add` (`nextfile-js`) variant the de-obfuscation pass now sees through).
+[@Disklo](https://github.com/Disklo) independently reported the same evasion
+against `ATOMIC-002`, with a patch
+([GHSA-79wh-jgjx-rrjg](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-79wh-jgjx-rrjg)).
 
 ## [1.1.0-rc3] - 2026-06-15
 
@@ -852,6 +893,7 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
+[2.2.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.2
 [2.2.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.1
 [2.2.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0
 [2.2.0-rc.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0-rc.2

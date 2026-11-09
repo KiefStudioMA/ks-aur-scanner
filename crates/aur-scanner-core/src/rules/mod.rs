@@ -1215,8 +1215,29 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::Persistence,
             patterns: vec![
+                // A named timer unit: `foo.timer`, `${pkgname}.timer`, `$t.timer`.
+                // A bare `*.timer` glob is not one -- it is how REUSE.toml lists
+                // the file types a licence covers (issues #54, #56), and that
+                // file is in the standard Arch packaging template.
                 Pattern::Regex {
-                    pattern: r"\.timer".to_string(),
+                    pattern: r"(?:^|[^*])\.timer".to_string(),
+                },
+                // ...but a glob of timer units copied or linked into a systemd
+                // directory is still a timer install, whichever side the glob
+                // is on. Bounded by command separators like PERSIST-003.
+                Pattern::Regex {
+                    pattern: r"\*\.timer\b[^\n;&|]*systemd".to_string(),
+                },
+                Pattern::Regex {
+                    pattern: r"systemd[^\n;&|]*\*\.timer\b".to_string(),
+                },
+                // A timer enabled by linking it into timers.target, and a
+                // transient timer created with no unit file at all.
+                Pattern::Regex {
+                    pattern: r"timers\.target\.wants".to_string(),
+                },
+                Pattern::Regex {
+                    pattern: r"\bsystemd-run\b[^\n;&|]*--on-(?:active|boot|startup|unit-active|unit-inactive|calendar|clock-change|timezone-change)\b".to_string(),
                 },
                 Pattern::Regex {
                     pattern: r"OnBootSec".to_string(),
@@ -2676,6 +2697,58 @@ mod tests {
                 .any(|x| x.rule_id == "ENV-003" || x.rule_id == "HIDDEN-001"),
             "printed /bin/cat heredoc must not trip ENV-003/HIDDEN-001: {m:?}"
         );
+    }
+
+    #[test]
+    fn reuse_toml_timer_glob_does_not_trip_persist002() {
+        // Issues #54 and #56: REUSE.toml (standard Arch packaging template)
+        // lists `"*.timer"` among the file types a licence covers. It creates
+        // nothing, and with the pacman hook on AbortOnFail it blocked installs.
+        let engine = RuleEngine::default();
+        let reuse = "version = 1\n\n[[annotations]]\npath = [\n    \"PKGBUILD\",\n    \"*.service\",\n    \"*.socket\",\n    \"*.timer\",\n    \"*.hook\",\n]\nSPDX-FileCopyrightText = \"Arch Linux contributors\"\nSPDX-License-Identifier = \"0BSD\"\n";
+        for ft in [
+            FileType::Pkgbuild,
+            FileType::InstallScript,
+            FileType::SourceFile,
+        ] {
+            let m = engine.match_content(reuse, ft);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "PERSIST-002"),
+                "REUSE.toml glob must not trip PERSIST-002 as {ft:?}: {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn persist002_still_catches_timer_installs() {
+        let engine = RuleEngine::default();
+        for s in [
+            // Everything the bare `\.timer` pattern caught before, by name.
+            "cat > \"${pkgdir}/etc/systemd/system/acroread-update.timer\" << EOF",
+            "install -Dm644 foo.timer \"$pkgdir/usr/lib/systemd/system/foo.timer\"",
+            "install -Dm644 \"${pkgname}.timer\" -t \"$pkgdir/usr/lib/systemd/system\"",
+            "systemctl enable --now updater.timer",
+            "systemctl --user enable $t.timer",
+            "cp x ~/.config/systemd/user/x.timer",
+            "OnBootSec=60",
+            "OnUnitActiveSec=360",
+            // Globs into a systemd directory, either order.
+            "install -Dm644 -t \"$pkgdir/usr/lib/systemd/system\" *.timer",
+            "cp *.timer /etc/systemd/system/",
+            // New: enable-by-link and transient timers.
+            "ln -s ../evil.service \"$pkgdir/etc/systemd/system/timers.target.wants/evil\"",
+            "systemd-run --user --on-calendar=hourly /opt/x/beacon",
+            "systemd-run --on-boot=60 --unit=upd /usr/bin/upd",
+        ] {
+            let m = engine.match_content(s, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == "PERSIST-002"),
+                "timer persistence must trip PERSIST-002 for: {s} -> {m:?}"
+            );
+        }
+        // The glob patterns stop at a command separator.
+        let m = engine.match_content("ls *.timer; echo systemd", FileType::InstallScript);
+        assert!(!m.iter().any(|x| x.rule_id == "PERSIST-002"), "{m:?}");
     }
 
     #[test]

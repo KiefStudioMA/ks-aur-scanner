@@ -248,9 +248,13 @@ elif isinstance(d, dict):
     else: print(0)
 else: print(0)' 2>/dev/null)
 [[ ${N:-0} -gt 100 ]] && pass "catalog exposes $N codes" || fail "catalog exposed ${N:-0} codes"
+# Captured once: piping ~64 KiB into `grep -q` lets grep exit on the first
+# match while aur-scan is still writing, and under pipefail the writer's
+# SIGPIPE fails the check even though the code is there.
+CODES_JSON=$(aur-scan codes --format json 2>/dev/null)
 for id in SQUAT-001 SQUAT-002 SQUAT-003 SQUAT-004 PERM-001 PERM-002 \
           OWN-001 OWN-002 OWN-003 OWN-004 DIFF-001 DIFF-002 DIFF-003 DIFF-004; do
-    if aur-scan codes --format json 2>/dev/null | grep -q "\"$id\""; then pass "catalog has $id"; else fail "catalog missing $id"; fi
+    if grep -q "\"$id\"" <<<"$CODES_JSON"; then pass "catalog has $id"; else fail "catalog missing $id"; fi
     ok "aur-scan explain $id" aur-scan explain "$id"
 done
 
