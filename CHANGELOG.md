@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-11-09
+
 ### Security
 
 - **`check` now scans the packages an AUR helper can substitute for a
@@ -57,6 +59,7 @@ All notable changes to this project are documented here. The format is based on
   Expect one silent first scan for packages whose old record was filed under a
   different name. Reported by AD, with a clean reproduction against
   `amitools` and `tradingview`. Thank you.
+  ([GHSA-9m24-g9qq-3v4r](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-9m24-g9qq-3v4r))
 - **A decoded line break can no longer hide a payload from variable
   resolution.** The resolver substitutes values into a copy of the PKGBUILD
   that must keep one line per input line, because analyzers match it by line
@@ -65,6 +68,7 @@ All notable changes to this project are documented here. The format is based on
   `c=curl; $c URL | sh` turned two Critical findings into "No security issues
   found". Line breaks in substituted values are now flattened into command
   separators. New malicious fixture: `newline-shift`.
+  ([GHSA-w3p6-4wj2-7q48](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-w3p6-4wj2-7q48))
 - Updated tokio to 1.54.1 (RUSTSEC-2026-0386), and futures to 0.3.34 and hyper
   to 1.12.0, which drops the unmaintained `pin-utils` (RUSTSEC-2026-0441).
 
@@ -125,7 +129,12 @@ that failed on rc.2. Four new detection codes (142 total): `SCAN-001`,
 - **Files the scan never read**: every text file in the package directory is
   now scanned, plus any path the PKGBUILD reaches through `$startdir` or
   `$srcdir`, not just files with a script extension. A declared `install=`
-  that is missing or a directory is `SCAN-001`.
+  that is missing or a directory is `SCAN-001`. `$pkgbase` in `install=` now
+  expands to the PKGBUILD's own `pkgbase` rather than the first `pkgname`,
+  which let a split PKGBUILD show the scanner a benign scriptlet while makepkg
+  ran another. Independently reported by
+  [@gulamovzavohir02-glitch](https://github.com/gulamovzavohir02-glitch)
+  ([GHSA-fhwf-r4qr-cvm5](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-fhwf-r4qr-cvm5)).
 - **Kernel modules loaded from an install scriptlet** were not checked at all.
   Module commands there are now `PRIV-005`, and loading a module the package
   itself ships is the new Critical `PRIV-009`.
@@ -722,6 +731,9 @@ orphaned-package takeover that pulled the `atomic-lockfile` infostealer through 
 install hook) and [@zebulon2](https://github.com/zebulon2)
 ([#10](https://github.com/KiefStudioMA/ks-aur-scanner/issues/10) — the obfuscated
 `bun add` (`nextfile-js`) variant the de-obfuscation pass now sees through).
+[@Disklo](https://github.com/Disklo) independently reported the same evasion
+against `ATOMIC-002`, with a patch
+([GHSA-79wh-jgjx-rrjg](https://github.com/KiefStudioMA/ks-aur-scanner/security/advisories/GHSA-79wh-jgjx-rrjg)).
 
 ## [1.1.0-rc3] - 2026-06-15
 
@@ -881,6 +893,7 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
+[2.2.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.2
 [2.2.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.1
 [2.2.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0
 [2.2.0-rc.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0-rc.2
