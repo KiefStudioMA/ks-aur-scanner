@@ -109,6 +109,21 @@ impl PackageRecord {
         }
     }
 
+    /// File the record under `package`, the name the scanner resolved the
+    /// package by (the AUR package base, or a validated `--local` name).
+    ///
+    /// `from_scan` starts from `ScanResult::package_name`, which is the raw
+    /// `pkgname` line of the PKGBUILD: text the package author controls and the
+    /// static parser does not expand. Keying the store by it let
+    /// `pkgname="$_pkgname"` packages share one `$_pkgname.json`, and let any
+    /// AUR package declare `pkgname=firefox` and overwrite firefox's baseline,
+    /// which silences the next real change instead of reporting it. Callers
+    /// that store a record must key it with this.
+    pub fn keyed_as(mut self, package: &str) -> Self {
+        self.package = package.to_string();
+        self
+    }
+
     /// Record which analysis inputs produced `finding_ids`.
     pub fn with_fingerprint(mut self, fingerprint: String) -> Self {
         self.analysis_fingerprint = Some(fingerprint);
@@ -230,11 +245,11 @@ impl History {
     /// before it ever reaches here; this additionally refuses anything that is
     /// not a plain file name so a hostile package name cannot escape the dir.
     fn path_for(&self, package: &str, scope: Scope) -> Option<PathBuf> {
-        if package.is_empty()
-            || package.contains('/')
-            || package.contains('\\')
-            || package.contains("..")
-        {
+        // A legal Arch package name is also a safe single path component. This
+        // also refuses keys that could only have come from unexpanded PKGBUILD
+        // text (`$_pkgname`, `${pkgbase}`), so records 2.2.0 and earlier wrote
+        // under such names are never read again.
+        if !crate::validate::is_valid_package_name(package) {
             warn!("refusing to use history path for suspicious package name {package:?}");
             return None;
         }
@@ -251,6 +266,16 @@ impl History {
         let path = self.path_for(package, scope)?;
         let bytes = std::fs::read(&path).ok()?;
         match serde_json::from_slice::<PackageRecord>(&bytes) {
+            // A record that names a different package is not this package's
+            // baseline, whatever file it sits in. Diffing against it compares
+            // two unrelated packages.
+            Ok(r) if r.package != package => {
+                warn!(
+                    "discarding history for {package}: the record is for {:?}",
+                    r.package
+                );
+                None
+            }
             Ok(r) => Some(r),
             Err(e) => {
                 debug!("discarding corrupt history for {package}: {e}");
@@ -348,6 +373,7 @@ impl History {
     /// Returns how many records were removed. Every failure is ignored: pruning
     /// is housekeeping and must never interfere with a scan.
     pub fn prune(&self, max_age_days: u64, max_records: usize) -> usize {
+        let mut removed = 0usize;
         let mut entries: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
         for dir in [self.dir.clone(), self.dir.join("local")] {
             let Ok(rd) = std::fs::read_dir(&dir) else {
@@ -358,6 +384,20 @@ impl History {
                 if p.extension().and_then(|x| x.to_str()) != Some("json") {
                     continue;
                 }
+                // A file whose name is not a legal package name can never be
+                // read (see `path_for`). It is a record keyed by PKGBUILD text
+                // in 2.2.0 or earlier, and possibly a mix of several packages.
+                // Delete it now rather than keep it for a year.
+                let stem_ok = p
+                    .file_stem()
+                    .and_then(|x| x.to_str())
+                    .is_some_and(crate::validate::is_valid_package_name);
+                if !stem_ok {
+                    if std::fs::remove_file(&p).is_ok() {
+                        removed += 1;
+                    }
+                    continue;
+                }
                 let modified = e
                     .metadata()
                     .and_then(|m| m.modified())
@@ -366,7 +406,6 @@ impl History {
             }
         }
 
-        let mut removed = 0usize;
         let cutoff = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(
             max_age_days.saturating_mul(86_400),
         ));
@@ -408,6 +447,7 @@ impl History {
                 let p = e.path();
                 (p.extension()? == "json").then(|| p.file_stem()?.to_str().map(String::from))?
             })
+            .filter(|n| crate::validate::is_valid_package_name(n))
             .collect();
         names.sort();
         names
@@ -1437,6 +1477,71 @@ mod tests {
             );
             assert!(h.get(bad, Scope::Aur).is_none());
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("aur-scan-{tag}-{}-{n}", std::process::id()))
+    }
+
+    #[test]
+    fn unexpanded_pkgbuild_text_is_never_a_key() {
+        // Regression (reported against 2.2.0): `pkgname="$_pkgname"` was stored
+        // as `$_pkgname.json`, shared by every package written that way.
+        let dir = scratch("key");
+        let h = History::open(dir.clone()).unwrap();
+        for bad in ["$_pkgname", "${pkgbase}", "$pkgname-bin", "a b", ""] {
+            h.put(&rec(bad), Scope::Aur).unwrap();
+            assert!(
+                h.get(bad, Scope::Aur).is_none(),
+                "{bad:?} must not be a key"
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "nothing may be written under an illegal name"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_record_for_another_package_is_not_a_baseline() {
+        let dir = scratch("mismatch");
+        let h = History::open(dir.clone()).unwrap();
+        let json = serde_json::to_vec(&rec("tradingview")).unwrap();
+        std::fs::write(dir.join("amitools.json"), json).unwrap();
+        assert!(h.get("amitools", Scope::Aur).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn keyed_as_overrides_the_self_declared_name() {
+        let r = rec("firefox").keyed_as("evil-pkg");
+        assert_eq!(r.package, "evil-pkg");
+    }
+
+    #[test]
+    fn prune_removes_records_left_under_illegal_names() {
+        let dir = scratch("prune");
+        let h = History::open(dir.clone()).unwrap();
+        h.put(&rec("good"), Scope::Aur).unwrap();
+        let legacy = serde_json::to_vec(&rec("$_pkgname")).unwrap();
+        std::fs::write(dir.join("$_pkgname.json"), &legacy).unwrap();
+        std::fs::create_dir_all(dir.join("local")).unwrap();
+        std::fs::write(dir.join("local").join("${pkgbase}.json"), &legacy).unwrap();
+        assert_eq!(
+            h.prune(History::DEFAULT_MAX_AGE_DAYS, History::DEFAULT_MAX_RECORDS),
+            2
+        );
+        assert!(!dir.join("$_pkgname.json").exists());
+        assert!(
+            h.get("good", Scope::Aur).is_some(),
+            "legal records are kept"
+        );
+        assert_eq!(h.packages(), vec!["good".to_string()]);
         std::fs::remove_dir_all(&dir).ok();
     }
 }
