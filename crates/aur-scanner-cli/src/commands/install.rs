@@ -478,6 +478,7 @@ pub async fn run(args: InstallArgs) -> Result<()> {
             match super::check::diff_against_history(
                 h,
                 &result,
+                &base,
                 &pkgbuild_path,
                 maintainer,
                 Scope::Aur,

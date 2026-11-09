@@ -77,17 +77,26 @@ fn classify_local_dir(
 /// Compare a fresh scan against the stored record for the same package, emit
 /// findings for what moved, and store the new record.
 ///
+/// `key` is the name the record is filed under: the AUR package base for an
+/// AUR package, the validated directory name for `--local`. It is never taken
+/// from the scanned PKGBUILD, whose `pkgname` line is untrusted, unexpanded
+/// text (see [`PackageRecord::keyed_as`]).
+///
 /// Returns an empty vector on a first scan. Every failure path is an `Err` the
 /// caller logs and discards: change detection is an enhancement layered on top
 /// of the scan, and a broken cache must never turn a good scan into a bad one.
 pub(crate) fn diff_against_history(
     history: &History,
     result: &aur_scanner_core::ScanResult,
+    key: &str,
     pkgbuild_path: &std::path::Path,
     maintainer: MaintainerLookup,
     scope: Scope,
     fingerprint: String,
 ) -> anyhow::Result<Vec<Finding>> {
+    validate_package_name(key)
+        .with_context(|| format!("refusing to key scan history by {key:?}"))?;
+
     // Capped, like every other read the scanner does. An uncapped
     // read_to_string here bypasses MAX_SCAN_FILE_BYTES and lets a hostile repo
     // hand the history layer a multi-gigabyte "PKGBUILD".
@@ -118,7 +127,7 @@ pub(crate) fn diff_against_history(
         }
     }
 
-    let previous = history.get(&current_key(result), scope);
+    let previous = history.get(key, scope);
 
     // A lookup that FAILED is not a package that is orphaned.
     //
@@ -140,6 +149,7 @@ pub(crate) fn diff_against_history(
     };
 
     let current = PackageRecord::from_scan(result, &parsed, maintainer)
+        .keyed_as(key)
         .with_scripts(&scripts)
         .with_fingerprint(fingerprint);
     let findings = match &previous {
@@ -168,11 +178,6 @@ pub(crate) fn diff_against_history(
         );
     }
     Ok(findings)
-}
-
-/// The history key for a completed scan.
-fn current_key(result: &aur_scanner_core::ScanResult) -> String {
-    result.package_name.clone()
 }
 
 /// What we know about a package's maintainer, distinguishing "the registry says
@@ -426,6 +431,14 @@ pub async fn run(args: CheckArgs) -> Result<()> {
         } else {
             History::AUR
         };
+        // The record's name comes from the resolver, never from the PKGBUILD.
+        // An AUR record is per package base, the repo the PKGBUILD lives in, so
+        // split siblings share one record and `install` (which works per base)
+        // reads and writes the same one.
+        let history_key = match (&local_pkgbuild, &node.package_base) {
+            (None, Some(base)) => base.clone(),
+            _ => node.name.clone(),
+        };
         if local_pkgbuild.is_some()
             && classify_local_dir(&node.name, &requested_roots)
                 == LocalDirBinding::UnrequestedShadow
@@ -502,6 +515,7 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                     match diff_against_history(
                         h,
                         &result,
+                        &history_key,
                         &scanned_path,
                         maintainer,
                         scope,
@@ -743,6 +757,130 @@ fn print_orphans(graph: &DependencyGraph) {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    // --- history keying (2.2.0 report: cross-package baseline collision) ----
+
+    fn hist_scratch(tag: &str) -> PathBuf {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("aur-scan-check-{tag}-{}-{n}", std::process::id()))
+    }
+
+    /// Write `pkgbuild` into its own dir and run the history step on it the way
+    /// `check` does, with `key` as the resolver's name for it.
+    fn scan_into(h: &History, root: &std::path::Path, key: &str, pkgbuild: &str) -> Vec<Finding> {
+        let dir = root.join(key);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("PKGBUILD");
+        std::fs::write(&path, pkgbuild).unwrap();
+        let parsed = StaticParser::new().parse(pkgbuild).unwrap();
+        let result = aur_scanner_core::ScanResult {
+            // What the scanner reports: the raw, unexpanded pkgname line.
+            package_name: parsed.pkgname.first().cloned().unwrap_or_default(),
+            package_version: format!("{}-{}", parsed.pkgver, parsed.pkgrel),
+            findings: vec![],
+            scanned_files: vec![],
+            timestamp: chrono::Utc::now(),
+            scan_duration_ms: 0,
+        };
+        diff_against_history(
+            h,
+            &result,
+            key,
+            &path,
+            MaintainerLookup::Known(Some("alice".into())),
+            History::AUR,
+            "test".into(),
+        )
+        .unwrap()
+    }
+
+    const AMITOOLS: &str = "_pkgname=amitools\npkgname=\"$_pkgname\"\npkgver=1\npkgrel=1\n\
+        source=(\"https://github.com/cnvogelg/amitools/archive/v1.tar.gz\")\n";
+    const TRADINGVIEW: &str = "_pkgname=tradingview\npkgname=\"$_pkgname\"\npkgver=2\npkgrel=1\n\
+        source=(\"https://tvd-packages.tradingview.com/tv.deb\")\n";
+
+    #[test]
+    fn packages_sharing_an_unexpanded_pkgname_keep_separate_history() {
+        let root = hist_scratch("dollar");
+        let h = History::open(root.join("history")).unwrap();
+        // The reporter's sequence: amitools, tradingview, amitools, amitools.
+        assert!(scan_into(&h, &root, "amitools", AMITOOLS).is_empty());
+        assert!(
+            scan_into(&h, &root, "tradingview", TRADINGVIEW).is_empty(),
+            "a first scan of tradingview must not diff against amitools"
+        );
+        assert!(
+            scan_into(&h, &root, "amitools", AMITOOLS).is_empty(),
+            "an unchanged amitools must not report an upstream change"
+        );
+        assert!(scan_into(&h, &root, "amitools", AMITOOLS).is_empty());
+        assert_eq!(
+            h.packages(),
+            vec!["amitools".to_string(), "tradingview".to_string()]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn an_aur_package_cannot_claim_another_packages_baseline() {
+        let root = hist_scratch("claim");
+        let h = History::open(root.join("history")).unwrap();
+        let firefox = "pkgname=firefox\npkgver=1\npkgrel=1\n\
+            source=(\"https://archive.mozilla.org/firefox-1.tar.xz\")\n";
+        scan_into(&h, &root, "firefox", firefox);
+        // An unrelated AUR package whose PKGBUILD says it is firefox, pointing
+        // at the attacker's upstream.
+        let squatter = "pkgname=firefox\npkgver=9\npkgrel=1\n\
+            source=(\"https://evil.example/firefox.tar.xz\")\n";
+        scan_into(&h, &root, "evil-pkg", squatter);
+        let kept = h
+            .get("firefox", History::AUR)
+            .expect("firefox baseline survives");
+        assert_eq!(kept.version, "1-1");
+        assert!(kept
+            .source_origins
+            .iter()
+            .all(|o| !o.contains("evil.example")));
+        // And the hijack-shaped change on the real firefox is still reported.
+        let hijacked = "pkgname=firefox\npkgver=2\npkgrel=1\n\
+            source=(\"https://evil.example/firefox.tar.xz\")\n";
+        let f = scan_into(&h, &root, "firefox", hijacked);
+        assert!(
+            f.iter().any(|f| f.id == "DIFF-003"),
+            "got {:?}",
+            f.iter().map(|f| &f.id).collect::<Vec<_>>()
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn an_illegal_history_key_is_refused() {
+        let root = hist_scratch("illegal");
+        let h = History::open(root.join("history")).unwrap();
+        let dir = root.join("x");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("PKGBUILD"), AMITOOLS).unwrap();
+        let result = aur_scanner_core::ScanResult {
+            package_name: "$_pkgname".into(),
+            package_version: "1-1".into(),
+            findings: vec![],
+            scanned_files: vec![],
+            timestamp: chrono::Utc::now(),
+            scan_duration_ms: 0,
+        };
+        assert!(diff_against_history(
+            &h,
+            &result,
+            "$_pkgname",
+            &dir.join("PKGBUILD"),
+            MaintainerLookup::NotLookedUp,
+            History::AUR,
+            "test".into(),
+        )
+        .is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     // --- --local name binding (audit ME-6) -----------------------------------
     // A local dir's declared name is honored as a stand-in only for a node the
