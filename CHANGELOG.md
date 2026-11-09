@@ -6,6 +6,28 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-11-09
+
+### Security
+
+- **Scan history is no longer keyed by what a PKGBUILD says its name is.**
+  Change detection stored each package's baseline under the PKGBUILD's raw
+  `pkgname` line, which the package author writes and the static parser does
+  not expand. Two unrelated packages written as `pkgname="$_pkgname"` shared one
+  `$_pkgname.json` and overwrote each other's baseline: a clean package raised a
+  false `DIFF-003` after an unrelated scan, and the next scan of it read clean
+  again. Worse, any AUR package could declare `pkgname=firefox` and replace the
+  real firefox baseline. Because the `DIFF-*` codes are deltas, a replaced
+  baseline does not raise an alarm; it silences the next real change, such as a
+  hijacked package moving to a new upstream. Records are now keyed by the
+  package base the resolver got from the AUR (or the validated `--local` name),
+  so `check` and `install` read and write the same record. The store refuses any
+  key that is not a legal Arch package name, discards a record that names a
+  different package than the one it is filed under, and deletes records left
+  under illegal names (such as `$_pkgname.json`) the next time it prunes.
+  Expect one silent first scan for packages whose old record was filed under a
+  different name.
+
 ## [2.2.0] - 2026-10-02
 
 Stable release of the 2.2.0 line: everything in rc.1 and rc.2 below, plus the
@@ -819,6 +841,7 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
+[2.2.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.1
 [2.2.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0
 [2.2.0-rc.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0-rc.2
 [2.1.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.1
