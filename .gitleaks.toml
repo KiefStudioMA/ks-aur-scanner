@@ -1,0 +1,15 @@
+# gitleaks configuration: the built-in rules, plus one allowlisted value.
+#
+# 25631EAE3F43999050B7D7021132BF893C33FB51 is the PUBLIC fingerprint of the
+# release signing key. It has to be published: makepkg verifies the signed
+# release tags against it (validpgpkeys), and SECURITY.md lists it. The
+# generic-api-key rule flags it in generated .SRCINFO files, which cannot carry
+# the inline `gitleaks:allow` comment the PKGBUILDs use. The match is anchored
+# to that exact value, so nothing else is exempted.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public release-key fingerprint"
+regexTarget = "secret"
+regexes = ['''^['"`]?25631EAE3F43999050B7D7021132BF893C33FB51['"`]?$''']
