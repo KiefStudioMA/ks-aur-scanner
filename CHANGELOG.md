@@ -35,7 +35,8 @@ All notable changes to this project are documented here. The format is based on
   `c=curl; $c URL | sh` turned two Critical findings into "No security issues
   found". Line breaks in substituted values are now flattened into command
   separators. New malicious fixture: `newline-shift`.
-- Updated tokio to 1.54.1 for RUSTSEC-2026-0386.
+- Updated tokio to 1.54.1 (RUSTSEC-2026-0386), and futures to 0.3.34 and hyper
+  to 1.12.0, which drops the unmaintained `pin-utils` (RUSTSEC-2026-0441).
 
 ## [2.2.0] - 2026-10-02
 
