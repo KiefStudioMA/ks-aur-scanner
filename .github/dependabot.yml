@@ -18,6 +18,11 @@ updates:
     # Minor and patch updates are API-compatible, so they batch into one PR that
     # should pass CI as-is. Semver-major updates stay out of the group and open
     # one PR each, because each needs code changes and its own review.
+    # sha2 0.11 needs Rust 1.88, above the workspace rust-version (1.85).
+    # Drop this when the MSRV moves.
+    ignore:
+      - dependency-name: "sha2"
+        versions: [">= 0.11"]
     groups:
       cargo-minor-patch:
         patterns: ["*"]

@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **`aur-scanner-git` builds main again.** Its `prepare()` refuses any HEAD it
+  cannot trace to commits signed by the release key. A dependabot PR was merged
+  without its head being re-signed first, which broke the chain for every later
+  merge (the build failed closed). A merge is now also trusted when its tree is
+  identical to a release-key-signed PR head's tree: that signature already
+  covers the whole tree, so this is the same guarantee as a directly signed
+  commit. Merges that add an edit, or merge an unsigned head, are still refused.
+
 ### Changed
 
 - Dependencies moved to their current major versions: thiserror 2, toml 1.2,

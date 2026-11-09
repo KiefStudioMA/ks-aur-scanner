@@ -66,6 +66,13 @@ _ks_trusted() {
     (( ${#parents[@]} == 3 )) || return 1
     _ks_signed_by_release_key "${parents[2]}" || return 1
 
+    # A merge whose tree IS the release-key-signed head's tree carries nothing
+    # that signature does not cover (a commit signature covers its whole tree),
+    # so it is trusted on the same terms as a directly signed commit, whatever
+    # its first parent. This is what lets main recover after an unsigned PR
+    # head was merged by mistake: merging an up-to-date signed PR re-anchors it.
+    [[ $(git rev-parse "$commit^{tree}") == "$(git rev-parse "${parents[2]}^{tree}")" ]] && return 0
+
     local merged
     merged=$(git merge-tree --write-tree "${parents[1]}" "${parents[2]}" 2>/dev/null) || return 1
     [[ $merged == "$(git rev-parse "$commit^{tree}")" ]] || return 1
