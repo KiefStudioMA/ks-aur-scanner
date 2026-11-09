@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **PERSIST-002 no longer fires on `REUSE.toml`.** The rule matched the bare
+  text `.timer`, so the `"*.timer"` glob in the REUSE licence file from the
+  standard Arch packaging template was reported as a Critical systemd timer
+  and, with the pacman hook on `AbortOnFail`, blocked the install. A bare
+  `*.timer` glob no longer matches on its own; a named timer unit still does,
+  as does a timer glob copied or linked into a systemd directory. Thanks to
+  @salvoza (#54) and @innateessence (#56) for the reports.
+
+### Added
+
+- PERSIST-002 also catches a timer enabled by linking it into
+  `timers.target.wants`, and a transient timer created with
+  `systemd-run --on-calendar`/`--on-boot` and the other `--on-*` triggers.
+
 ## [2.2.1] - 2026-11-09
 
 ### Security

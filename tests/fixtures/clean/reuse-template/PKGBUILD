@@ -1,0 +1,22 @@
+# Maintainer: fixture <fixture@example.com>
+# A plain package carrying the REUSE.toml from the Arch packaging template.
+pkgname=reuse-template
+pkgver=1.0
+pkgrel=1
+pkgdesc="Fixture: clean package with a REUSE.toml"
+arch=('x86_64')
+url="https://example.com/reuse-template"
+license=('MIT')
+source=("https://example.com/reuse-template-$pkgver.tar.gz")
+sha256sums=('9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08')
+
+build() {
+    cd "$pkgname-$pkgver"
+    ./configure --prefix=/usr
+    make
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    make DESTDIR="$pkgdir" install
+}
