@@ -28,7 +28,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 colored.workspace = true
 anyhow.workspace = true
-dirs = "5.0"
+dirs = "7.0"
 
 [dev-dependencies]
 chrono.workspace = true

@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- Dependencies moved to their current major versions: thiserror 2, toml 1.2,
+  reqwest 0.13 (still native-tls, no rustls), colored 3, base64 0.23, and dirs 7
+  for both crates (the CLI was on 5). sha2 stays on 0.10 because 0.11 needs
+  Rust 1.88, above the 1.85 MSRV. Every other dependency is on its newest
+  release that supports Rust 1.85.
+
 ## [2.2.2] - 2026-11-09
 
 ### Security
