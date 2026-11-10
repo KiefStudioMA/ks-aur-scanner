@@ -25,7 +25,8 @@ library API, so this is a major release. Upgrade from any 2.x version.
   `SCAN-002`. At the default gate (`AUR_SCAN_SEVERITY=high`), a few
   packages that installed quietly under 2.2.2 now stop at the prompt: review
   the finding and confirm, or build deliberately with `aur-scan install
-  --force`. With `AUR_SCAN_HOOK_STRICT=1` the pacman hook aborts on them.
+  --force`. If you enabled the pacman hook, it aborts the transaction on a
+  new Critical finding; High findings print a warning.
 - **The whole package directory is scanned**, not only the files the
   PKGBUILD names, so a stray file in an AUR repo can produce findings.
 - **The example rule no longer loads.** `EXAMPLE-001` moved out of
@@ -92,11 +93,11 @@ fixed in 3.0.0. Advisories with full details will follow.
   changed C2 address went unnoticed. Findings are now keyed by rule, file and
   normalized snippet (only the package's own version-shaped `pkgver` is
   masked), and every file typed as a scriptlet is hashed.
-- **Denial of service.** Inputs that made 2.2.2 or this branch's earlier
-  code run for minutes (self-referential variables, backtracking globs, very
-  long lines, deep `$(` nests, many heredocs or helper functions) are bounded
-  and linear. A panic in any stage becomes a Critical `SCAN-001` for that
-  package only, and the per-package deadline now fires and exits promptly.
+- **Denial of service.** Inputs that made 2.2.2 run for minutes
+  (self-referential variables, backtracking globs, very long lines, deep `$(`
+  nests, many heredocs or helper functions) are bounded and linear. A panic in
+  any stage becomes a Critical `SCAN-001` for that package only, and the
+  per-package deadline now fires and exits promptly.
 
 ### Added
 
