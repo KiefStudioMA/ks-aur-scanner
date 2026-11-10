@@ -19,8 +19,8 @@ invariants that keep this a trustworthy security tool, not busywork.
 
 ## Checklist
 
-- [ ] `cargo test --all` passes
-- [ ] `cargo clippy --all` is **warning-free**
+- [ ] `cargo test --workspace --locked` passes
+- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` is clean
 - [ ] `cargo fmt --all` applied
 - [ ] New behaviour has tests (a fix has a test that fails before, passes after)
 
@@ -36,4 +36,4 @@ invariants that keep this a trustworthy security tool, not busywork.
       look-alike (no `chmod 755`-style false positives).
 
 > Found a security vulnerability (incl. a false negative)? **Don't** open a public
-> PR — see [SECURITY.md](../SECURITY.md).
+> PR — see [SECURITY.md](https://github.com/KiefStudioMA/ks-aur-scanner/blob/main/SECURITY.md).

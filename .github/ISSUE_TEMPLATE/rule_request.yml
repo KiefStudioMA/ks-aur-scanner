@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Propose a new detection. If you can already write it, even better — send a
-        community TOML rule in `install/rules.d/` (see `example.toml`) or a PR.
+        community TOML rule in `install/rules.d/` (copy `install/example-rule.toml`) or a PR.
 
         **Do not paste live malware or real malicious package names/payloads.**
         Describe the *behaviour* and use a sanitized, illustrative snippet.
