@@ -6,23 +6,175 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-### Fixed
+## [3.0.0] - 2026-11-10
 
-- **`aur-scanner-git` builds main again.** Its `prepare()` refuses any HEAD it
-  cannot trace to commits signed by the release key. A dependabot PR was merged
-  without its head being re-signed first, which broke the chain for every later
-  merge (the build failed closed). A merge is now also trusted when its tree is
-  identical to a release-key-signed PR head's tree: that signature already
-  covers the whole tree, so this is the same guarantee as a directly signed
-  commit. Merges that add an edit, or merge an unsigned head, are still refused.
+3.0.0 closes a set of ways a crafted package could hide code from the scanner
+in 2.2.2 and earlier, and changes how the scanner treats anything it cannot
+model with certainty: it now reports the uncertainty instead of trusting it.
+That makes results different from 2.x on some real packages and changes the
+library API, so this is a major release. Upgrade from any 2.x version.
+
+### Upgrading from 2.x
+
+- **Expect new findings.** About 25 codes are new, and printed text can no
+  longer hide a High or Critical finding. A `.install` file that prints
+  `sudo systemctl enable ...` instructions in a heredoc, or through its own
+  `note()` helper, is now reported at the rule's severity. A one-line
+  `echo "..."` of a plain literal is reported as the Medium `META-008`
+  instead (see below). Packages that commit opaque archives get a Medium
+  `SCAN-002`. At the default gate (`AUR_SCAN_SEVERITY=high`), a few
+  packages that installed quietly under 2.2.2 now stop at the prompt: review
+  the finding and confirm, or build deliberately with `aur-scan install
+  --force`. With `AUR_SCAN_HOOK_STRICT=1` the pacman hook aborts on them.
+- **The whole package directory is scanned**, not only the files the
+  PKGBUILD names, so a stray file in an AUR repo can produce findings.
+- **The example rule no longer loads.** `EXAMPLE-001` moved out of
+  `rules.d/` to `/usr/share/aur-scanner/example-rule.toml`; copy it into a
+  rules directory if you used it as a template.
+- **History records use a new key** (rule, file and a hash of the normalized
+  snippet). Records written by 2.x are still read, falling back to rule IDs,
+  so the first `diff` after upgrading reports nothing spurious.
+- **Library users (`aur-scanner-core`):** `AnalysisContext` and
+  `ParsedPkgbuild` have new fields, `informational_lines` is replaced by the
+  `Inert` classification, and `pkgfiles::collect` types files differently.
+  Code that builds these structs by hand needs updating.
+
+### Security
+
+Each item below is a way a package could get code past 2.2.2. All of them are
+fixed in 3.0.0. Advisories with full details will follow.
+
+- **Shell-lexing blind spots.** A fake heredoc opener (`echo "see <<END"`,
+  `cat <<END-OF-NOTES`, `"E"OF`, a numeric delimiter, `$(cat <<X ...)` inside
+  double quotes) or a comment ending in `\` could hide every following line
+  from every analyzer. The heredoc and comment model is now one quote-,
+  comment-, `${ }`- and `$( )`-aware lexer, a heredoc whose terminator never
+  arrives is not treated as text, and, more importantly, no printed text
+  (heredoc body or print line) can hide a High or Critical finding any more,
+  so a future desync costs at most a false positive. Pipe-to-shell sinks also
+  cover `|&`, a pipe at the end of a line, `. /dev/stdin`, `xargs ... bash -c`,
+  `tee >(bash)` and `bash < <(curl ...)`.
+- **Obfuscated command names.** Empty insertions (`n$()pm`, `` n``pm ``,
+  `n${unset}pm`), `$"..."` quoting, parameter-expansion operators
+  (`${v:1:3}`, `${v//x/}`, `${v#p}`, `${v,,}`, `${v:-npm}`, `${a[1]}`),
+  `+=`, `printf -v`, `read <<<`, `tr` rot13, brace lists, aliases, helper
+  functions called with literal arguments, assignments made in another
+  function and variables set in a sourced sidecar are now resolved before the
+  rules run. An unresolvable command word next to a fetch-and-run or an
+  install verb is reported as `OBF-020`. Install-hook package-manager rules
+  (`ATOMIC-002`, `INSTALL-004`) match options before the subcommand
+  (`npm -g install`, `npm --prefix /usr install`) and the npm, yarn, pnpm,
+  bun, pipx and uv aliases (`npm in`, `bun a`, `uvx`, ...).
+- **Scriptlets the scanner did not type as scriptlets.** `install=` inside a
+  split package's `package_<name>()` used the first `pkgname`, operators and
+  chained variables were not evaluated, and `declare`/`eval`/`&&` forms were
+  not seen, so the payload scriptlet was scanned without the install-script
+  rules. Scriptlet typing no longer depends on resolving `install=`: every
+  file `install=` could name under any package name, every `*.install`, and
+  every file that defines `pre_`/`post_` `install`/`upgrade`/`remove` is
+  scanned as a scriptlet. A name that cannot be resolved soundly raises
+  `META-007` (High).
+- **Files the scanner never read.** Committed local archives, NUL-bearing
+  files, files whose name or header looked like media or a certificate, and
+  files in subdirectories were skipped. Every file in the package tree is now
+  read (bounded: depth 8, 4096 files, 20 s; hitting a bound is a Critical
+  `SCAN-001`). Plain tar members are scanned in memory; a tar outside a
+  strict, well-understood subset raises `SCAN-004` (High), a member path
+  that escapes raises `SCAN-003` (High), and an archive the scanner cannot
+  open raises `SCAN-002` (Medium, not blocking by default). Arch-specific
+  arrays (`source_x86_64`, `sha256sums_aarch64`, `depends_x86_64`, ...) are
+  folded in the way makepkg does, so a `SKIP` on an arch-specific download is
+  reported, and a checksum array can no longer be silenced by one
+  uncountable element or a `"SKIP${unset}"` entry.
+- **Change detection.** `aur-scan diff` and the history store keyed findings
+  by rule ID only and hashed only `*.install`/`*.hook` files, so a second hit
+  of a rule already raised, a scriptlet named through `install=foo.scr`, or a
+  changed C2 address went unnoticed. Findings are now keyed by rule, file and
+  normalized snippet (only the package's own version-shaped `pkgver` is
+  masked), and every file typed as a scriptlet is hashed.
+- **Denial of service.** Inputs that made 2.2.2 or this branch's earlier
+  code run for minutes (self-referential variables, backtracking globs, very
+  long lines, deep `$(` nests, many heredocs or helper functions) are bounded
+  and linear. A panic in any stage becomes a Critical `SCAN-001` for that
+  package only, and the per-package deadline now fires and exits promptly.
+
+### Added
+
+- Live-path writes outside `$pkgdir`: `PERSIST-007` (`authorized_keys`,
+  Critical), `PERSIST-008` (AI coding-assistant config and hook files such as
+  `~/.claude/settings.json`, Critical), `PERSIST-009` (pacman hook written
+  outside the package, Critical), `PERSIST-010` (udev rule written outside the
+  package, High), `TAMPER-018` (`/etc/hosts`, `resolv.conf`, `nsswitch.conf`,
+  High), `TAMPER-019`/`TAMPER-020` (git `core.fsmonitor` and `core.hooksPath`,
+  High) and `TAMPER-021` (the same system-wide, Critical). Directory
+  destinations (`cp authorized_keys /root/.ssh/`, `install -t`) count.
+- Shipped hooks and udev rules, recognised by content: `PERSIST-011`
+  (pacman hook on every transaction, Medium), `PERSIST-012` (one that fetches,
+  runs a shell or uses a temp or home path, High), `PERSIST-013` (udev rule
+  that runs a program, Medium), `PERSIST-014` (one that runs a shell, fetches
+  or uses a temp or home path, High) and `PERSIST-015` (hook or rule content
+  generated at build time, Medium).
+- Build-time installs: `ATOMIC-005` (a named npm/pnpm/yarn/bun package or
+  `npx -y`/`dlx` fetch in a PKGBUILD function, Medium), `ATOMIC-006` (one
+  from a URL or git remote, High) and `ATOMIC-007` (bare `npx`/`bunx`/`exec`,
+  Low).
+- `EXFIL-010` (Medium): `.onion` hosts and the local Tor SOCKS port.
+- `SRC-011` (High): references above the package directory
+  (`$startdir/..`, `$srcdir/../..`), which can run files nobody reviewed.
+- `CHK-009` (Medium): checksum alignment cannot be determined.
+- `META-007` (High), `META-008` (Medium), `OBF-020` (High), `SCAN-002`
+  (Medium), `SCAN-003` (High), `SCAN-004` (High), described above.
 
 ### Changed
 
+- **`META-008`, install messages.** A one-line `echo`/`printf` (or, in a
+  PKGBUILD, `msg`/`msg2`/`plain`/`warning`/`error`) whose only argument is one
+  literal quoted string with no `$`, backtick or redirection, with nothing
+  before it left open, is reported as the Medium `META-008` naming the rule it
+  matched, instead of that rule's High or Critical. The exemption is off for
+  the whole package if any printer is defined, aliased or `enable`d, or if
+  `eval`, `trap`, `shopt`, `BASH_ALIASES`, `command_not_found_handle`,
+  `BASH_ENV` or a command-position `source` appears. Heredocs are never
+  exempt.
+- `FUNC-001` also covers `pkgver()`, `check()` and executed top-level code,
+  and follows helper functions through the whole call chain. `prepare()` is
+  not covered, because fetching there is what the Arch packaging guidelines
+  ask for.
+- Rule and IOC loading warnings are also emitted as `tracing` events
+  (target `aur_scanner_core::loud`) for embedders; the stderr line stays.
+- Every published crate ships the license text; the CLI and plugin crates no
+  longer ship tests that only run inside the repository.
 - Dependencies moved to their current major versions: thiserror 2, toml 1.2,
-  reqwest 0.13 (still native-tls, no rustls), colored 3, base64 0.23, and dirs 7
-  for both crates (the CLI was on 5). sha2 stays on 0.10 because 0.11 needs
-  Rust 1.88, above the 1.85 MSRV. Every other dependency is on its newest
-  release that supports Rust 1.85.
+  reqwest 0.13 (still native-tls), colored 3, base64 0.23 and dirs 7. Unused
+  dependencies were removed and tokio features trimmed. sha2 stays on 0.10
+  because 0.11 needs Rust 1.88, above the 1.85 MSRV. The workspace uses
+  resolver 3.
+
+### Fixed
+
+- False positives removed on real packages: `CHK-006` count mismatches from
+  unexpanded `{,.sig}`/`{,.asc}` brace lists (1password, cursor-bin,
+  openssl-1.1, rustdesk, units and others), `CHK-005` on packages whose
+  binaries are pinned in arch-specific arrays (claude-code), `CHK-008` on
+  checksums held in variables, and `SRC-005` on packages whose sources are
+  only in arch-specific arrays (localsend-bin).
+- `aur-scanner-git` builds `main` again: a merge whose tree is identical to a
+  release-key-signed PR head's tree is trusted, since that signature covers
+  the whole tree. Merges that add an edit or merge an unsigned head are still
+  refused.
+- `aur-scan scan` on very large or crafted inputs no longer runs for minutes.
+
+### Known limitations
+
+These are tracked for 3.0.1:
+
+- A Makefile recipe added by a patch that builds a command from Make
+  variables (`$(F)$(G) url | $(SHELL)`) is not resolved.
+- A README that documents `curl ... | sh` in a code block is reported at the
+  rule's severity.
+- `PERSIST-006` reports systemd drop-ins installed into `$pkgdir`
+  (nvidia-580xx-utils).
+- Synthetic inputs near the 2 MiB file cap take several seconds.
 
 ## [2.2.2] - 2026-11-09
 
@@ -911,6 +1063,8 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
+[Unreleased]: https://github.com/KiefStudioMA/ks-aur-scanner/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v3.0.0
 [2.2.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.2
 [2.2.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.1
 [2.2.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.0
@@ -921,4 +1075,8 @@ See the project history prior to the introduction of this changelog.
 [2.1.0-rc.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0-rc.2
 [2.1.0-rc.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.1.0-rc.1
 [2.0.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.0.0
+[1.1.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.1.0
+[1.1.0-rc3]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.1.0-rc3
+[1.1.0-rc2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.1.0-rc2
 [1.1.0-rc1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.1.0-rc1
+[1.0.3]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v1.0.3
