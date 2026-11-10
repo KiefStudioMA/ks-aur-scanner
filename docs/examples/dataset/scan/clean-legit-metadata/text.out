@@ -12,7 +12,7 @@ Scan Results: bash-git
 
 ============================================================
 Package: bash-git v5.2.r100.gabc1234-1
-Scan duration: 6ms
+Scan duration: 25ms
 
 Found 1 issue(s):
   1 LOW

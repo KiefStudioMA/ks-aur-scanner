@@ -3,6 +3,8 @@
 EXEC-REMOTE Fetches and runs external code [CRITICAL]
 ======================================================================
 
+Severity: CRITICAL
+
 Category:
   Malicious Code  (detector: remote_exec)
 

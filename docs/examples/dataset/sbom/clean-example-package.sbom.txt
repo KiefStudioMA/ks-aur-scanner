@@ -11,10 +11,10 @@ Scanning: example-package (local) ok
 
 Dependency tree (review before installing):
 [AUR] example-package
-[repo] cmake
-[repo] glibc
-[repo] ninja
-[repo] openssl
+├─ [repo] cmake
+├─ [repo] glibc
+├─ [repo] ninja
+└─ [repo] openssl
 
 SBOM: CycloneDX SBOM written to staging/sbom/clean-example-package.cdx.json
 

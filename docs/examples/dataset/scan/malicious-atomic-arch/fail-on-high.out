@@ -3,14 +3,14 @@ Scan Results: alvr
 ============================================================
 
 [CRITICAL] ATOMIC-001 Atomic Arch malicious npm/bun package (install script)
-    References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js). These pull an infostealer and eBPF rootkit during the build/install phase.
+    References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js, nextfile-js / ansi-colors-nextfile-js and related wave-3 names). These pull an infostealer and eBPF rootkit during the build/install phase.
     Location: tests/fixtures/malicious/atomic-arch/alvr.install:4
     Code:     npm install atomic-lockfile >/dev/null 2>&1
     Recommendation: Do NOT build. This is a known-malicious dependency. Remove the package and treat the host as compromised: rotate credentials (SSH, npm/GitHub tokens, browser sessions).
     Reference: CWE-506
 
 [CRITICAL] ATOMIC-001 Atomic Arch malicious npm/bun package (install script)
-    References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js). These pull an infostealer and eBPF rootkit during the build/install phase.
+    References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js, nextfile-js / ansi-colors-nextfile-js and related wave-3 names). These pull an infostealer and eBPF rootkit during the build/install phase.
     Location: tests/fixtures/malicious/atomic-arch/alvr.install:9
     Code:     bun install js-digest >/dev/null 2>&1
     Recommendation: Do NOT build. This is a known-malicious dependency. Remove the package and treat the host as compromised: rotate credentials (SSH, npm/GitHub tokens, browser sessions).
@@ -43,7 +43,8 @@ Scan Results: alvr
     Reference: CWE-506
 
 [HIGH] CHK-005 All non-VCS sources use SKIP checksum
-    No integrity verification is performed on 1 non-VCS source(s)
+    No integrity verification is performed on 1 non-VCS source(s): https://github.com/alvr-org/ALVR/archive/v${pkgver}.tar.gz
+    Code: source: https://github.com/alvr-org/ALVR/archive/v${pkgver}.tar.gz
     Recommendation: Provide real checksums for non-VCS sources
     Reference: CWE-354
 
@@ -51,7 +52,7 @@ Scan Results: alvr
 
 ============================================================
 Package: alvr v20.0.0-1
-Scan duration: 7ms
+Scan duration: 22ms
 
 Found 7 issue(s):
   6 CRITICAL

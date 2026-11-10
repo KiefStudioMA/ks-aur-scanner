@@ -31,7 +31,8 @@ Scan Results: netutil-bin
     Reference: CWE-94
 
 [HIGH] CHK-005 All non-VCS sources use SKIP checksum
-    No integrity verification is performed on 1 non-VCS source(s)
+    No integrity verification is performed on 1 non-VCS source(s): https://example.com/n-${pkgver}.tar.gz
+    Code: source: https://example.com/n-${pkgver}.tar.gz
     Recommendation: Provide real checksums for non-VCS sources
     Reference: CWE-354
 
@@ -39,7 +40,7 @@ Scan Results: netutil-bin
 
 ============================================================
 Package: netutil-bin v1.0.0-1
-Scan duration: 7ms
+Scan duration: 23ms
 
 Found 5 issue(s):
   4 CRITICAL

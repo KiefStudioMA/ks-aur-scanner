@@ -56,7 +56,7 @@ Scan Results: systemhelper
 
 ============================================================
 Package: systemhelper v1.0.0-1
-Scan duration: 6ms
+Scan duration: 23ms
 
 Found 9 issue(s):
   3 HIGH

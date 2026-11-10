@@ -1,0 +1,32 @@
+Generate a shell completion script for aur-scan
+
+Write it to the standard location for your shell, e.g. aur-scan completions bash > /usr/share/bash-completion/completions/aur-scan aur-scan completions zsh  > /usr/share/zsh/site-functions/_aur-scan aur-scan completions fish > /usr/share/fish/vendor_completions.d/aur-scan.fish
+
+Usage: aur-scan completions [OPTIONS] <SHELL>
+
+Arguments:
+  <SHELL>
+          Shell to generate completions for
+          
+          [possible values: bash, elvish, fish, powershell, zsh]
+
+Options:
+  -c, --config <CONFIG>
+          Configuration file path
+
+  -s, --severity <SEVERITY>
+          Minimum severity to report
+          
+          [possible values: critical, high, medium, low, info]
+
+  -v, --verbose
+          Enable verbose output
+
+  -q, --quiet
+          Quiet mode (only show findings)
+
+      --no-color
+          Disable colored output (also honored: the NO_COLOR environment variable)
+
+  -h, --help
+          Print help (see a summary with '-h')

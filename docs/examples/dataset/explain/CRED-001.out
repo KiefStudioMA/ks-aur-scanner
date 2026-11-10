@@ -3,6 +3,8 @@
 CRED-001 SSH key access [CRITICAL]
 ======================================================================
 
+Severity: CRITICAL
+
 Category:
   Credential Theft  (detector: rules)
 

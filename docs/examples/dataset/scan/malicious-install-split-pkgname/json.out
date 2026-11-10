@@ -1,0 +1,49 @@
+{
+  "package_name": "demo",
+  "package_version": "1-1",
+  "findings": [
+    {
+      "id": "ATOMIC-002",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Node/Bun package manager in install hook (install script)",
+      "description": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.",
+      "location": {
+        "file": "tests/fixtures/malicious/install-split-pkgname/demo-extras.scr",
+        "line": 2,
+        "column": 3,
+        "snippet": "  npm install evilpkg"
+      },
+      "recommendation": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "npm install",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "META-005",
+      "severity": "medium",
+      "category": "suspicious_metadata",
+      "title": "install= points outside the package",
+      "description": "install=$pkgname.scr is not a plain `<name>.install` file in the package directory (it contains a path, `..`, or a non-.install name). makepkg runs this scriptlet as part of the package; an out-of-tree path is a way to run an unexpected file.",
+      "location": {
+        "file": "tests/fixtures/malicious/install-split-pkgname/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "install=$pkgname.scr"
+      },
+      "recommendation": "Use a plain `<pkgname>.install` file shipped alongside the PKGBUILD.",
+      "cwe_id": "CWE-426",
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/install-split-pkgname/PKGBUILD",
+    "tests/fixtures/malicious/install-split-pkgname/demo.scr",
+    "tests/fixtures/malicious/install-split-pkgname/demo-extras.scr"
+  ],
+  "timestamp": "2026-11-10T14:51:00.110707066Z",
+  "scan_duration_ms": 22
+}

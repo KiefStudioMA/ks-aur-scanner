@@ -127,11 +127,6 @@ Scan Results: launcher-shell
     Recommendation: Network access should happen in source= array, not build functions
 
 [HIGH] FUNC-001 Network access in build function
-    Function 'build' contains network access command 'wget'
-    Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:15
-    Recommendation: Network access should happen in source= array, not build functions
-
-[HIGH] FUNC-001 Network access in build function
     Function 'package' contains network access command 'wget'
     Location: tests/fixtures/malicious/launcher-shell/PKGBUILD:29
     Recommendation: Network access should happen in source= array, not build functions
@@ -144,10 +139,10 @@ Scan Results: launcher-shell
 
 ============================================================
 Package: launcher-shell v1.0.0-1
-Scan duration: 7ms
+Scan duration: 29ms
 
-Found 21 issue(s):
+Found 20 issue(s):
   14 CRITICAL
-  6 HIGH
+  5 HIGH
   1 MEDIUM
 ============================================================

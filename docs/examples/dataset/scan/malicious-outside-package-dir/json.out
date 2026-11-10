@@ -1,0 +1,83 @@
+{
+  "package_name": "outside",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "META-007",
+      "severity": "high",
+      "category": "suspicious_metadata",
+      "title": "install= cannot be statically resolved",
+      "description": "The install scriptlet name is not a plain value the scanner can resolve (eval of an expansion, or source of another file). makepkg runs whichever file it names as the package's install scriptlet, so every file beside the PKGBUILD was scanned as a possible scriptlet.",
+      "location": {
+        "file": "tests/fixtures/malicious/outside-package-dir/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "install=eval of an expansion, or source of another file"
+      },
+      "recommendation": "Do not install. Use a literal `install=<pkgname>.install` and review the file it names.",
+      "cwe_id": "CWE-426",
+      "metadata": {
+        "values": [
+          "eval of an expansion, or source of another file"
+        ]
+      }
+    },
+    {
+      "id": "SRC-011",
+      "severity": "high",
+      "category": "configuration",
+      "title": "References files outside the package directory",
+      "description": "A PKGBUILD or scriptlet reaches above the package directory through $startdir/.., $BUILDDIR/.. or $srcdir/../.. (srcdir is startdir/src, so two levels). Whatever sits there, such as a sibling package in an AUR helper's build cache, is code the scanner never saw, and the package can read it, source it or run it. Their contents were not reviewed.",
+      "location": {
+        "file": "tests/fixtures/malicious/outside-package-dir/PKGBUILD",
+        "line": 13,
+        "column": 11,
+        "snippet": "    bash \"$srcdir/../../sibling-pkg/helper.sh\""
+      },
+      "recommendation": "Do not build. A package must only use files it ships in its own directory; put anything else in source= with a checksum.",
+      "cwe_id": "CWE-22",
+      "metadata": {
+        "matched_text": "$srcdir/../../"
+      }
+    },
+    {
+      "id": "SRC-011",
+      "severity": "high",
+      "category": "configuration",
+      "title": "References files outside the package directory",
+      "description": "A PKGBUILD or scriptlet reaches above the package directory through $startdir/.., $BUILDDIR/.. or $srcdir/../.. (srcdir is startdir/src, so two levels). Whatever sits there, such as a sibling package in an AUR helper's build cache, is code the scanner never saw, and the package can read it, source it or run it. Their contents were not reviewed.",
+      "location": {
+        "file": "tests/fixtures/malicious/outside-package-dir/PKGBUILD",
+        "line": 17,
+        "column": 8,
+        "snippet": "    . \"$startdir/../sibling-pkg/lib.sh\""
+      },
+      "recommendation": "Do not build. A package must only use files it ships in its own directory; put anything else in source= with a checksum.",
+      "cwe_id": "CWE-22",
+      "metadata": {
+        "matched_text": "$startdir/../"
+      }
+    },
+    {
+      "id": "SRC-005",
+      "severity": "medium",
+      "category": "configuration",
+      "title": "No sources with build function",
+      "description": "Package has build() function but no source array",
+      "location": {
+        "file": "tests/fixtures/malicious/outside-package-dir/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Verify this is intentional; build() usually needs sources",
+      "cwe_id": null,
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/outside-package-dir/PKGBUILD"
+  ],
+  "timestamp": "2026-11-10T14:51:04.776270330Z",
+  "scan_duration_ms": 19
+}

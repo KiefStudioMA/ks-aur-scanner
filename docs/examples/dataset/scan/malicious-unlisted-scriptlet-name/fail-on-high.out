@@ -1,0 +1,34 @@
+
+Scan Results: demo
+============================================================
+
+[CRITICAL] ATOMIC-002 Node/Bun package manager in install hook (install script)
+    Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.
+    Location: tests/fixtures/malicious/unlisted-scriptlet-name/demo.scr:2
+    Code:   npm install -g evilpkg
+    Recommendation: Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.
+    Reference: CWE-494
+
+[HIGH] META-007 install= cannot be statically resolved
+    The install scriptlet name is not a plain value the scanner can resolve ($HOME_NAME.scr). makepkg runs whichever file it names as the package's install scriptlet, so every file beside the PKGBUILD was scanned as a possible scriptlet.
+    Code: install=$HOME_NAME.scr
+    Recommendation: Do not install. Use a literal `install=<pkgname>.install` and review the file it names.
+    Reference: CWE-426
+
+[MEDIUM] META-005 install= points outside the package
+    install=$HOME_NAME.scr is not a plain `<name>.install` file in the package directory (it contains a path, `..`, or a non-.install name). makepkg runs this scriptlet as part of the package; an out-of-tree path is a way to run an unexpected file.
+    Code: install=$HOME_NAME.scr
+    Recommendation: Use a plain `<pkgname>.install` file shipped alongside the PKGBUILD.
+    Reference: CWE-426
+
+
+
+============================================================
+Package: demo v1-1
+Scan duration: 21ms
+
+Found 3 issue(s):
+  1 CRITICAL
+  1 HIGH
+  1 MEDIUM
+============================================================

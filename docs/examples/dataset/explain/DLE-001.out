@@ -3,6 +3,8 @@
 DLE-001 Curl pipe to shell [CRITICAL]
 ======================================================================
 
+Severity: CRITICAL
+
 Category:
   Command Injection  (detector: rules)
 

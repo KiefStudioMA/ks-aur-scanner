@@ -9,13 +9,6 @@ Scan Results: malicious-cryptominer
     Recommendation: Remove cryptomining components
     Reference: CWE-506
 
-[CRITICAL] CRYPTO-001 Mining pool connection
-    Connection to cryptocurrency mining pools
-    Location: tests/fixtures/malicious/cryptominer/PKGBUILD:16
-    Code:     ./xmrig -o stratum+tcp://pool.supportxmr.com:3333 -u WALLET_ADDRESS
-    Recommendation: Remove cryptomining components
-    Reference: CWE-506
-
 [CRITICAL] CRYPTO-002 Cryptominer binary
     Known cryptocurrency miner executable names
     Location: tests/fixtures/malicious/cryptominer/PKGBUILD:11
@@ -69,10 +62,10 @@ Scan Results: malicious-cryptominer
 
 ============================================================
 Package: malicious-cryptominer v1.0.0-1
-Scan duration: 6ms
+Scan duration: 18ms
 
-Found 10 issue(s):
-  5 CRITICAL
+Found 9 issue(s):
+  4 CRITICAL
   2 HIGH
   3 MEDIUM
 ============================================================

@@ -1,0 +1,10 @@
+{
+  "package_name": "demo-docs",
+  "package_version": "1-1",
+  "findings": [],
+  "scanned_files": [
+    "tests/fixtures/clean/printed-heredoc/PKGBUILD"
+  ],
+  "timestamp": "2026-11-10T14:50:53.052121771Z",
+  "scan_duration_ms": 18
+}

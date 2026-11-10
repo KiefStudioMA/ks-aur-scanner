@@ -12,9 +12,13 @@
         {
           "name": "aur-scan:depth",
           "value": "1"
+        },
+        {
+          "name": "aur-scan:note",
+          "value": "satisfied by cppdap"
         }
       ],
-      "purl": "pkg:alpm/arch/cmake?repository=repo",
+      "purl": "pkg:alpm/arch/cmake?repository=extra",
       "type": "library"
     },
     {
@@ -39,7 +43,7 @@
         }
       ],
       "purl": "pkg:alpm/arch/example-package@1.0.0-1?repository=aur",
-      "type": "library",
+      "type": "application",
       "version": "1.0.0-1"
     },
     {
@@ -55,7 +59,7 @@
           "value": "1"
         }
       ],
-      "purl": "pkg:alpm/arch/glibc?repository=repo",
+      "purl": "pkg:alpm/arch/glibc?repository=core",
       "type": "library"
     },
     {
@@ -71,7 +75,7 @@
           "value": "1"
         }
       ],
-      "purl": "pkg:alpm/arch/ninja?repository=repo",
+      "purl": "pkg:alpm/arch/ninja?repository=extra",
       "type": "library"
     },
     {
@@ -87,11 +91,17 @@
           "value": "1"
         }
       ],
-      "purl": "pkg:alpm/arch/openssl?repository=repo",
+      "purl": "pkg:alpm/arch/openssl?repository=core",
       "type": "library"
     }
   ],
   "dependencies": [
+    {
+      "dependsOn": [
+        "example-package"
+      ],
+      "ref": "aur-scan:request"
+    },
     {
       "dependsOn": [
         "cmake",
@@ -104,20 +114,21 @@
   ],
   "metadata": {
     "component": {
-      "bom-ref": "example-package",
+      "bom-ref": "aur-scan:request",
+      "description": "Packages requested from the AUR, with their resolved dependency tree",
       "name": "example-package",
       "type": "application"
     },
-    "timestamp": "2026-06-15T13:48:51.688914471+00:00",
+    "timestamp": "2026-11-10T14:51:13.258104595+00:00",
     "tools": [
       {
         "name": "aur-scan",
         "vendor": "Kief Studio",
-        "version": "1.1.0"
+        "version": "3.0.0"
       }
     ]
   },
-  "serialNumber": "urn:uuid:be9cc576-4018-22ae-dc85-3204c04768d5",
+  "serialNumber": "urn:uuid:dcb9837f-2a28-db0f-1eb1-bc8179606ae8",
   "specVersion": "1.5",
   "version": 1,
   "vulnerabilities": []

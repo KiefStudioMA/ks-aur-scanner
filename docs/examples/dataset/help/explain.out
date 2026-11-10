@@ -10,4 +10,5 @@ Options:
   -s, --severity <SEVERITY>  Minimum severity to report [possible values: critical, high, medium, low, info]
   -v, --verbose              Enable verbose output
   -q, --quiet                Quiet mode (only show findings)
+      --no-color             Disable colored output (also honored: the NO_COLOR environment variable)
   -h, --help                 Print help

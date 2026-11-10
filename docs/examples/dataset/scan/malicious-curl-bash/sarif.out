@@ -9,7 +9,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "tests/fixtures/malicious/curl-bash/PKGBUILD"
+                  "uri": "PKGBUILD",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
                   "startLine": 15
@@ -20,7 +21,8 @@
           "message": {
             "text": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack."
           },
-          "ruleId": "DLE-001"
+          "ruleId": "DLE-001",
+          "ruleIndex": 0
         },
         {
           "level": "error",
@@ -28,7 +30,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "tests/fixtures/malicious/curl-bash/PKGBUILD"
+                  "uri": "PKGBUILD",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
                   "startLine": 15
@@ -39,7 +42,8 @@
           "message": {
             "text": "This package downloads and executes code from https://evil.com/payload.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime."
           },
-          "ruleId": "EXEC-REMOTE"
+          "ruleId": "EXEC-REMOTE",
+          "ruleIndex": 1
         },
         {
           "level": "error",
@@ -47,7 +51,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "tests/fixtures/malicious/curl-bash/PKGBUILD"
+                  "uri": "PKGBUILD",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
                   "startLine": 18
@@ -58,7 +63,8 @@
           "message": {
             "text": "Function 'package' uses sudo, which should never be needed in PKGBUILDs"
           },
-          "ruleId": "PRIV-001"
+          "ruleId": "PRIV-001",
+          "ruleIndex": 2
         },
         {
           "level": "error",
@@ -66,7 +72,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "tests/fixtures/malicious/curl-bash/PKGBUILD"
+                  "uri": "PKGBUILD",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
                   "startLine": 13
@@ -77,7 +84,8 @@
           "message": {
             "text": "Function 'build' contains network access command 'curl'"
           },
-          "ruleId": "FUNC-001"
+          "ruleId": "FUNC-001",
+          "ruleIndex": 3
         },
         {
           "level": "warning",
@@ -85,10 +93,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "tests/fixtures/malicious/curl-bash/PKGBUILD"
-                },
-                "region": {
-                  "startLine": 1
+                  "uri": "PKGBUILD",
+                  "uriBaseId": "%SRCROOT%"
                 }
               }
             }
@@ -96,7 +102,8 @@
           "message": {
             "text": "Package has build() function but no source array"
           },
-          "ruleId": "SRC-005"
+          "ruleId": "SRC-005",
+          "ruleIndex": 4
         }
       ],
       "tool": {
@@ -185,7 +192,7 @@
               }
             }
           ],
-          "version": "1.1.0"
+          "version": "3.0.0"
         }
       }
     }

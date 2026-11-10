@@ -35,6 +35,7 @@
       "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
       "cwe_id": "CWE-494",
       "metadata": {
+        "flow": "fetch-pipe",
         "opaque_boundary": true,
         "remote_urls": [
           "https://evil.com/payload.sh"
@@ -98,6 +99,6 @@
   "scanned_files": [
     "tests/fixtures/malicious/curl-bash/PKGBUILD"
   ],
-  "timestamp": "2026-06-15T13:48:49.418607657Z",
-  "scan_duration_ms": 6
+  "timestamp": "2026-11-10T14:50:57.208448645Z",
+  "scan_duration_ms": 18
 }

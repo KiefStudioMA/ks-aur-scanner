@@ -3,6 +3,8 @@
 SHELL-001 Bash reverse shell [CRITICAL]
 ======================================================================
 
+Severity: CRITICAL
+
 Category:
   Malicious Code  (detector: rules)
 

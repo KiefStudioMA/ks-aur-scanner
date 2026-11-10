@@ -1,0 +1,29 @@
+{
+  "package_name": "hookprintf",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "PERSIST-012",
+      "severity": "high",
+      "category": "persistence",
+      "title": "pacman hook runs a fetch, a shell command or a user/temp path",
+      "description": "PKGBUILD is a libalpm hook (runs as root) whose Exec downloads, or runs something from /tmp, /dev/shm or a home directory. A hook like this is a root persistence mechanism.",
+      "location": {
+        "file": "tests/fixtures/malicious/shipped-hook-printf/PKGBUILD",
+        "line": 13,
+        "column": null,
+        "snippet": "Exec = /tmp/.x"
+      },
+      "recommendation": "Do not install. A hook should run a fixed, packaged program with a narrow Target.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "Exec = /tmp/.x"
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/shipped-hook-printf/PKGBUILD"
+  ],
+  "timestamp": "2026-11-10T14:51:07.979340855Z",
+  "scan_duration_ms": 59
+}

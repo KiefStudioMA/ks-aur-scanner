@@ -18,7 +18,8 @@
       "cwe_id": "CWE-269",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "useradd -ou 0 -g 0"
+        "matched_text": "useradd -ou 0 -g 0",
+        "script_kind": "install script"
       }
     },
     {
@@ -37,7 +38,8 @@
       "cwe_id": "CWE-269",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "chpasswd"
+        "matched_text": "chpasswd",
+        "script_kind": "install script"
       }
     },
     {
@@ -56,7 +58,8 @@
       "cwe_id": "CWE-269",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "NOPASSWD"
+        "matched_text": "NOPASSWD",
+        "script_kind": "install script"
       }
     },
     {
@@ -75,7 +78,8 @@
       "cwe_id": "CWE-347",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "SigLevel = Never"
+        "matched_text": "SigLevel = Never",
+        "script_kind": "install script"
       }
     },
     {
@@ -94,7 +98,8 @@
       "cwe_id": "CWE-494",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "pacman-key --recv-keys DEADBEEFDEADBEEF && pacman-key --lsign"
+        "matched_text": "pacman-key --recv-keys DEADBEEFDEADBEEF && pacman-key --lsign",
+        "script_kind": "install script"
       }
     }
   ],
@@ -102,6 +107,6 @@
     "tests/fixtures/malicious/trust-tamper/PKGBUILD",
     "tests/fixtures/malicious/trust-tamper/sysprep.install"
   ],
-  "timestamp": "2026-06-15T13:48:50.586727668Z",
-  "scan_duration_ms": 6
+  "timestamp": "2026-11-10T14:51:10.435408695Z",
+  "scan_duration_ms": 22
 }

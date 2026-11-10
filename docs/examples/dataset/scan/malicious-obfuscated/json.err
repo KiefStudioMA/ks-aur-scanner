@@ -1,10 +1,10 @@
 
 ============================================================
 Package: malicious-obfuscated v1.0.0-1
-Scan duration: 5ms
+Scan duration: 58ms
 
-Found 5 issue(s):
-  1 CRITICAL
+Found 7 issue(s):
+  3 CRITICAL
   3 HIGH
   1 MEDIUM
 ============================================================
