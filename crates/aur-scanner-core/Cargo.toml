@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation.workspace = true
+documentation = "https://docs.rs/aur-scanner-core"
 keywords.workspace = true
 categories = ["development-tools", "parser-implementations"]
 description = "Core library for AUR package security scanning - PKGBUILD parser, rule engine, and security analyzers"
@@ -39,5 +39,3 @@ tempfile = "3.14"
 # For host-aware URL/IOC matching (parse the real host, not a naive substring).
 # Already present in the lockfile transitively via reqwest; pinned as a direct dep.
 url = "2.5"
-
-[dev-dependencies]

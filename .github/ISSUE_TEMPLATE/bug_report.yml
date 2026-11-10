@@ -14,7 +14,7 @@ body:
     attributes:
       label: Version
       description: Output of `aur-scan --version`
-      placeholder: aur-scan 1.0.3
+      placeholder: aur-scan 3.0.0
     validations:
       required: true
   - type: textarea

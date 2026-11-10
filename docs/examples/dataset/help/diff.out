@@ -1,0 +1,44 @@
+Compare two versions of a package and report what changed
+
+Scans both sides and reports findings that appeared, findings that were resolved, and structural changes (upstream, install scripts, functions) that a severity count alone would hide. Keeps no state, so it is safe in CI; `check` and `install` do this automatically against your scan history.
+
+Usage: aur-scan diff [OPTIONS] <OLD> <NEW>
+
+Arguments:
+  <OLD>
+          The older package directory (or PKGBUILD)
+
+  <NEW>
+          The newer package directory (or PKGBUILD)
+
+Options:
+  -f, --format <FORMAT>
+          Output format
+          
+          [default: text]
+          [possible values: text, json]
+
+      --fail-on <FAIL_ON>
+          Exit non-zero if a NEWLY ADDED finding is at or above this severity. Pre-existing findings never trip this gate
+          
+          [possible values: critical, high, medium, low, info]
+
+  -c, --config <CONFIG>
+          Configuration file path
+
+  -s, --severity <SEVERITY>
+          Minimum severity to report
+          
+          [possible values: critical, high, medium, low, info]
+
+  -v, --verbose
+          Enable verbose output
+
+  -q, --quiet
+          Quiet mode (only show findings)
+
+      --no-color
+          Disable colored output (also honored: the NO_COLOR environment variable)
+
+  -h, --help
+          Print help (see a summary with '-h')

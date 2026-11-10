@@ -1,6 +1,6 @@
 AUR Security Scanner - Detection Codes
 ============================================================
-116 codes across 13 categories
+167 codes across 13 categories
 
 [Command Injection]
   DLE-001 [Critical] Curl pipe to shell
@@ -11,8 +11,13 @@ AUR Security Scanner - Detection Codes
 
 [Configuration]
   CHK-006 [High] Checksum count mismatch (checksum)
-  EXAMPLE-001 [Info] Example: references example.com
+  SCAN-001 [Critical] Package file could not be analyzed (scanner)
+  SCAN-002 [Medium] Opaque local archive: contents not reviewed (scanner)
+  SCAN-003 [High] Archive member escapes the extraction directory (scanner)
+  SCAN-004 [High] Archive uses structures where tar readers disagree (scanner)
   SRC-005 [Medium] No sources with a build function (source)
+  SRC-011 [High] References files outside the package directory
+  TI-UNCHECKED-001 [Info] Threat-intel lookups incomplete (threat_intel)
 
 [Credential Theft]
   BROWSER-001 [Critical] Browser profile access
@@ -31,6 +36,7 @@ AUR Security Scanner - Detection Codes
   CHK-004 [Medium] Some sources use SKIP checksum (checksum)
   CHK-005 [High] All non-VCS sources use SKIP (checksum)
   CHK-008 [Medium] Malformed or wrong-length checksum (checksum)
+  CHK-009 [Medium] Checksum alignment cannot be determined (checksum)
 
 [Cryptomining]
   CRYPTO-001 [Critical] Mining pool connection
@@ -46,6 +52,7 @@ AUR Security Scanner - Detection Codes
   EXFIL-007 [High] wget POST exfiltration
   EXFIL-008 [Critical] Slack/Teams webhook exfiltration
   EXFIL-009 [High] Anonymous file-drop / tunnel host
+  EXFIL-010 [Medium] Tor hidden service or local SOCKS proxy
 
 [Dependencies]
   DEP-003 [High] Package index/registry override
@@ -53,6 +60,12 @@ AUR Security Scanner - Detection Codes
 [Malicious Code]
   ATOMIC-001 [Critical] Atomic Arch malicious npm/bun package
   ATOMIC-002 [Critical] Node/Bun package manager in install hook
+  ATOMIC-004 [Critical] Sudo shim in user local bin
+  ATOMIC-005 [Medium] Named npm/bun package fetched during the build
+  ATOMIC-006 [High] npm/bun package installed from a URL or git remote during the build
+  ATOMIC-007 [Low] npx/exec/bunx runs a package by name during the build
+  BIN-002 [Critical] Prebuilt binary executed during the build (binary)
+  BIN-003 [Critical] Prebuilt eBPF object (binary)
   ENV-001 [Critical] LD_PRELOAD manipulation
   ENV-002 [High] PATH manipulation
   EXEC-002 [Critical] Shell -c command substitution fetch
@@ -78,13 +91,23 @@ AUR Security Scanner - Detection Codes
   SHELL-009 [Critical] OpenSSL-encrypted reverse shell
   SHELL-010 [Critical] Named-pipe (mkfifo) reverse shell
   SHELL-011 [Critical] Busybox/telnet/ncat-ssl shell
+  SQUAT-001 [Critical] Package name imitates a trusted name (squat)
+  SQUAT-002 [High] Package name is one keystroke from a widely-installed package (squat)
+  SQUAT-004 [Critical] Package occupies an owned namespace under an unauthorised account (squat)
   TAMPER-011 [Critical] pacman signature downgrade
   TAMPER-013 [High] Security control disabled
   TAMPER-017 [High] CA trust anchor injection
+  TAMPER-018 [High] Name resolution configuration modified
+  TAMPER-019 [High] Per-user git config set to run a program
+  TAMPER-020 [High] git fsmonitor/hooksPath set from an install script
+  TAMPER-021 [Critical] System-wide git config set to run a program
+  TI-URLHAUS-001 [Critical] URLhaus lists a source URL (threat_intel)
+  TI-VT-001 [Critical] VirusTotal flags a source artifact (threat_intel)
   TRUST-001 [High] pacman keyring poisoning
   TRUST-002 [Medium] GPG key import at build time
 
 [Network Security]
+  DIFF-003 [High] Package fetches from a new upstream (diff)
   FUNC-001 [High] Network access in a build function (pattern)
   INSTALL-003 [Critical] Network access in install script
   SRC-001 [Medium] Insecure source/transport protocol (source)
@@ -95,13 +118,16 @@ AUR Security Scanner - Detection Codes
   SRC-007 [Low] VCS source not pinned to a commit (source)
   SRC-008 [Low] Source host differs from upstream url host (source)
   SRC-009 [High] Obfuscated IP in URL
+  SRC-010 [High] Source is a different owner's copy of the upstream repo (source)
   URL-001 [High] Raw IP in URL
   URL-002 [High] URL shortener
   URL-003 [High] Dynamic DNS domain
 
 [Obfuscation]
+  BIN-005 [Medium] Binary contains a packed or encrypted section (binary)
   DEEP-001 [Critical] Decode-and-execute flow (deep)
   DEEP-002 [High] Large embedded encoded blob (deep)
+  DEEP-003 [Critical] Unicode bidirectional control characters (deep)
   OBF-001 [High] Base64 decoding
   OBF-003 [High] Hex-encoded payload
   OBF-004 [Medium] String concatenation obfuscation
@@ -110,18 +136,32 @@ AUR Security Scanner - Detection Codes
   OBF-007 [High] printf character assembly
   OBF-008 [High] Alternate-encoding decode
   OBF-011 [High] Interpreter here-string execution
+  OBF-012 [Critical] Message function redefined to execute its arguments (deep)
+  OBF-020 [High] Dynamic command name
 
 [Persistence]
   ATOMIC-003 [Critical] eBPF rootkit / payload artifact
-  ENV-003 [Critical] Bashrc/profile modification
+  DIFF-004 [High] Install script added or changed (diff)
+  ENV-003 [Critical] Shell startup file modification
   PERSIST-001 [Critical] Systemd service creation in install
   PERSIST-002 [Critical] Systemd timer creation
   PERSIST-003 [High] Cron job creation
   PERSIST-004 [Critical] rc.local modification
   PERSIST-005 [High] XDG autostart creation
   PERSIST-006 [Critical] Systemd masquerading
+  PERSIST-007 [Critical] SSH authorized_keys modified
+  PERSIST-008 [Critical] AI coding assistant config or hook written
+  PERSIST-009 [Critical] pacman hook written outside $pkgdir
+  PERSIST-010 [High] udev rule written outside $pkgdir
+  PERSIST-011 [Medium] pacman hook triggers on every transaction (shipped)
+  PERSIST-012 [High] pacman hook runs a fetch, a shell command or a user/temp path (shipped)
+  PERSIST-013 [Medium] udev rule runs a package-shipped program (shipped)
+  PERSIST-014 [High] udev rule runs a shell command, a fetch or a user/temp path (shipped)
+  PERSIST-015 [Medium] Hook or udev rule content is generated at build time (shipped)
 
 [Privilege Escalation]
+  BIN-004 [High] Binary searches for libraries in an unsafe location (binary)
+  ESCAPE-001 [Critical] Extraction or copy outside the build root
   PRIV-001 [Critical] Sudo usage in a build function (privilege)
   PRIV-002 [Critical] SUID/SGID bit set in a function (privilege)
   PRIV-003 [Critical] Sudoers modification (privilege)
@@ -130,19 +170,30 @@ AUR Security Scanner - Detection Codes
   PRIV-006 [High] Sudo in an install hook (privilege)
   PRIV-007 [Critical] Privileged account manipulation
   PRIV-008 [Critical] Password manipulation
+  PRIV-009 [Critical] Kernel module loaded from a package-shipped file (privilege)
   TAMPER-001 [Critical] Auth database write
   TAMPER-002 [Critical] doas/sudoers nopasswd grant
   TAMPER-005 [Critical] PAM tampering
 
 [Suspicious Metadata]
+  BIN-001 [High] Prebuilt binary committed in the package directory (binary)
   DEP-001 [High] Provides a core package name (dependency confusion) (metadata)
+  DIFF-001 [High] New findings since the last scan (diff)
+  DIFF-002 [High] Package ownership changed (diff)
   META-001 [Low] Provides impersonation
   META-002 [Low] validpgpkeys declared but no signature verified (metadata)
   META-003 [High] Replaces/conflicts a core or security package (metadata)
   META-004 [Low] epoch set (forces upgrade over the repo version) (metadata)
   META-005 [Medium] install= points outside the package (metadata)
   META-006 [Medium] backup= of a security-sensitive file (metadata)
+  META-007 [High] install= cannot be statically resolved (metadata)
+  META-008 [Medium] Install message mentions a privileged command (pattern)
+  OWN-001 [Low] Package is orphaned (ownership)
+  OWN-002 [Medium] Package is orphaned and flagged out-of-date (ownership)
+  OWN-003 [Low] Flagged out-of-date for over a year (ownership)
+  OWN-004 [Low] New package with no community validation (ownership)
   PROV-001 [High] Package gained risky behavior (provenance)
+  SQUAT-003 [Low] Build variant is in different hands from its base (squat)
 
 Use 'aur-scan explain <CODE>' for details.
 Add your own: drop a .toml rule file in ~/.config/aur-scanner/rules.d/

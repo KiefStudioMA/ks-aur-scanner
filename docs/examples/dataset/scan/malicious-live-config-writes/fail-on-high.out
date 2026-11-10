@@ -1,0 +1,49 @@
+
+Scan Results: sysprep-live
+============================================================
+
+[CRITICAL] PERSIST-007 SSH authorized_keys modified (install script)
+    Writes, appends to, copies over or installs an ssh authorized_keys file outside $pkgdir, or copies a directory tree into a live ~/.ssh. Adding a key to a user's or root's authorized_keys is a persistent backdoor: the key's owner can log in after the package is gone.
+    Location: tests/fixtures/malicious/live-config-writes/sysprep-live.install:2
+    Code:     echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE0000 x' >> /root/.ssh/authorized_keys
+    Recommendation: Do NOT install. A package must never touch authorized_keys. Remove any unknown keys from ~/.ssh/authorized_keys and /root/.ssh/authorized_keys and treat the host as compromised.
+    Reference: CWE-506
+
+[CRITICAL] PERSIST-008 AI coding assistant config or hook written (install script)
+    Writes into an AI coding assistant's per-user configuration (Claude Code, Cursor, Codex, Gemini CLI, OpenCode, Continue, Aider, Copilot) outside $pkgdir. Settings, hooks and MCP definitions there run commands with the user's authority whenever the assistant starts, which supply-chain malware has used for persistence.
+    Location: tests/fixtures/malicious/live-config-writes/sysprep-live.install:4
+    Code:     printf '{"hooks":{}}' > /home/user/.claude/settings.json
+    Recommendation: Do NOT install. A package must never write into a user's assistant configuration. Inspect ~/.claude, ~/.cursor, ~/.codex, ~/.gemini and ~/.config/opencode for hooks or MCP servers you did not add.
+    Reference: CWE-506
+
+[CRITICAL] PERSIST-009 pacman hook written outside $pkgdir (install script)
+    Writes a libalpm hook into /etc/pacman.d/hooks/ or /usr/share/libalpm/hooks/ directly instead of shipping it in the package. A hook runs as root on pacman transactions, so a hook planted by a scriptlet or build function is a root persistence mechanism.
+    Location: tests/fixtures/malicious/live-config-writes/sysprep-live.install:6
+    Code:     install -Dm644 /usr/share/sysprep/zz.hook /usr/share/libalpm/hooks/zz.hook
+    Recommendation: Do NOT install. Hooks belong in the package file list under $pkgdir, where pacman owns and can remove them.
+    Reference: CWE-506
+
+[CRITICAL] TAMPER-021 System-wide git config set to run a program (install script)
+    Sets core.fsmonitor or core.hooksPath in the SYSTEM git configuration, or writes /etc/gitconfig outside $pkgdir. Every user's git, including root's, then runs the program on every repository command.
+    Location: tests/fixtures/malicious/live-config-writes/sysprep-live.install:5
+    Code:     git config --system core.fsmonitor /usr/lib/sysprep/fsm
+    Recommendation: Do NOT install. Inspect /etc/gitconfig and remove the setting.
+    Reference: CWE-829
+
+[HIGH] TAMPER-018 Name resolution configuration modified (install script)
+    Writes to /etc/hosts, /etc/resolv.conf or /etc/nsswitch.conf outside $pkgdir. Packages do not ship these files; editing them redirects hostnames (update servers, package mirrors, login hosts) to an attacker or disables resolution safeguards.
+    Location: tests/fixtures/malicious/live-config-writes/sysprep-live.install:3
+    Code:     echo '203.0.113.7 archlinux.org' >> /etc/hosts
+    Recommendation: Remove the edit. Hostname and resolver configuration is the administrator's, not a package's.
+    Reference: CWE-350
+
+
+
+============================================================
+Package: sysprep-live v1.0.0-1
+Scan duration: 64ms
+
+Found 5 issue(s):
+  4 CRITICAL
+  1 HIGH
+============================================================

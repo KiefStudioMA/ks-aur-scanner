@@ -360,6 +360,7 @@ mod tests {
     fn ctx(pkgbuild: &str) -> AnalysisContext {
         let parsed = StaticParser::new().parse(pkgbuild).unwrap();
         AnalysisContext {
+            shadow: Default::default(),
             pkgbuild: parsed,
             install_script: None,
             side_scripts: vec![],

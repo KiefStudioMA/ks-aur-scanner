@@ -278,8 +278,19 @@ enum OutputFormat {
     Sarif,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = rt.block_on(run());
+    // Do not wait for blocking tasks: a package scan that timed out may still
+    // be reading a hostile directory, and the CLI must return (failing closed)
+    // as soon as the deadline has reported.
+    rt.shutdown_background();
+    result
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     // Color: the `colored` crate already auto-disables on a non-terminal and
@@ -290,13 +301,14 @@ async fn main() -> Result<()> {
         colored::control::set_override(false);
     }
 
-    // Initialize logging - default to warn to keep output clean
+    // Initialize logging - default to warn to keep output clean. The core's
+    // loud target is off: those warnings are already printed to stderr.
     let filter = if cli.verbose {
-        "aur_scanner=debug,aur_scanner_core=debug"
+        "aur_scanner=debug,aur_scanner_core=debug,aur_scanner_core::loud=off"
     } else if cli.quiet {
         "aur_scanner=error"
     } else {
-        "aur_scanner=warn,aur_scanner_core=warn"
+        "aur_scanner=warn,aur_scanner_core=warn,aur_scanner_core::loud=off"
     };
 
     // Logs go to STDERR, never stdout: stdout carries the report (`--format

@@ -7,7 +7,7 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
-use crate::rules::informational_lines_with;
+use crate::rules::{inert_kinds_with, MsgContext};
 use crate::textutil::{deobfuscate_text, logical_lines, SHELLS, SHELL_LAUNCHER, SHELL_PATH};
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
@@ -18,7 +18,7 @@ use std::collections::HashSet;
 lazy_static! {
     /// A decoding/decompression operation that produces executable text.
     /// `(?i)` so `BASE64`/`XXD`/`OpenSSL` case variants cannot evade the decode
-    /// step (audit HI-6) -- these are all command names, none case-canonical.
+    /// step -- these are all command names, none case-canonical.
     static ref DECODE: Regex = Regex::new(
         r"(?i)base64\s+(-d|--decode|-[a-zA-Z]*d)|xxd\s+-r|\bbase32\s+-d|openssl\s+enc\s+.*-d|(gunzip|zcat|xz\s+-d|\bunzip)\b|\btr\s+.*\|"
     ).unwrap();
@@ -28,8 +28,8 @@ lazy_static! {
     static ref HEX_BLOB: Regex = Regex::new(r"(\\x[0-9a-fA-F]{2}){4,}").unwrap();
     /// A sink that executes dynamically-produced text. Shell sinks come from the
     /// shared `SHELLS` constant so `dash`/`zsh`/`ksh -c`/here-strings are covered
-    /// like `sh`/`bash` (defect #6). `(?i)` so `BASH`/`EVAL`/`SH -c` case variants
-    /// cannot evade the exec sink (audit HI-6).
+    /// like `sh`/`bash`. `(?i)` so `BASH`/`EVAL`/`SH -c` case variants
+    /// cannot evade the exec sink.
     static ref EXEC_SINK: Regex = Regex::new(&format!(
         r"(?i)\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b|\beval\b|{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s+-c\b|{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b\s*<<<|source\s+/dev/stdin|/dev/stdin"
     )).unwrap();
@@ -69,11 +69,13 @@ impl DeepAnalyzer {
         // so a backslash-continued decode/exec is still seen as one command.
         let lines = logical_lines(text);
         let line_strs: Vec<&str> = lines.iter().map(|(_, s)| s.as_str()).collect();
-        let informational = informational_lines_with(&line_strs, shadowed);
+        let informational = inert_kinds_with(&line_strs, shadowed, MsgContext::for_path(file));
         let code: String = lines
             .iter()
             .enumerate()
-            .filter(|(i, (_, l))| !l.trim_start().starts_with('#') && !informational[*i])
+            .filter(|(i, (_, l))| {
+                !l.trim_start().starts_with('#') && !informational[*i].suppresses(Severity::High)
+            })
             .map(|(_, (_, l))| l.as_str())
             .collect::<Vec<_>>()
             .join("\n");
@@ -244,11 +246,11 @@ impl SecurityAnalyzer for DeepAnalyzer {
             }
         }
         let shadow = context.shadowed_printers();
-        let shadowed = shadow.names();
-        let mut findings = self.analyze_text_with(&combined, &anchor, &shadowed);
+        let shadowed = context.shadowed_names();
+        let mut findings = self.analyze_text_with(&combined, &anchor, shadowed);
         // Calls to a redefined printer, replaced by what they execute.
         if let Some(inlined) = shadow.inline_calls(&combined) {
-            for f in self.analyze_text_with(&inlined, &anchor, &shadowed) {
+            for f in self.analyze_text_with(&inlined, &anchor, shadowed) {
                 if !findings
                     .iter()
                     .any(|e| e.id == f.id && e.location.line == f.location.line)
@@ -315,21 +317,22 @@ mod tests {
     }
 
     #[test]
-    fn documented_decode_exec_in_heredoc_not_flagged() {
-        // Task 4050a: a `base64 -d | sh` example that only appears in a printed
-        // (non-redirected) heredoc is documentation, not a payload — no DEEP-001.
+    fn decode_exec_in_printed_heredoc_is_still_reported() {
+        // A printed heredoc can be faked by desyncing the lexer, so a Critical
+        // finding is never suppressed by it: documentation that spells out a
+        // `base64 -d | sh` example is reported (fail toward scanning).
         let a = DeepAnalyzer::new();
         let text = "post_install() {\n  cat <<EOF\n  example: echo data | base64 -d | sh\nEOF\n}";
         let findings = a.analyze_text(text, Path::new("test.install"));
         assert!(
-            !findings.iter().any(|f| f.id == "DEEP-001"),
-            "documented decode|exec in a printed heredoc must not fire DEEP-001: {findings:?}"
+            findings.iter().any(|f| f.id == "DEEP-001"),
+            "decode|exec in a printed heredoc must still fire DEEP-001: {findings:?}"
         );
     }
 
     #[test]
     fn case_variation_decode_then_exec_still_flags() {
-        // Audit HI-6: `BASE64 -d` into `EVAL`/`SH` (upper/mixed case) must still
+        // `BASE64 -d` into `EVAL`/`SH` (upper/mixed case) must still
         // form DEEP-001 — DECODE and EXEC_SINK are `(?i)`.
         let a = DeepAnalyzer::new();
         let text = "p=$(echo aGVsbG8= | BASE64 -d)\nEVAL \"$p\"";

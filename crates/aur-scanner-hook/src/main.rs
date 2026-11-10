@@ -32,8 +32,12 @@ const MAX_INDEX_DIRS: usize = 4096;
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize minimal logging
+    // The core's loud target is off: those warnings are already printed to
+    // stderr. Built from a fixed string, never from the environment.
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            "warn,aur_scanner_core::loud=off",
+        ))
         .without_time()
         .init();
 

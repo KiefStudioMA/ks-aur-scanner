@@ -1,0 +1,10 @@
+{
+  "package_name": "build-expansions",
+  "package_version": "1.2.3-1",
+  "findings": [],
+  "scanned_files": [
+    "tests/fixtures/clean/build-expansions/PKGBUILD"
+  ],
+  "timestamp": "2026-11-10T14:50:50.830039661Z",
+  "scan_duration_ms": 24
+}

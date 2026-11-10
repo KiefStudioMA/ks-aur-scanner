@@ -8,4 +8,4 @@ contact_links:
     about: Install guide, command reference, and the full detection-code catalog.
   - name: Questions / discussion
     url: https://github.com/KiefStudioMA/ks-aur-scanner/discussions
-    about: Usage questions and ideas (enable Discussions in repo settings).
+    about: Usage questions and ideas.

@@ -371,6 +371,7 @@ mod tests {
             .parse("pkgname=tool\npkgver=1\npkgrel=1\nbuild() { make; }\n")
             .unwrap();
         let ctx = AnalysisContext {
+            shadow: Default::default(),
             pkgbuild: parsed,
             install_script: None,
             side_scripts: vec![],

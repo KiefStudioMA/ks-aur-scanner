@@ -36,7 +36,8 @@
       "cwe_id": "CWE-94",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "python "
+        "matched_text": "python ",
+        "script_kind": "install script"
       }
     },
     {
@@ -55,26 +56,8 @@
       "cwe_id": "CWE-506",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "/etc/systemd/system/"
-      }
-    },
-    {
-      "id": "PERSIST-001",
-      "severity": "critical",
-      "category": "persistence",
-      "title": "Systemd service creation in install (install script)",
-      "description": "Creating systemd services in install scripts enables persistence. Used in 2018 xeactor and 2025 CHAOS RAT attacks.",
-      "location": {
-        "file": "tests/fixtures/malicious/chaos-rat/firefox-patch.install",
-        "line": 23,
-        "column": 5,
-        "snippet": "    systemctl daemon-reload"
-      },
-      "recommendation": "Services should be enabled by the user, not automatically",
-      "cwe_id": "CWE-506",
-      "metadata": {
-        "in_install_script": true,
-        "matched_text": "systemctl daemon-reload"
+        "matched_text": "/etc/systemd/system/",
+        "script_kind": "install script"
       }
     },
     {
@@ -93,7 +76,8 @@
       "cwe_id": "CWE-506",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "systemctl enable"
+        "matched_text": "systemctl enable",
+        "script_kind": "install script"
       }
     },
     {
@@ -112,7 +96,8 @@
       "cwe_id": "CWE-506",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "systemctl start"
+        "matched_text": "systemctl start",
+        "script_kind": "install script"
       }
     },
     {
@@ -131,7 +116,8 @@
       "cwe_id": "CWE-506",
       "metadata": {
         "in_install_script": true,
-        "matched_text": "systemd-initd"
+        "matched_text": "systemd-initd",
+        "script_kind": "install script"
       }
     },
     {
@@ -195,6 +181,6 @@
     "tests/fixtures/malicious/chaos-rat/PKGBUILD",
     "tests/fixtures/malicious/chaos-rat/firefox-patch.install"
   ],
-  "timestamp": "2026-06-15T13:48:48.981440043Z",
-  "scan_duration_ms": 7
+  "timestamp": "2026-11-10T14:50:55.164428600Z",
+  "scan_duration_ms": 26
 }

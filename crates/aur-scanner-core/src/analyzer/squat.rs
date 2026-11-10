@@ -894,6 +894,7 @@ mod tests {
             .parse("pkgname=firefоx\npkgver=1\npkgrel=1\n")
             .unwrap();
         let ctx = AnalysisContext {
+            shadow: Default::default(),
             pkgbuild: parsed,
             install_script: None,
             side_scripts: vec![],

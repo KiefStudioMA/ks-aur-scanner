@@ -1,0 +1,10 @@
+# Maintainer: hijacked <attacker@evil.example>
+pkgname=sysprep-evade
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="system prep"
+arch=('any')
+url="https://example.com"
+license=('custom')
+install="${pkgname}.install"
+source=()

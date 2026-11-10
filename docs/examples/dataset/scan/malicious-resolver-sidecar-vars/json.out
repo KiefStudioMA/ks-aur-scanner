@@ -1,0 +1,77 @@
+{
+  "package_name": "resolver-sidecar-vars",
+  "package_version": "1.0-1",
+  "findings": [
+    {
+      "id": "INSTALL-003",
+      "severity": "critical",
+      "category": "network_security",
+      "title": "Network access in install script (install script)",
+      "description": "Install scripts should not make network connections",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-sidecar-vars/vars.conf",
+        "line": 1,
+        "column": 4,
+        "snippet": "_f=curl"
+      },
+      "recommendation": "Install scripts should never download additional content",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "curl",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "META-007",
+      "severity": "high",
+      "category": "suspicious_metadata",
+      "title": "install= cannot be statically resolved",
+      "description": "The install scriptlet name is not a plain value the scanner can resolve (eval of an expansion, or source of another file). makepkg runs whichever file it names as the package's install scriptlet, so every file beside the PKGBUILD was scanned as a possible scriptlet.",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-sidecar-vars/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "install=eval of an expansion, or source of another file"
+      },
+      "recommendation": "Do not install. Use a literal `install=<pkgname>.install` and review the file it names.",
+      "cwe_id": "CWE-426",
+      "metadata": {
+        "values": [
+          "eval of an expansion, or source of another file"
+        ]
+      }
+    },
+    {
+      "id": "CHK-005",
+      "severity": "high",
+      "category": "cryptography",
+      "title": "All non-VCS sources use SKIP checksum",
+      "description": "No integrity verification is performed on 1 non-VCS source(s): vars.conf",
+      "location": {
+        "file": "tests/fixtures/malicious/resolver-sidecar-vars/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "source: vars.conf"
+      },
+      "recommendation": "Provide real checksums for non-VCS sources",
+      "cwe_id": "CWE-354",
+      "metadata": {
+        "non_vcs_source_count": 1,
+        "unverified_indices": [
+          0
+        ],
+        "unverified_sources": [
+          "vars.conf"
+        ],
+        "vcs_source_count": 0
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/resolver-sidecar-vars/PKGBUILD",
+    "tests/fixtures/malicious/resolver-sidecar-vars/vars.conf"
+  ],
+  "timestamp": "2026-11-10T14:51:06.842113654Z",
+  "scan_duration_ms": 23
+}

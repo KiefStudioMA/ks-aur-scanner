@@ -25,7 +25,12 @@ impl Default for ChecksumAnalyzer {
 impl SecurityAnalyzer for ChecksumAnalyzer {
     async fn analyze(&self, context: &AnalysisContext) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
-        let checksums = &context.pkgbuild.checksums;
+        // Elements the scanner cannot read as a hash (SKIP, `SKIP${_x}`,
+        // `$(cmd)`) are "not verified", never a hash.
+        let normalized = Self::normalize(&context.pkgbuild);
+        let checksums = &normalized;
+        let raw_checksums = &context.pkgbuild.checksums;
+        let limit = Self::align_limit(&context.pkgbuild);
 
         // Check if sources exist but no checksums
         if !context.pkgbuild.source.is_empty() && !checksums.has_any() {
@@ -50,7 +55,7 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
         }
 
         // Check for weak checksums
-        if !checksums.md5sums.is_empty() {
+        if !raw_checksums.md5sums.is_empty() {
             findings.push(Finding {
                 id: "CHK-002".to_string(),
                 severity: Severity::Medium,
@@ -71,7 +76,7 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
             });
         }
 
-        if !checksums.sha1sums.is_empty() {
+        if !raw_checksums.sha1sums.is_empty() {
             findings.push(Finding {
                 id: "CHK-003".to_string(),
                 severity: Severity::Medium,
@@ -104,19 +109,59 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
         // -git package as a High "no integrity" finding here would be noise, so
         // the checksum analyzer only evaluates NON-VCS sources.
         let source_count = context.pkgbuild.source.len();
-        let non_vcs_count = context
+        // Only the sources before the first uncountable element can be paired
+        // with their checksum by position.
+        let aligned_len = limit
+            .as_ref()
+            .map_or(source_count, |(i, _)| (*i).min(source_count));
+        let aligned = &context.pkgbuild.source[..aligned_len];
+        let non_vcs_count = aligned.iter().filter(|s| !s.is_vcs()).count();
+        let vcs_count = context
             .pkgbuild
             .source
             .iter()
-            .filter(|s| !s.is_vcs())
+            .filter(|s| s.is_vcs())
             .count();
-        let vcs_count = source_count - non_vcs_count;
-        // Name the offending sources, not just count them. A bare "3 of 7
-        // sources use SKIP" tells a maintainer that something is wrong but not
-        // *what*, so it cannot be acted on or triaged -- and a reader who
-        // cannot see which entry is unverified cannot tell a detached signature
-        // (legitimately unhashable) from a tarball (not) (issue #31).
-        let unverified = self.unverified_non_vcs(checksums, &context.pkgbuild.source);
+        // When NOTHING anywhere is a real hash, and a SKIP is actually
+        // written down, every downloaded source is unverified whatever the
+        // counts say or what stands in front of the SKIP (a miscounted or
+        // unreadable element must not hide it). Judged over the WHOLE arrays,
+        // past any uncountable element too.
+        let judged = |a: &[Option<String>]| -> usize {
+            limit.as_ref().map_or(a.len(), |(i, _)| (*i).min(a.len()))
+        };
+        let present: Vec<&[Option<String>]> = Self::present_arrays(checksums);
+        // (a malformed value is CHK-008's business; it is still not SKIP)
+        let real_hash = present.iter().any(|a| a.iter().any(|e| e.is_some()));
+        // a literal SKIP (or empty) element, as opposed to an unreadable one
+        let literal_skip = [
+            &raw_checksums.md5sums,
+            &raw_checksums.sha1sums,
+            &raw_checksums.sha256sums,
+            &raw_checksums.sha512sums,
+            &raw_checksums.b2sums,
+        ]
+        .iter()
+        .any(|a| a.iter().any(|e| e.is_none()));
+        let no_real_hash = !present.is_empty()
+            && !real_hash
+            && (limit.is_none() || literal_skip)
+            && context.pkgbuild.source.iter().any(|s| !s.is_vcs());
+        // Name the offending sources, not just count them (issue #31).
+        let (unverified, non_vcs_count) = if no_real_hash {
+            let all: Vec<(usize, String)> = context
+                .pkgbuild
+                .source
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| !s.is_vcs())
+                .map(|(i, s)| (i, Self::display_name(s)))
+                .collect();
+            let n = all.len();
+            (all, n)
+        } else {
+            (self.unverified_non_vcs(checksums, aligned), non_vcs_count)
+        };
         let non_vcs_skip_count = unverified.len();
         let names: Vec<String> = unverified.iter().map(|(_, name)| name.clone()).collect();
 
@@ -180,9 +225,59 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
             });
         }
 
+        // A SKIP that sits AFTER an uncountable element cannot be matched to
+        // a source, but it is still a visible SKIP: say so (Medium) instead of
+        // letting a good-looking hash at index 0 launder it.
+        if limit.is_some()
+            && !findings
+                .iter()
+                .any(|f| f.id == "CHK-004" || f.id == "CHK-005")
+        {
+            let keyed: [(&str, &Vec<Option<String>>); 5] = [
+                ("md5sums", &checksums.md5sums),
+                ("sha1sums", &checksums.sha1sums),
+                ("sha256sums", &checksums.sha256sums),
+                ("sha512sums", &checksums.sha512sums),
+                ("b2sums", &checksums.b2sums),
+            ];
+            let mut hidden = 0usize;
+            for (key, arr) in keyed {
+                let own = context.pkgbuild.uncertain_from.get(key).copied();
+                let from = judged(arr);
+                hidden += arr
+                    .iter()
+                    .enumerate()
+                    .skip(from)
+                    .filter(|(i, e)| e.is_none() && Some(*i) != own)
+                    .count();
+            }
+            if hidden > 0 {
+                findings.push(Finding {
+                    id: "CHK-004".to_string(),
+                    severity: Severity::Medium,
+                    category: Category::Cryptography,
+                    title: "Some sources have SKIP checksum".to_string(),
+                    description: format!(
+                        "{hidden} checksum entr{} after an uncountable element are SKIP or unreadable, so the source{} they belong to cannot be named; at least one downloaded file is unverified.",
+                        if hidden == 1 { "y" } else { "ies" },
+                        if hidden == 1 { "" } else { "s" }
+                    ),
+                    location: Location {
+                        file: context.file_path.clone(),
+                        line: None,
+                        column: None,
+                        snippet: None,
+                    },
+                    recommendation: "Provide real checksums for non-VCS sources, as a plain literal list.".to_string(),
+                    cwe_id: Some("CWE-354".to_string()),
+                    metadata: serde_json::json!({ "skip_after_uncountable": hidden }),
+                });
+            }
+        }
+
         // Check checksum count matches source count
         let checksum_count = self.get_checksum_count(checksums);
-        if checksum_count > 0 && checksum_count != source_count {
+        if limit.is_none() && checksum_count > 0 && checksum_count != source_count {
             findings.push(Finding {
                 id: "CHK-006".to_string(),
                 severity: Severity::High,
@@ -207,6 +302,34 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
             });
         }
 
+        // CHK-009 -- an element of source=() or a checksum array whose count
+        // cannot be known statically (an unquoted command substitution or
+        // variable, a whole-array expansion, a brace list past the expansion
+        // limits). Positions before it are still checked; from it on the
+        // checksum a source gets is unknown, which is reported instead of
+        // being silently skipped.
+        if let Some((idx, array)) = &limit {
+            findings.push(Finding {
+                id: "CHK-009".to_string(),
+                severity: Severity::Medium,
+                category: Category::Cryptography,
+                title: "Checksum alignment cannot be determined".to_string(),
+                description: format!(
+                    "{array}=() has an element at position {} that cannot be counted statically (command substitution, variable or array expansion, or an oversized brace list), so sources from there on cannot be matched to their checksums.",
+                    idx + 1
+                ),
+                location: Location {
+                    file: context.file_path.clone(),
+                    line: None,
+                    column: None,
+                    snippet: None,
+                },
+                recommendation: "Write source= and the checksum arrays as plain literal lists, or review which source is left unverified by hand.".to_string(),
+                cwe_id: Some("CWE-354".to_string()),
+                metadata: serde_json::json!({ "array": array, "first_uncountable_index": idx }),
+            });
+        }
+
         // CHK-008 — a present checksum that is not valid hex of the algorithm's
         // expected length (md5=32, sha1=40, sha256=64, sha512/b2=128). A
         // wrong-length or non-hex hash can never match the fetched bytes, so
@@ -224,7 +347,7 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
         for (algo, len, arr) in algos {
             for sum in arr.iter().flatten() {
                 let s = sum.trim();
-                if s.eq_ignore_ascii_case("SKIP") {
+                if s.eq_ignore_ascii_case("SKIP") || s.contains('$') || s.contains('`') {
                     continue;
                 }
                 if s.len() != len || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -269,7 +392,83 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
     }
 }
 
+/// Replace `$name` / `${name}` with the PKGBUILD's own plain assignments.
+/// `None` when something unresolvable (`$(...)`, a backtick, an unknown or
+/// array variable) is left.
+fn resolve_plain_vars(s: &str, vars: &std::collections::HashMap<String, String>) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find(['$', '`']) {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        let after = tail.strip_prefix('$')?;
+        let (name, consumed) = if let Some(braced) = after.strip_prefix('{') {
+            let end = braced.find('}')?;
+            (&braced[..end], 2 + end + 1)
+        } else {
+            let end = after
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(after.len());
+            (&after[..end], 1 + end)
+        };
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+        let v = vars.get(name)?;
+        if v.contains(['$', '`']) {
+            return None;
+        }
+        out.push_str(v);
+        rest = &tail[consumed..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
 impl ChecksumAnalyzer {
+    /// The checksum arrays with every element reduced to "a hash" or "not
+    /// verified": SKIP, empty, and anything that still holds an unresolved
+    /// expansion (`SKIP${_x}`, `$(cmd)`) become `None`. An element the
+    /// scanner cannot read is not evidence of a hash.
+    fn normalize(pkg: &crate::parser::ParsedPkgbuild) -> crate::parser::Checksums {
+        let norm = |arr: &[Option<String>]| -> Vec<Option<String>> {
+            arr.iter()
+                .map(|e| {
+                    let s = e.as_deref()?;
+                    if !s.contains(['$', '`']) {
+                        return Some(s.to_string());
+                    }
+                    let r = resolve_plain_vars(s, &pkg.variables)?;
+                    (!r.is_empty() && !r.eq_ignore_ascii_case("SKIP")).then_some(r)
+                })
+                .collect()
+        };
+        let c = &pkg.checksums;
+        crate::parser::Checksums {
+            md5sums: norm(&c.md5sums),
+            sha1sums: norm(&c.sha1sums),
+            sha256sums: norm(&c.sha256sums),
+            sha512sums: norm(&c.sha512sums),
+            b2sums: norm(&c.b2sums),
+        }
+    }
+
+    /// Index from which `source` and the checksum arrays can no longer be
+    /// lined up by position, if any array holds an uncountable element.
+    fn align_limit(pkg: &crate::parser::ParsedPkgbuild) -> Option<(usize, String)> {
+        [
+            "source",
+            "md5sums",
+            "sha1sums",
+            "sha256sums",
+            "sha512sums",
+            "b2sums",
+        ]
+        .iter()
+        .filter_map(|k| pkg.uncertain_from.get(*k).map(|i| (*i, (*k).to_string())))
+        .min()
+    }
+
     /// All checksum arrays that are actually present (non-empty), in priority
     /// order. A source is only verified if one of THESE gives it a real hash.
     fn present_arrays(checksums: &crate::parser::Checksums) -> Vec<&[Option<String>]> {
@@ -344,6 +543,7 @@ mod tests {
         let pkgbuild = parser.parse(pkgbuild_content).unwrap();
 
         AnalysisContext {
+            shadow: Default::default(),
             pkgbuild,
             install_script: None,
             side_scripts: vec![],
@@ -552,7 +752,7 @@ sha256sums=('SKIP'
 
     #[tokio::test]
     async fn test_skip_laundering_across_arrays_detected() {
-        // HI-7: coverage is evaluated per-source across ALL present arrays. Here
+        // Coverage is evaluated per-source across ALL present arrays. Here
         // source #2 is SKIP in BOTH arrays (unverified) while source #1 is
         // covered by sha256. The old "first non-empty array only" logic looked
         // solely at sha256sums -- which has a real hash for #1 and SKIP for #2 --
@@ -582,7 +782,7 @@ sha512sums=('SKIP'
 
     #[tokio::test]
     async fn test_pinned_git_skip_is_ok_but_movable_is_flagged() {
-        // HI-7: a git source pinned to a commit may SKIP; a movable branch ref
+        // A git source pinned to a commit may SKIP; a movable branch ref
         // must be flagged (SRC-007 lives in the source analyzer; here we just
         // confirm the pinned case is not a checksum finding).
         let analyzer = ChecksumAnalyzer::new();
@@ -621,5 +821,177 @@ sha256sums=('SKIP')
             findings.iter().any(|f| f.id == "CHK-005"),
             "Non-VCS source with SKIP should trigger CHK-005"
         );
+    }
+
+    #[tokio::test]
+    async fn arch_specific_skip_on_a_downloaded_source_is_reported() {
+        let analyzer = ChecksumAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+arch=('x86_64')
+source_x86_64=('https://evil.example/helper-x86_64.tar.gz')
+sha256sums_x86_64=('SKIP')
+"#,
+        );
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(findings.iter().any(|f| f.id == "CHK-005"), "{findings:?}");
+    }
+
+    #[tokio::test]
+    async fn arch_specific_real_checksum_is_clean() {
+        let analyzer = ChecksumAnalyzer::new();
+        let h = "a".repeat(64);
+        let context = create_test_context(&format!(
+            "pkgname=test\npkgver=1.0\npkgrel=1\narch=('x86_64' 'aarch64')\n\
+             source_x86_64=('https://e.example/x.tar.gz')\nsha256sums_x86_64=('{h}')\n\
+             source_aarch64=('https://e.example/a.tar.gz')\nsha256sums_aarch64=('{h}')\n"
+        ));
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    async fn ids_of(pkg: &str) -> Vec<String> {
+        let findings = ChecksumAnalyzer::new()
+            .analyze(&create_test_context(pkg))
+            .await
+            .unwrap();
+        let mut v: Vec<String> = findings.into_iter().map(|f| f.id).collect();
+        v.sort();
+        v
+    }
+
+    const H: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[tokio::test]
+    async fn quoted_literal_braces_do_not_silence_skip() {
+        let pre = "pkgname=t\npkgver=1\npkgrel=1\n";
+        let control = ids_of(&format!("{pre}source=('https://evil.example/p.tar.gz' 'https://ok.example/ab.txt')\nsha256sums=('SKIP' '{H}')\n")).await;
+        assert_eq!(control, ["CHK-004"]);
+        // single-quoted braces and array syntax are literal: same answer
+        for lit in ["a{b,c}.txt", "a[@].txt", "a{,.txt", "x,}"] {
+            let ids = ids_of(&format!("{pre}source=('https://evil.example/p.tar.gz' 'https://ok.example/{lit}')\nsha256sums=('SKIP' '{H}')\n")).await;
+            assert_eq!(ids, ["CHK-004"], "{lit}");
+        }
+    }
+
+    #[tokio::test]
+    async fn skip_hidden_behind_an_expansion_is_still_unverified() {
+        let pre = "pkgname=t\npkgver=1\npkgrel=1\n";
+        // bash: SKIP${_x} with _x unset is SKIP
+        let ids = ids_of(&format!(
+            "{pre}source=('https://evil.example/p.tar.gz')\nsha256sums=(\"SKIP${{_x}}\")\n"
+        ))
+        .await;
+        assert_eq!(ids, ["CHK-005"]);
+        // brace sequence assembling SKIP
+        let ids = ids_of(&format!(
+            "{pre}source=('https://evil.example/p.tar.gz')\nsha256sums=(S{{K..K}}IP)\n"
+        ))
+        .await;
+        assert_eq!(ids, ["CHK-005"]);
+        let ids = ids_of(&format!(
+            "{pre}source=('https://evil.example/p.tar.gz')\nsha256sums=(S{{K,K}}IP)\n"
+        ))
+        .await;
+        assert!(ids.contains(&"CHK-005".to_string()), "{ids:?}");
+    }
+
+    #[tokio::test]
+    async fn quoted_command_substitution_is_one_countable_element() {
+        let pre = "pkgname=t\npkgver=1\npkgrel=1\n";
+        let ids = ids_of(&format!("{pre}source=('https://evil.example/p.tar.gz' \"$(echo https://ok.example/b.txt)\")\nsha256sums=('SKIP' '{H}')\n")).await;
+        assert_eq!(ids, ["CHK-004"]);
+    }
+
+    #[tokio::test]
+    async fn unquoted_substitution_reports_alignment_and_checks_before_it() {
+        let pre = "pkgname=t\npkgver=1\npkgrel=1\n";
+        let ids = ids_of(&format!("{pre}source=('https://evil.example/p.tar.gz' $(echo https://ok.example/b.txt))\nsha256sums=('SKIP' '{H}')\n")).await;
+        assert!(ids.contains(&"CHK-009".to_string()), "{ids:?}");
+        assert!(
+            ids.contains(&"CHK-005".to_string()),
+            "index 0 is still checked: {ids:?}"
+        );
+        assert!(!ids.contains(&"CHK-006".to_string()), "{ids:?}");
+        // an array expansion: weak algorithm still reported, alignment flagged
+        let ids = ids_of(&format!(
+            "{pre}source=(\"${{files[@]}}\")\nmd5sums=('abc')\n"
+        ))
+        .await;
+        assert!(
+            ids.contains(&"CHK-002".to_string()) && ids.contains(&"CHK-009".to_string()),
+            "{ids:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_brace_list_is_reported_not_ignored() {
+        let pre = "pkgname=t\npkgver=1\npkgrel=1\n";
+        let ids = ids_of(&format!("{pre}source=('https://evil.example/p.tar.gz' https://ok.example/x{{1..300}}.txt)\nsha256sums=('SKIP' '{H}')\n")).await;
+        assert!(ids.contains(&"CHK-009".to_string()), "{ids:?}");
+    }
+
+    #[tokio::test]
+    async fn checksum_from_a_plain_variable_is_a_hash() {
+        let pre = "pkgname=t\npkgver=1\npkgrel=1\n";
+        let ids = ids_of(&format!(
+            "{pre}_h={H}\nsource=('https://ok.example/p.tar.gz')\nsha256sums=(\"$_h\")\n"
+        ))
+        .await;
+        assert!(ids.is_empty(), "{ids:?}");
+    }
+
+    #[tokio::test]
+    async fn generated_checksum_array_is_flagged_as_unknown_not_as_all_skip() {
+        let pre = "pkgname=t\npkgver=1\npkgrel=1\n";
+        let ids = ids_of(&format!(
+            "{pre}source=('https://ok.example/a.tar.gz' 'https://ok.example/b.tar.gz')\nsha256sums=($(gen-sums))\n"
+        ))
+        .await;
+        assert_eq!(ids, ["CHK-009"]);
+    }
+
+    #[tokio::test]
+    async fn leading_uncountable_element_does_not_hide_skip() {
+        let pre = "pkgname=t\npkgver=1\npkgrel=1\n";
+        let src = "source=('https://evil.example/x.tar.gz')\n";
+        let ids = ids_of(&format!("{pre}{src}sha256sums=($(true) 'SKIP')\n")).await;
+        assert!(ids.contains(&"CHK-005".to_string()), "{ids:?}");
+        assert!(ids.contains(&"CHK-009".to_string()), "{ids:?}");
+        // an empty variable is zero words: nothing uncountable at all
+        let ids = ids_of(&format!("{pre}_e=\n{src}sha256sums=($_e 'SKIP')\n")).await;
+        assert_eq!(ids, ["CHK-005"]);
+        let ids = ids_of(&format!("{pre}_e=\"\"\n{src}sha256sums=(${{_e}} 'SKIP')\n")).await;
+        assert_eq!(ids, ["CHK-005"]);
+        // an uncountable SOURCE in front of the downloaded one
+        let ids = ids_of(&format!(
+            "{pre}source=($(true) 'https://evil.example/x.tar.gz')\nsha256sums=('SKIP')\n"
+        ))
+        .await;
+        assert!(ids.contains(&"CHK-005".to_string()), "{ids:?}");
+    }
+
+    #[tokio::test]
+    async fn fake_hash_up_front_cannot_launder_a_skip_behind_an_expansion() {
+        let pre = "pkgname=t\npkgver=1\npkgrel=1\n";
+        let ids = ids_of(&format!(
+            "{pre}source=('https://evil.example/a.tar.gz' 'https://evil.example/x.tar.gz')\nsha256sums=('{H}' $(true) 'SKIP')\n"
+        ))
+        .await;
+        assert!(ids.contains(&"CHK-004".to_string()), "{ids:?}");
+        assert!(ids.contains(&"CHK-009".to_string()), "{ids:?}");
+    }
+
+    #[tokio::test]
+    async fn plain_variable_holding_a_hash_is_not_all_skip() {
+        let pre = "pkgname=t\npkgver=1\npkgrel=1\n";
+        let ids = ids_of(&format!(
+            "{pre}_h={H}\nsource=('https://ok.example/a.tar.gz')\nsha256sums=($_h)\n"
+        ))
+        .await;
+        assert!(ids.is_empty(), "{ids:?}");
     }
 }

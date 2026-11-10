@@ -1,0 +1,55 @@
+{
+  "package_name": "sumdemo",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "CHK-005",
+      "severity": "high",
+      "category": "cryptography",
+      "title": "All non-VCS sources use SKIP checksum",
+      "description": "No integrity verification is performed on 1 non-VCS source(s): https://evil.example/payload.tar.gz",
+      "location": {
+        "file": "tests/fixtures/malicious/checksum-uncertain/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "source: https://evil.example/payload.tar.gz"
+      },
+      "recommendation": "Provide real checksums for non-VCS sources",
+      "cwe_id": "CWE-354",
+      "metadata": {
+        "non_vcs_source_count": 1,
+        "unverified_indices": [
+          0
+        ],
+        "unverified_sources": [
+          "https://evil.example/payload.tar.gz"
+        ],
+        "vcs_source_count": 0
+      }
+    },
+    {
+      "id": "CHK-009",
+      "severity": "medium",
+      "category": "cryptography",
+      "title": "Checksum alignment cannot be determined",
+      "description": "source=() has an element at position 2 that cannot be counted statically (command substitution, variable or array expansion, or an oversized brace list), so sources from there on cannot be matched to their checksums.",
+      "location": {
+        "file": "tests/fixtures/malicious/checksum-uncertain/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Write source= and the checksum arrays as plain literal lists, or review which source is left unverified by hand.",
+      "cwe_id": "CWE-354",
+      "metadata": {
+        "array": "source",
+        "first_uncountable_index": 1
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/checksum-uncertain/PKGBUILD"
+  ],
+  "timestamp": "2026-11-10T14:50:55.864688627Z",
+  "scan_duration_ms": 25
+}

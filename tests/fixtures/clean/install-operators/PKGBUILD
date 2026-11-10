@@ -1,0 +1,7 @@
+pkgname=demo-git
+pkgver=1
+pkgrel=1
+arch=(any)
+license=(MIT)
+declare install="${pkgname%-git}.install"
+package() { :; }

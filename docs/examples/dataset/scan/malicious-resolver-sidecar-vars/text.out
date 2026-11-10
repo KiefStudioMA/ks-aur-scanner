@@ -1,0 +1,33 @@
+
+Scan Results: resolver-sidecar-vars
+============================================================
+
+[CRITICAL] INSTALL-003 Network access in install script (install script)
+    Install scripts should not make network connections
+    Location: tests/fixtures/malicious/resolver-sidecar-vars/vars.conf:1
+    Code: _f=curl
+    Recommendation: Install scripts should never download additional content
+    Reference: CWE-494
+
+[HIGH] META-007 install= cannot be statically resolved
+    The install scriptlet name is not a plain value the scanner can resolve (eval of an expansion, or source of another file). makepkg runs whichever file it names as the package's install scriptlet, so every file beside the PKGBUILD was scanned as a possible scriptlet.
+    Code: install=eval of an expansion, or source of another file
+    Recommendation: Do not install. Use a literal `install=<pkgname>.install` and review the file it names.
+    Reference: CWE-426
+
+[HIGH] CHK-005 All non-VCS sources use SKIP checksum
+    No integrity verification is performed on 1 non-VCS source(s): vars.conf
+    Code: source: vars.conf
+    Recommendation: Provide real checksums for non-VCS sources
+    Reference: CWE-354
+
+
+
+============================================================
+Package: resolver-sidecar-vars v1.0-1
+Scan duration: 20ms
+
+Found 3 issue(s):
+  1 CRITICAL
+  2 HIGH
+============================================================

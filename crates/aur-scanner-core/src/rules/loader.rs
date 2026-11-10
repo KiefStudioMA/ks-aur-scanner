@@ -235,7 +235,7 @@ pattern = "test.*pattern"
 
     #[test]
     fn rule_without_file_types_defaults_to_scanned_types() {
-        // audit LOW: a community rule that omits `file_types` must not load inert.
+        // A community rule that omits `file_types` must not load inert.
         let toml = r#"
 [[rule]]
 id = "TEST-002"

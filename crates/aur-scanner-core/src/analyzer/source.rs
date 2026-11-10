@@ -494,6 +494,7 @@ mod tests {
         let pkgbuild = parser.parse(pkgbuild_content).unwrap();
 
         AnalysisContext {
+            shadow: Default::default(),
             pkgbuild,
             install_script: None,
             side_scripts: vec![],
@@ -688,7 +689,7 @@ source=("https://pastebin.com/raw/abc123")
 
     #[tokio::test]
     async fn test_src006_trusts_host_not_substring() {
-        // Task 4120: SRC-006 must match the trusted host on label boundaries,
+        // SRC-006 must match the trusted host on label boundaries,
         // not as a raw substring. A trusted host (or its subdomain) is OK; a
         // host that merely CONTAINS a trusted host as a substring is NOT.
         async fn fires(src: &str) -> bool {
@@ -709,8 +710,8 @@ source=("https://pastebin.com/raw/abc123")
         assert!(!fires("git+https://git.sr.ht/~u/r").await);
 
         // UNTRUSTED via the substring-bypass class -> SRC-006 MUST fire:
-        // left-extended host, userinfo confusion, the backslash parser-differential
-        // (F1), and a genuinely untrusted host.
+        // left-extended host, userinfo confusion, the backslash parser-differential,
+        // and a genuinely untrusted host.
         assert!(fires("git+https://github.com.evil.tld/u/r.git").await);
         assert!(fires("git+https://github.com@evil.tld/u/r.git").await);
         assert!(fires(r"git+https://github.com\@evil.tld/u/r.git").await);

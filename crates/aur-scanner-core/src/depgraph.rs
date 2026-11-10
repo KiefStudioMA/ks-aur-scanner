@@ -19,7 +19,7 @@
 //! When a package fetches/runs code from an external source at build time, that
 //! is an *opaque boundary*: it is flagged (see the `remote_exec` analyzer and
 //! the `aur-scan:opaque` SBOM marker) and NOT expanded. A truthful, bounded
-//! SBOM that says "this runs code from <url>, we stop here" is correct; a
+//! SBOM that says "this runs code from `<url>`, we stop here" is correct; a
 //! "complete" SBOM built by chasing attacker-controlled code is dangerous.
 
 use crate::aur::{AurPackageInfo, PackageInfoSource};

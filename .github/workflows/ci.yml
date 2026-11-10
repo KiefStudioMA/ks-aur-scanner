@@ -112,8 +112,8 @@ jobs:
       - run: cargo test --all --all-features
 
   # Supply-chain gate: advisories, license policy, banned/duplicate crates, and
-  # source allow-list. Runs in CI and on a weekly schedule (advisories land
-  # after a PR merges, like RUSTSEC-2026-0007 in bytes did).
+  # source allow-list. The weekly advisory re-scan lives in audit.yml
+  # (advisories land after a PR merges, like RUSTSEC-2026-0007 in bytes did).
   supply-chain:
     name: cargo-deny
     runs-on: ubuntu-latest
@@ -124,3 +124,41 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories bans licenses sources
+
+  # API docs build without warnings, so docs.rs never renders a broken link.
+  doc:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master 2026-09-12
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo doc --locked --no-deps --workspace
+
+  # Secret scan of the tree, with the allowlist in .gitleaks.toml. The release
+  # binary is pinned by version and SHA-256 rather than pulled through an
+  # action.
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install gitleaks
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+      - run: '"$RUNNER_TEMP/gitleaks" dir --config .gitleaks.toml --redact --no-banner .'

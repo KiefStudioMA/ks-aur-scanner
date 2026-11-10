@@ -1,0 +1,25 @@
+
+Scan Results: sumdemo
+============================================================
+
+[HIGH] CHK-005 All non-VCS sources use SKIP checksum
+    No integrity verification is performed on 1 non-VCS source(s): https://evil.example/payload.tar.gz
+    Code: source: https://evil.example/payload.tar.gz
+    Recommendation: Provide real checksums for non-VCS sources
+    Reference: CWE-354
+
+[MEDIUM] CHK-009 Checksum alignment cannot be determined
+    source=() has an element at position 2 that cannot be counted statically (command substitution, variable or array expansion, or an oversized brace list), so sources from there on cannot be matched to their checksums.
+    Recommendation: Write source= and the checksum arrays as plain literal lists, or review which source is left unverified by hand.
+    Reference: CWE-354
+
+
+
+============================================================
+Package: sumdemo v1.0.0-1
+Scan duration: 19ms
+
+Found 2 issue(s):
+  1 HIGH
+  1 MEDIUM
+============================================================

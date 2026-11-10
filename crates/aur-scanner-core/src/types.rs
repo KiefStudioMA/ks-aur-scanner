@@ -163,6 +163,16 @@ pub struct Finding {
 /// read, was not a regular file, or was only partly analyzed.
 pub const UNANALYZABLE_CODE: &str = "SCAN-001";
 
+/// Rule ID for a compressed or unreadable local archive whose contents were
+/// not reviewed. Unlike `SCAN-001` it does not block an install on its own.
+pub const OPAQUE_ARCHIVE_CODE: &str = "SCAN-002";
+
+/// Rule ID for a tar member whose name escapes the extraction directory.
+pub const TAR_ESCAPE_CODE: &str = "SCAN-003";
+
+/// Rule ID for a tar that uses structures where tar readers disagree.
+pub const TAR_ODD_CODE: &str = "SCAN-004";
+
 /// Result of scanning a package
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -576,6 +586,16 @@ pub struct AnalysisContext {
     /// absent rather than guessing: a missing maintainer field means "we did
     /// not look", not "orphaned".
     pub registry: Option<RegistryContext>,
+    /// Package-wide printer-shadow analysis, computed once on first use (it reads
+    /// every file of the package, so rebuilding it per file is quadratic).
+    pub shadow: ShadowCache,
+}
+
+/// Lazily computed, shared result of scanning every package file for redefined
+/// message printers. Construct with `Default::default()`.
+#[derive(Debug, Clone, Default)]
+pub struct ShadowCache {
+    set: std::sync::OnceLock<crate::rules::ShadowSet>,
 }
 
 /// A prebuilt executable shipped inside a package directory.
@@ -651,13 +671,20 @@ impl AnalysisContext {
     /// sidecars) that redefine a message printer such as `warning` or `note`.
     /// A redefinition can turn "print this text" into "run this text", so
     /// analyzers treat those names as code in every file of the package.
-    pub fn shadowed_printers(&self) -> crate::rules::ShadowSet {
-        let mut texts: Vec<(&std::path::Path, &str)> =
-            vec![(self.file_path.as_path(), self.pkgbuild.raw_content.as_str())];
-        for s in self.all_scripts() {
-            texts.push((s.path.as_path(), s.content.as_str()));
-        }
-        crate::rules::ShadowSet::from_texts(texts)
+    pub fn shadowed_printers(&self) -> &crate::rules::ShadowSet {
+        self.shadow.set.get_or_init(|| {
+            let mut texts: Vec<(&std::path::Path, &str)> =
+                vec![(self.file_path.as_path(), self.pkgbuild.raw_content.as_str())];
+            for s in self.all_scripts() {
+                texts.push((s.path.as_path(), s.content.as_str()));
+            }
+            crate::rules::ShadowSet::from_texts(texts)
+        })
+    }
+
+    /// [`crate::rules::ShadowSet::names`] of [`Self::shadowed_printers`], cached.
+    pub fn shadowed_names(&self) -> &std::collections::HashSet<String> {
+        self.shadowed_printers().names_ref()
     }
 
     /// The package name this context is about, preferring the parsed PKGBUILD.

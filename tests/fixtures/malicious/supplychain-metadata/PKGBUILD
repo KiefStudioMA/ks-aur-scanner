@@ -1,5 +1,5 @@
 # Maintainer: Totally Legit <legit@example.com>
-# Supply-chain METADATA attack fixture (task 3986). Every line here is a parsed
+# Supply-chain METADATA attack fixture. Every line here is a parsed
 # packaging field, not a shell command, so the regex/text rules see nothing --
 # the metadata analyzer is what catches it. INERT text, never executed.
 pkgname=systemhelper

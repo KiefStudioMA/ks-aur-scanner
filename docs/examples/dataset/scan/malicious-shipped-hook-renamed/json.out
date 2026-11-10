@@ -1,0 +1,55 @@
+{
+  "package_name": "hookdemo",
+  "package_version": "1.0.0-1",
+  "findings": [
+    {
+      "id": "CHK-005",
+      "severity": "high",
+      "category": "cryptography",
+      "title": "All non-VCS sources use SKIP checksum",
+      "description": "No integrity verification is performed on 1 non-VCS source(s): zz.conf",
+      "location": {
+        "file": "tests/fixtures/malicious/shipped-hook-renamed/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "source: zz.conf"
+      },
+      "recommendation": "Provide real checksums for non-VCS sources",
+      "cwe_id": "CWE-354",
+      "metadata": {
+        "non_vcs_source_count": 1,
+        "unverified_indices": [
+          0
+        ],
+        "unverified_sources": [
+          "zz.conf"
+        ],
+        "vcs_source_count": 0
+      }
+    },
+    {
+      "id": "PERSIST-012",
+      "severity": "high",
+      "category": "persistence",
+      "title": "pacman hook runs a fetch, a shell command or a user/temp path",
+      "description": "zz.conf is a libalpm hook (runs as root) whose Exec downloads, or runs something from /tmp, /dev/shm or a home directory. A hook like this is a root persistence mechanism.",
+      "location": {
+        "file": "tests/fixtures/malicious/shipped-hook-renamed/zz.conf",
+        "line": 8,
+        "column": null,
+        "snippet": "Exec = /tmp/.x/run"
+      },
+      "recommendation": "Do not install. A hook should run a fixed, packaged program with a narrow Target.",
+      "cwe_id": "CWE-506",
+      "metadata": {
+        "matched_text": "Exec = /tmp/.x/run"
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/shipped-hook-renamed/PKGBUILD",
+    "tests/fixtures/malicious/shipped-hook-renamed/zz.conf"
+  ],
+  "timestamp": "2026-11-10T14:51:08.357306015Z",
+  "scan_duration_ms": 23
+}

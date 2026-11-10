@@ -12,6 +12,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "AUR helper plugin for security scanning - wrapper for yay/paru with automatic scanning"
 readme = "../../README.md"
+# The integration tests read ../../tests/fixtures and install/, which are not
+# in the published package, so they are left out of it.
+exclude = ["tests/"]
 
 [lib]
 name = "aur_scanner_plugin"
@@ -23,10 +26,7 @@ path = "src/bin/wrapper.rs"
 
 [dependencies]
 aur-scanner-core.workspace = true
-tokio.workspace = true
-tracing.workspace = true
 colored.workspace = true
-anyhow.workspace = true
 
 [dev-dependencies]
 chrono.workspace = true

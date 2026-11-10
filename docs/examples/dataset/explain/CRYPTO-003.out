@@ -3,6 +3,8 @@
 CRYPTO-003 Monero/Bitcoin wallet address [CRITICAL]
 ======================================================================
 
+Severity: CRITICAL
+
 Category:
   Cryptomining  (detector: rules)
 

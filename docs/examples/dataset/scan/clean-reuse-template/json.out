@@ -1,0 +1,11 @@
+{
+  "package_name": "reuse-template",
+  "package_version": "1.0-1",
+  "findings": [],
+  "scanned_files": [
+    "tests/fixtures/clean/reuse-template/PKGBUILD",
+    "tests/fixtures/clean/reuse-template/REUSE.toml"
+  ],
+  "timestamp": "2026-11-10T14:50:53.393315596Z",
+  "scan_duration_ms": 22
+}

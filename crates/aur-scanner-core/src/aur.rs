@@ -801,7 +801,7 @@ mod tests {
         assert!(info.is_err());
     }
 
-    // --- fail-closed AUR classification (defect #1) ---------------------------
+    // --- fail-closed AUR classification ---------------------------
     // The security contract: an indeterminate AUR lookup must NOT downgrade a
     // package to "not AUR" and let it install unscanned. Only an authoritative
     // answer may skip the scan.
@@ -830,7 +830,7 @@ mod tests {
 
     #[test]
     fn indeterminate_aur_lookup_fails_closed_and_is_scanned() {
-        // The regression for defect #1: a transient RPC/network error must be
+        // The regression: a transient RPC/network error must be
         // treated as "could be AUR" so the package is SCANNED, not skipped.
         // Before the fix `package_exists` collapsed this error into `false`,
         // so the package slipped through unscanned.

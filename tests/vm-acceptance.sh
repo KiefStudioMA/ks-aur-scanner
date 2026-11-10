@@ -100,7 +100,7 @@ sect "Installed package contents (README: Manual Installation)"
 for f in /usr/bin/aur-scan /usr/bin/aur-scan-wrap /usr/bin/aur-scan-hook \
          /usr/share/aur-scan/integration.bash /usr/share/aur-scan/integration.zsh \
          /usr/share/aur-scan/integration.fish /usr/share/aur-scan/integration.nu \
-         /usr/share/aur-scanner/rules.d/example.toml \
+         /usr/share/aur-scanner/example-rule.toml \
          /usr/share/aur-scanner/rules.d/permissions.toml \
          /usr/share/aur-scan/aur-scan.hook.example \
          /usr/share/licenses/aur-scanner/LICENSE; do

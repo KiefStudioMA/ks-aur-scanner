@@ -391,6 +391,7 @@ mod tests {
 
     fn ctx_with(pkgbuild: &str, arts: Vec<BinaryArtifact>) -> AnalysisContext {
         AnalysisContext {
+            shadow: Default::default(),
             pkgbuild: StaticParser::new().parse(pkgbuild).unwrap(),
             install_script: None,
             side_scripts: vec![],

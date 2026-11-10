@@ -1,0 +1,12 @@
+{
+  "package_name": "demo",
+  "package_version": "1-1",
+  "findings": [],
+  "scanned_files": [
+    "tests/fixtures/clean/split-install/PKGBUILD",
+    "tests/fixtures/clean/split-install/demo.install",
+    "tests/fixtures/clean/split-install/demo-extras.install"
+  ],
+  "timestamp": "2026-11-10T14:50:54.117291722Z",
+  "scan_duration_ms": 20
+}

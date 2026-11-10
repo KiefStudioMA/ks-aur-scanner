@@ -1,4 +1,4 @@
-//! Self-adversarial evasion fuzzer (task 4038).
+//! Self-adversarial evasion fuzzer.
 //!
 //! Premise: the AUR attacker reads our public ruleset and auto-generates the
 //! re-spelling we don't catch. Counter: red-team ourselves first. This harness

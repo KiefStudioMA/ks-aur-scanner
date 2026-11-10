@@ -1,0 +1,11 @@
+pkgbase=demo
+pkgname=(demo demo-b)
+pkgver=1
+pkgrel=1
+arch=('any')
+license=('MIT')
+package_demo() { :; }
+package_demo-b() {
+  echo "}"
+  install=$pkgname.scr
+}

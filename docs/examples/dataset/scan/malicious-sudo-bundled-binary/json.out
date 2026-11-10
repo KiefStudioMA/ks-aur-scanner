@@ -1,0 +1,95 @@
+{
+  "package_name": "openconnect-sso",
+  "package_version": "0.8.1-1",
+  "findings": [
+    {
+      "id": "PRIV-001",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "title": "Sudo usage in build()",
+      "description": "Function 'build' uses sudo, which should never be needed in PKGBUILDs",
+      "location": {
+        "file": "tests/fixtures/malicious/sudo-bundled-binary/PKGBUILD",
+        "line": 8,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Remove sudo; makepkg handles permissions correctly",
+      "cwe_id": "CWE-250",
+      "metadata": {
+        "function": "build"
+      }
+    },
+    {
+      "id": "SRC-010",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Source is a different owner's copy of the upstream repo",
+      "description": "The declared upstream is 'vlaci/openconnect-sso' on github.com, but a source fetches 'prestonhager/openconnect-sso' from the same forge. Same repository name under a different account is how a fork is substituted for the real project: the PKGBUILD still points reviewers at the genuine upstream while building someone else's code.",
+      "location": {
+        "file": "tests/fixtures/malicious/sudo-bundled-binary/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "url=https://github.com/vlaci/openconnect-sso  source=git+https://github.com/PrestonHager/openconnect-sso.git"
+      },
+      "recommendation": "Confirm 'prestonhager' is an official mirror of 'vlaci/openconnect-sso'. If it is not, this package builds code the upstream project did not publish.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "actual_owner": "prestonhager",
+        "actual_source": "github.com/prestonhager/openconnect-sso",
+        "declared_owner": "vlaci",
+        "declared_upstream": "github.com/vlaci/openconnect-sso",
+        "repo": "openconnect-sso"
+      }
+    },
+    {
+      "id": "CHK-005",
+      "severity": "high",
+      "category": "cryptography",
+      "title": "All non-VCS sources use SKIP checksum",
+      "description": "No integrity verification is performed on 1 non-VCS source(s): validator",
+      "location": {
+        "file": "tests/fixtures/malicious/sudo-bundled-binary/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "source: validator"
+      },
+      "recommendation": "Provide real checksums for non-VCS sources",
+      "cwe_id": "CWE-354",
+      "metadata": {
+        "non_vcs_source_count": 1,
+        "unverified_indices": [
+          1
+        ],
+        "unverified_sources": [
+          "validator"
+        ],
+        "vcs_source_count": 1
+      }
+    },
+    {
+      "id": "SRC-007",
+      "severity": "low",
+      "category": "network_security",
+      "title": "VCS source not pinned to a commit",
+      "description": "Source #1 is a VCS checkout on a movable ref (branch/tag or none): git+https://github.com/PrestonHager/openconnect-sso.git. Its content is not integrity-pinned and can change between scan and build.",
+      "location": {
+        "file": "tests/fixtures/malicious/sudo-bundled-binary/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": "source=(\"git+https://github.com/PrestonHager/openconnect-sso.git\")"
+      },
+      "recommendation": "Pin the VCS source to an immutable revision with #commit=<sha>.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "fragment": null,
+        "url": "git+https://github.com/PrestonHager/openconnect-sso.git"
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/sudo-bundled-binary/PKGBUILD"
+  ],
+  "timestamp": "2026-11-10T14:51:09.738184537Z",
+  "scan_duration_ms": 16
+}

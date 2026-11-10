@@ -111,7 +111,7 @@ This scanner implements detection rules based on real-world attacks and security
 
 | Feature | Description |
 |---------|-------------|
-| **Static Analysis** | 142 detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
+| **Static Analysis** | 167 detection codes across pattern rules and dedicated analyzers, in one auditable catalog |
 | **Install Script Scanning** | Analyzes `.install` scripts for persistence mechanisms |
 | **Source Verification** | Validates URLs, checksums, and download sources |
 | **AUR Integration** | Fetch and scan packages directly from AUR before installation |
@@ -155,7 +155,7 @@ gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51
 
 > **Release-candidate channel — [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc):**
 > tracks the next release before it is promoted to stable. Between release
-> candidates it builds the current stable tag (now **`v2.2.2`**), so it never
+> candidates it builds the current stable tag (now **`v3.0.0`**), so it never
 > falls behind stable. Most users — and all production systems — should install
 > the stable `aur-scanner`.
 
@@ -183,8 +183,17 @@ sudo install -Dm644 install/integration.zsh /usr/share/aur-scan/integration.zsh
 sudo install -Dm644 install/integration.fish /usr/share/aur-scan/integration.fish
 sudo install -Dm644 install/integration.nu /usr/share/aur-scan/integration.nu
 
-# Install the community rules example
-sudo install -Dm644 install/rules.d/example.toml /usr/share/aur-scanner/rules.d/example.toml
+# Install the shipped community rules (every one; a rule file that is not
+# installed silently does not exist), plus the example rule to copy from
+for r in install/rules.d/*.toml; do
+    sudo install -Dm644 "$r" /usr/share/aur-scanner/rules.d/"$(basename "$r")"
+done
+sudo install -Dm644 install/example-rule.toml /usr/share/aur-scanner/example-rule.toml
+
+# Shell completions
+aur-scan completions bash | sudo install -Dm644 /dev/stdin /usr/share/bash-completion/completions/aur-scan
+aur-scan completions zsh  | sudo install -Dm644 /dev/stdin /usr/share/zsh/site-functions/_aur-scan
+aur-scan completions fish | sudo install -Dm644 /dev/stdin /usr/share/fish/vendor_completions.d/aur-scan.fish
 
 # Pacman hook — opt-in backstop only. It runs AFTER makepkg has already built
 # (and executed) the package, so it catches .install scriptlets, not build-time
@@ -343,15 +352,22 @@ terminal and without `--noconfirm`, exits non-zero.
 
 ### aur-scan scan
 
-Scan a local PKGBUILD file or directory. A directory scan reads the PKGBUILD,
-every declared `install=` scriptlet (split packages included), `.hook` files,
-and every other text file in the package directory, plus anything the
-PKGBUILD reaches through `$startdir` or `$srcdir`: a payload can be run from
-any of them. Files that can't be fully read (oversized, symlinked, not a
-regular file, a missing declared `install=`) are reported as `SCAN-001`
-rather than skipped. `--severity` only trims the text output; if it hides a
-finding that trips `--fail-on`, the output says so, and JSON and SARIF always
-carry every finding.
+Scan a local PKGBUILD file or directory. A directory scan reads every file in
+the package tree (up to depth 8 and 4096 files; a real top-level `.git` is
+skipped, symlinks are never followed): a payload can be run from any of them.
+Binary and NUL-bearing files are scanned with the NULs removed, and plain tar
+members are read in memory and reported as `archive.tar:member`. A file is
+scanned as an install scriptlet if `install=` could name it under any package
+name, if it ends in `.install`, or if it defines a `pre_`/`post_` scriptlet
+function, so a scriptlet is never missed because `install=` was written in an
+unusual way (`META-007` reports a name that can't be resolved soundly).
+
+What can't be reviewed is reported instead of skipped: a bound that was hit or
+a file that can't be read is `SCAN-001` (Critical), an archive that can't be
+opened is `SCAN-002` (Medium), a tar member whose path escapes is `SCAN-003`
+and a tar the readers would disagree about is `SCAN-004` (both High).
+`--severity` only trims the text output; if it hides a finding that trips
+`--fail-on`, the output says so, and JSON and SARIF always carry every finding.
 
 ```bash
 aur-scan scan <PATH> [OPTIONS]
@@ -641,7 +657,9 @@ the shell integration:
 - Honors `AUR_SCAN_SEVERITY` and the other `AUR_SCAN_*` settings
 - Passes read-only operations through unchanged
 
-### Level 4: Pacman Hook (backstop only — runs *after* the build)
+### Level 4: Pacman Hook
+
+A backstop only: it runs *after* the build.
 
 > **Important timing caveat.** For an AUR package, `makepkg` runs the
 > PKGBUILD's `prepare()`/`build()`/`package()` **before** the pacman
@@ -696,7 +714,7 @@ NeedsTargets
 
 ## Detection Rules Reference
 
-> The **142 built-in detection codes**, generated from the catalog
+> The **167 built-in detection codes**, generated from the catalog
 > (`aur-scan codes --format markdown`) — every ID is unique and audit-enforced.
 > (`EXAMPLE-001` is the community-rule sample; `PERM-001`/`PERM-002` are real
 > shipped community rules in the same directory, not built-ins.) Extend the
@@ -746,6 +764,9 @@ NeedsTargets
 | `PERSIST-002` | Systemd timer creation | Persistence | rules | CWE-506 |
 | `PERSIST-004` | rc.local modification | Persistence | rules | CWE-506 |
 | `PERSIST-006` | Systemd masquerading | Persistence | rules | CWE-506 |
+| `PERSIST-007` | SSH authorized_keys modified | Persistence | rules | CWE-506 |
+| `PERSIST-008` | AI coding assistant config or hook written | Persistence | rules | CWE-506 |
+| `PERSIST-009` | pacman hook written outside $pkgdir | Persistence | rules | CWE-506 |
 | `PRIV-001` | Sudo usage in a build function | Privilege Escalation | privilege | CWE-250 |
 | `PRIV-002` | SUID/SGID bit set in a function | Privilege Escalation | privilege | CWE-732 |
 | `PRIV-003` | Sudoers modification | Privilege Escalation | privilege | CWE-250 |
@@ -770,6 +791,7 @@ NeedsTargets
 | `TAMPER-002` | doas/sudoers nopasswd grant | Privilege Escalation | rules | CWE-269 |
 | `TAMPER-005` | PAM tampering | Privilege Escalation | rules | CWE-287 |
 | `TAMPER-011` | pacman signature downgrade | Malicious Code | rules | CWE-347 |
+| `TAMPER-021` | System-wide git config set to run a program | Malicious Code | rules | CWE-829 |
 | `TI-URLHAUS-001` | URLhaus lists a source URL | Malicious Code | threat_intel | CWE-494 |
 | `TI-VT-001` | VirusTotal flags a source artifact | Malicious Code | threat_intel | CWE-506 |
 
@@ -777,6 +799,7 @@ NeedsTargets
 
 | Code | Name | Category | Detector | CWE |
 |------|------|----------|----------|-----|
+| `ATOMIC-006` | npm/bun package installed from a URL or git remote during the build | Malicious Code | rules | CWE-494 |
 | `BIN-001` | Prebuilt binary committed in the package directory | Suspicious Metadata | binary | CWE-494 |
 | `BIN-004` | Binary searches for libraries in an unsafe location | Privilege Escalation | binary | CWE-426 |
 | `CHK-001` | No checksums for sources | Cryptography | checksum | CWE-354 |
@@ -803,6 +826,7 @@ NeedsTargets
 | `HIDDEN-003` | Binary in non-standard location | Malicious Code | rules | - |
 | `INSTALL-002` | Binary execution in install script | Malicious Code | rules | CWE-94 |
 | `META-003` | Replaces/conflicts a core or security package | Suspicious Metadata | metadata | CWE-1357 |
+| `META-007` | install= cannot be statically resolved | Suspicious Metadata | metadata | CWE-426 |
 | `OBF-001` | Base64 decoding | Obfuscation | rules | CWE-506 |
 | `OBF-002` | Eval usage | Command Injection | rules | CWE-95 |
 | `OBF-003` | Hex-encoded payload | Obfuscation | rules | CWE-506 |
@@ -811,19 +835,29 @@ NeedsTargets
 | `OBF-007` | printf character assembly | Obfuscation | rules | CWE-506 |
 | `OBF-008` | Alternate-encoding decode | Obfuscation | rules | CWE-506 |
 | `OBF-011` | Interpreter here-string execution | Obfuscation | rules | CWE-94 |
+| `OBF-020` | Dynamic command name | Obfuscation | rules | CWE-94 |
 | `PERSIST-003` | Cron job creation | Persistence | rules | - |
 | `PERSIST-005` | XDG autostart creation | Persistence | rules | - |
+| `PERSIST-010` | udev rule written outside $pkgdir | Persistence | rules | CWE-506 |
+| `PERSIST-012` | pacman hook runs a fetch, a shell command or a user/temp path | Persistence | shipped | CWE-506 |
+| `PERSIST-014` | udev rule runs a shell command, a fetch or a user/temp path | Persistence | shipped | CWE-506 |
 | `PRIV-005` | Kernel module operations | Privilege Escalation | privilege | - |
 | `PRIV-006` | Sudo in an install hook | Privilege Escalation | privilege | CWE-250 |
 | `PROV-001` | Package gained risky behavior | Suspicious Metadata | provenance | CWE-506 |
+| `SCAN-003` | Archive member escapes the extraction directory | Configuration | scanner | CWE-22 |
+| `SCAN-004` | Archive uses structures where tar readers disagree | Configuration | scanner | CWE-436 |
 | `SQUAT-002` | Package name is one keystroke from a widely-installed package | Malicious Code | squat | CWE-1007 |
 | `SRC-002` | Suspicious source domain | Network Security | source | - |
 | `SRC-003` | Raw IP address in source URL | Network Security | source | - |
 | `SRC-004` | URL shortener in source | Network Security | source | - |
 | `SRC-009` | Obfuscated IP in URL | Network Security | rules | CWE-94 |
 | `SRC-010` | Source is a different owner's copy of the upstream repo | Network Security | source | CWE-494 |
+| `SRC-011` | References files outside the package directory | Configuration | rules | CWE-22 |
 | `TAMPER-013` | Security control disabled | Malicious Code | rules | CWE-693 |
 | `TAMPER-017` | CA trust anchor injection | Malicious Code | rules | CWE-295 |
+| `TAMPER-018` | Name resolution configuration modified | Malicious Code | rules | CWE-350 |
+| `TAMPER-019` | Per-user git config set to run a program | Malicious Code | rules | CWE-829 |
+| `TAMPER-020` | git fsmonitor/hooksPath set from an install script | Malicious Code | rules | CWE-829 |
 | `TRUST-001` | pacman keyring poisoning | Malicious Code | rules | CWE-494 |
 | `URL-001` | Raw IP in URL | Network Security | rules | - |
 | `URL-002` | URL shortener | Network Security | rules | - |
@@ -833,17 +867,25 @@ NeedsTargets
 
 | Code | Name | Category | Detector | CWE |
 |------|------|----------|----------|-----|
+| `ATOMIC-005` | Named npm/bun package fetched during the build | Malicious Code | rules | CWE-494 |
 | `BIN-005` | Binary contains a packed or encrypted section | Obfuscation | binary | CWE-506 |
 | `CHK-002` | MD5 checksums used | Cryptography | checksum | CWE-328 |
 | `CHK-003` | SHA1 checksums used | Cryptography | checksum | CWE-328 |
 | `CHK-004` | Some sources use SKIP checksum | Cryptography | checksum | CWE-354 |
 | `CHK-008` | Malformed or wrong-length checksum | Cryptography | checksum | CWE-354 |
+| `CHK-009` | Checksum alignment cannot be determined | Cryptography | checksum | CWE-354 |
 | `EXEC-005` | Detached background execution | Malicious Code | rules | CWE-506 |
+| `EXFIL-010` | Tor hidden service or local SOCKS proxy | Data Exfiltration | rules | CWE-319 |
 | `META-005` | install= points outside the package | Suspicious Metadata | metadata | CWE-426 |
 | `META-006` | backup= of a security-sensitive file | Suspicious Metadata | metadata | CWE-426 |
+| `META-008` | Install message mentions a privileged command | Suspicious Metadata | pattern | - |
 | `OBF-004` | String concatenation obfuscation | Obfuscation | rules | - |
 | `OWN-002` | Package is orphaned and flagged out-of-date | Suspicious Metadata | ownership | - |
+| `PERSIST-011` | pacman hook triggers on every transaction | Persistence | shipped | CWE-506 |
+| `PERSIST-013` | udev rule runs a package-shipped program | Persistence | shipped | CWE-506 |
+| `PERSIST-015` | Hook or udev rule content is generated at build time | Persistence | shipped | CWE-506 |
 | `PRIV-004` | Capabilities being set | Privilege Escalation | privilege | CWE-250 |
+| `SCAN-002` | Opaque local archive: contents not reviewed | Configuration | scanner | CWE-693 |
 | `SRC-001` | Insecure source/transport protocol | Network Security | source | CWE-319 |
 | `SRC-005` | No sources with a build function | Configuration | source | - |
 | `TRUST-002` | GPG key import at build time | Malicious Code | rules | CWE-494 |
@@ -852,6 +894,7 @@ NeedsTargets
 
 | Code | Name | Category | Detector | CWE |
 |------|------|----------|----------|-----|
+| `ATOMIC-007` | npx/exec/bunx runs a package by name during the build | Malicious Code | rules | CWE-494 |
 | `META-001` | Provides impersonation | Suspicious Metadata | rules | - |
 | `META-002` | validpgpkeys declared but no signature verified | Suspicious Metadata | metadata | CWE-347 |
 | `META-004` | epoch set (forces upgrade over the repo version) | Suspicious Metadata | metadata | - |
@@ -907,9 +950,10 @@ with no patterns, and patterns that don't compile; the rest of the directory
 still loads. When running as root (the pacman hook), only the `/usr/share` and
 `/etc` directories are read. `file_types` accepts `pkgbuild`,
 `install_script`, and `source_file` (local scripts shipped next to the
-PKGBUILD). A shipped example lives at
-`/usr/share/aur-scanner/rules.d/example.toml`. Ids must look like `ACME-001`
-(letters, then hyphen-separated parts); they are trimmed and uppercased before
+PKGBUILD). An example to copy ships at
+`/usr/share/aur-scanner/example-rule.toml`, outside `rules.d/`, so it is
+never loaded. Ids must look like `ACME-001` (letters, then hyphen-separated
+parts); they are trimmed and uppercased before
 the collision check, so `shell-001` is the same id as `SHELL-001`. Use an
 org-specific prefix.
 
@@ -934,10 +978,10 @@ and can never touch an AUR package's record. What it reports:
 
 | Code | Fires when | Severity |
 |------|-----------|----------|
-| `DIFF-001` | The package raises findings it did not raise last time | severity of the worst **new** finding |
+| `DIFF-001` | The package raises a finding (rule, file and snippet) it did not raise last time, so a second hit of a rule already raised counts | severity of the worst **new** finding |
 | `DIFF-002` | The maintainer changed — **High** if a previously orphaned package was adopted | High / Medium |
 | `DIFF-003` | A source now points at a `host/owner/repo` it did not use before | High |
-| `DIFF-004` | An install scriptlet or ALPM hook was **added** (High) or changed (Medium) | High / Medium |
+| `DIFF-004` | A file the scanner types as an install scriptlet, or an ALPM hook, was **added** (High) or changed (Medium) | High / Medium |
 
 Deliberate non-behaviour:
 
@@ -949,9 +993,9 @@ Deliberate non-behaviour:
 - **A corrupt or unwritable cache degrades to a first scan.** Change detection
   is layered on top of the scan and can never turn a good scan into a failure.
 
-The history stores a summary — hashes, origins, finding IDs — not copies of
-every PKGBUILD you have ever scanned. Keeping the files would be a liability
-with no matching benefit.
+The history stores a summary — hashes, origins, finding keys (rule, file and
+a hash of the normalized snippet) — not copies of every PKGBUILD you have
+ever scanned. Keeping the files would be a liability with no matching benefit.
 
 For an explicit, stateless comparison of two directories (code review, CI), use
 [`aur-scan diff`](#aur-scan-diff).
@@ -1311,32 +1355,34 @@ ks-aur-scanner/
 ├── Cargo.toml                    # Workspace manifest (rust-version = 1.85)
 ├── crates/
 │   ├── aur-scanner-core/         # Core analysis engine (library)
-│   │   └── src/
-│   │       ├── lib.rs            # Public API: Scanner, scan pipeline
-│   │       ├── types.rs          # Severity, Finding, ScanConfig, ScanResult
-│   │       ├── pkgfiles.rs       # Bounded, symlink-safe reads of package files
-│   │       ├── parser/           # Static PKGBUILD / .install parsing
-│   │       ├── resolve.rs        # Static variable resolution, payload decoding
-│   │       ├── textutil.rs       # De-obfuscation helpers
-│   │       ├── rules/            # Pattern rule engine, built-ins, rules.d loader
-│   │       ├── catalog/          # The single index of every detection code
-│   │       ├── analyzer/         # Structural analyzers (binary, checksum, deep,
-│   │       │                     #   ioc, metadata, ownership, pattern, privilege,
-│   │       │                     #   remote_exec, source, squat, threat_intel)
-│   │       ├── aur.rs            # AUR RPC client and hardened git clone
-│   │       ├── depgraph.rs       # Dependency tree resolution (AUR + pacman)
-│   │       ├── registry.rs       # AUR metadata context for ownership checks
-│   │       ├── overlay.rs        # Local package dirs layered over the AUR
-│   │       ├── squat.rs          # Name-impersonation scoring
-│   │       ├── history.rs        # Scan history and change detection (DIFF-*)
-│   │       ├── provenance.rs     # PROV-001 risky-behavior gain
-│   │       ├── sbom.rs           # CycloneDX 1.5 SBOM and tree rendering
-│   │       ├── elf.rs            # Bounded ELF header reader (BIN-*)
-│   │       ├── neturl.rs         # URL parsing and normalization
-│   │       ├── validate.rs       # Package-name validation
-│   │       ├── threat_intel/     # IOC database and opt-in remote lookups
-│   │       ├── cache/            # Integrity-checked disk cache
-│   │       └── error.rs          # Error types
+│   │   ├── src/
+│   │   │   ├── lib.rs            # Public API: Scanner, scan pipeline
+│   │   │   ├── types.rs          # Severity, Finding, ScanConfig, ScanResult
+│   │   │   ├── pkgfiles.rs       # Bounded, symlink-safe reads of package files
+│   │   │   ├── parser/           # Static PKGBUILD / .install parsing
+│   │   │   ├── resolve.rs        # Static variable resolution, payload decoding
+│   │   │   ├── textutil.rs       # De-obfuscation helpers
+│   │   │   ├── rules/            # Pattern rule engine, built-ins, rules.d loader
+│   │   │   ├── catalog/          # The single index of every detection code
+│   │   │   ├── analyzer/         # Structural analyzers (binary, checksum, deep,
+│   │   │   │                     #   ioc, metadata, ownership, pattern, privilege,
+│   │   │   │                     #   remote_exec, shipped, source, squat,
+│   │   │   │                     #   threat_intel)
+│   │   │   ├── aur.rs            # AUR RPC client and hardened git clone
+│   │   │   ├── depgraph.rs       # Dependency tree resolution (AUR + pacman)
+│   │   │   ├── registry.rs       # AUR metadata context for ownership checks
+│   │   │   ├── overlay.rs        # Local package dirs layered over the AUR
+│   │   │   ├── squat.rs          # Name-impersonation scoring
+│   │   │   ├── history.rs        # Scan history and change detection (DIFF-*)
+│   │   │   ├── provenance.rs     # PROV-001 risky-behavior gain
+│   │   │   ├── sbom.rs           # CycloneDX 1.5 SBOM and tree rendering
+│   │   │   ├── elf.rs            # Bounded ELF header reader (BIN-*)
+│   │   │   ├── neturl.rs         # URL parsing and normalization
+│   │   │   ├── validate.rs       # Package-name validation
+│   │   │   ├── threat_intel/     # IOC database and opt-in remote lookups
+│   │   │   ├── cache/            # Integrity-checked disk cache
+│   │   │   └── error.rs          # Error types
+│   │   └── tests/                # Package-wide detection hardening tests
 │   ├── aur-scanner-cli/          # CLI binary (aur-scan)
 │   │   ├── src/{main.rs, commands/, output/}
 │   │   └── tests/                # End-to-end tests against the real binary
@@ -1344,8 +1390,10 @@ ks-aur-scanner/
 │   └── aur-scanner-plugin/       # AUR helper wrapper (aur-scan-wrap)
 │       ├── src/bin/wrapper.rs
 │       └── tests/shell_gate.rs   # Drives every shell integration with stub helpers
-├── install/                      # Shell integrations, pacman hook, rules.d examples
-├── aur/                          # Published AUR package definitions
+├── install/                      # Shell integrations, pacman hook, shipped rules.d,
+│                                 #   example rule
+├── aur/                          # AUR package definitions (-git and -rc)
+├── docs/                         # Threat coverage, documentation output dataset
 ├── tests/                        # PKGBUILD fixtures and VM acceptance test
 └── PKGBUILD                      # Local development build of this checkout
 ```

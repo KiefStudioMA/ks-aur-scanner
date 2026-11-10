@@ -1,0 +1,26 @@
+
+Scan Results: hookdemo
+============================================================
+
+[HIGH] CHK-005 All non-VCS sources use SKIP checksum
+    No integrity verification is performed on 1 non-VCS source(s): zz.conf
+    Code: source: zz.conf
+    Recommendation: Provide real checksums for non-VCS sources
+    Reference: CWE-354
+
+[HIGH] PERSIST-012 pacman hook runs a fetch, a shell command or a user/temp path
+    zz.conf is a libalpm hook (runs as root) whose Exec downloads, or runs something from /tmp, /dev/shm or a home directory. A hook like this is a root persistence mechanism.
+    Location: tests/fixtures/malicious/shipped-hook-renamed/zz.conf:8
+    Code: Exec = /tmp/.x/run
+    Recommendation: Do not install. A hook should run a fixed, packaged program with a narrow Target.
+    Reference: CWE-506
+
+
+
+============================================================
+Package: hookdemo v1.0.0-1
+Scan duration: 22ms
+
+Found 2 issue(s):
+  2 HIGH
+============================================================

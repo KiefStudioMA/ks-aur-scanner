@@ -3,6 +3,8 @@
 PERSIST-002 Systemd timer creation [CRITICAL]
 ======================================================================
 
+Severity: CRITICAL
+
 Category:
   Persistence  (detector: rules)
 

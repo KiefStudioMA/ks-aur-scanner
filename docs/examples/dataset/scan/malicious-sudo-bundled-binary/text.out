@@ -1,0 +1,39 @@
+
+Scan Results: openconnect-sso
+============================================================
+
+[CRITICAL] PRIV-001 Sudo usage in build()
+    Function 'build' uses sudo, which should never be needed in PKGBUILDs
+    Location: tests/fixtures/malicious/sudo-bundled-binary/PKGBUILD:8
+    Recommendation: Remove sudo; makepkg handles permissions correctly
+    Reference: CWE-250
+
+[HIGH] SRC-010 Source is a different owner's copy of the upstream repo
+    The declared upstream is 'vlaci/openconnect-sso' on github.com, but a source fetches 'prestonhager/openconnect-sso' from the same forge. Same repository name under a different account is how a fork is substituted for the real project: the PKGBUILD still points reviewers at the genuine upstream while building someone else's code.
+    Code: url=https://github.com/vlaci/openconnect-sso  source=git+https://github.com/PrestonHager/openconnect-sso.git
+    Recommendation: Confirm 'prestonhager' is an official mirror of 'vlaci/openconnect-sso'. If it is not, this package builds code the upstream project did not publish.
+    Reference: CWE-494
+
+[HIGH] CHK-005 All non-VCS sources use SKIP checksum
+    No integrity verification is performed on 1 non-VCS source(s): validator
+    Code: source: validator
+    Recommendation: Provide real checksums for non-VCS sources
+    Reference: CWE-354
+
+[LOW] SRC-007 VCS source not pinned to a commit
+    Source #1 is a VCS checkout on a movable ref (branch/tag or none): git+https://github.com/PrestonHager/openconnect-sso.git. Its content is not integrity-pinned and can change between scan and build.
+    Code: source=("git+https://github.com/PrestonHager/openconnect-sso.git")
+    Recommendation: Pin the VCS source to an immutable revision with #commit=<sha>.
+    Reference: CWE-494
+
+
+
+============================================================
+Package: openconnect-sso v0.8.1-1
+Scan duration: 19ms
+
+Found 4 issue(s):
+  1 CRITICAL
+  2 HIGH
+  1 LOW
+============================================================

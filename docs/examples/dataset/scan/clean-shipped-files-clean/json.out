@@ -1,0 +1,13 @@
+{
+  "package_name": "clean-shipped-files",
+  "package_version": "1.0.0-1",
+  "findings": [],
+  "scanned_files": [
+    "tests/fixtures/clean/shipped-files-clean/PKGBUILD",
+    "tests/fixtures/clean/shipped-files-clean/clean-shipped-files.install",
+    "tests/fixtures/clean/shipped-files-clean/narrow.hook",
+    "tests/fixtures/clean/shipped-files-clean/70-clean.rules"
+  ],
+  "timestamp": "2026-11-10T14:50:53.769046457Z",
+  "scan_duration_ms": 34
+}

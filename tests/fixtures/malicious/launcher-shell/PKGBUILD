@@ -1,5 +1,5 @@
 # Maintainer: Totally Legit <legit@example.com>
-# Evasion fixture (task 4050): the download-and-execute shell/interpreter is
+# Evasion fixture: the download-and-execute shell/interpreter is
 # reached via a launcher word (busybox / env) and/or an absolute path
 # (/bin/sh, /usr/bin/python), which defeated the single-token sink match until
 # the SHELL_LAUNCHER + SHELL_PATH prefixes were added. INERT text, never executed.

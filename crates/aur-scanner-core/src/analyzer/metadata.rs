@@ -448,6 +448,7 @@ mod tests {
     fn ctx(src: &str) -> AnalysisContext {
         let pkgbuild = StaticParser::new().parse(src).unwrap();
         AnalysisContext {
+            shadow: Default::default(),
             pkgbuild,
             install_script: None,
             side_scripts: vec![],

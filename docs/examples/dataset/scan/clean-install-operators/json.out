@@ -1,0 +1,11 @@
+{
+  "package_name": "demo-git",
+  "package_version": "1-1",
+  "findings": [],
+  "scanned_files": [
+    "tests/fixtures/clean/install-operators/PKGBUILD",
+    "tests/fixtures/clean/install-operators/demo.install"
+  ],
+  "timestamp": "2026-11-10T14:50:52.014604522Z",
+  "scan_duration_ms": 20
+}

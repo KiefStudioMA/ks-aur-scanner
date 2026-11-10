@@ -1,0 +1,11 @@
+pkgname=demo-docs
+pkgver=1
+pkgrel=1
+arch=(any)
+package() {
+  install -Dm644 /dev/null "$pkgdir/usr/share/doc/demo/README"
+  cat <<'NOTES'
+Usage: run demo --help for the list of options.
+(long line continues \
+NOTES
+}

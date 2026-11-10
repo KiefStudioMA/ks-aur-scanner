@@ -5,7 +5,7 @@
       "name": "Atomic Arch malicious npm/bun package",
       "severity": "critical",
       "category": "malicious_code",
-      "description": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js). These pull an infostealer and eBPF rootkit during the build/install phase.",
+      "description": "References a known-malicious package from the June 2026 'Atomic Arch' AUR supply-chain campaign (atomic-lockfile, js-digest, lockfile-js, nextfile-js / ansi-colors-nextfile-js and related wave-3 names). These pull an infostealer and eBPF rootkit during the build/install phase.",
       "recommendation": "Do NOT build. This is a known-malicious dependency. Remove the package and treat the host as compromised: rotate credentials (SSH, npm/GitHub tokens, browser sessions).",
       "cwe": "CWE-506",
       "owner": "rules",
@@ -32,6 +32,105 @@
       "cwe": "CWE-506",
       "owner": "rules",
       "pattern_based": true
+    },
+    {
+      "id": "ATOMIC-004",
+      "name": "Sudo shim in user local bin",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "Writes a `sudo` binary (or symlink) into `~/.local/bin` or another user PATH prefix. The Atomic Arch campaign dropped a credential-stealing sudo shim this way so a later `sudo` invocation harvested the password.",
+      "recommendation": "Do NOT build. A package must never install a sudo impostor. Inspect ~/.local/bin/sudo and rotate credentials if present.",
+      "cwe": "CWE-506",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "ATOMIC-005",
+      "name": "Named npm/bun package fetched during the build",
+      "severity": "medium",
+      "category": "malicious_code",
+      "description": "A PKGBUILD function runs `npm/pnpm/yarn/bun install|add <package>` for an explicit package name. The package is fetched from the registry during the build, outside source= and its checksums, and runs its lifecycle scripts. The June 2026 'Atomic Arch' campaign added exactly this to build(). A bare `npm install`, `npm ci` or an install from a local tarball is not reported.",
+      "recommendation": "Vendor the dependency through source= with a checksum (or a lockfile shipped in the tarball) instead of naming a registry package in build().",
+      "cwe": "CWE-494",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "ATOMIC-006",
+      "name": "npm/bun package installed from a URL or git remote during the build",
+      "severity": "high",
+      "category": "malicious_code",
+      "description": "A PKGBUILD function installs a package straight from a URL, git remote or forge shorthand (`npm install git+https://...`, `github:user/repo`). Nothing pins or checksums that code, and it runs its lifecycle scripts as the builder.",
+      "recommendation": "Do not build. Fetch the code through source= with a checksum.",
+      "cwe": "CWE-494",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "ATOMIC-007",
+      "name": "npx/exec/bunx runs a package by name during the build",
+      "severity": "low",
+      "category": "malicious_code",
+      "description": "A PKGBUILD function runs `npx <name>`, `bunx <name>`, `pnpm exec <name>` or similar. These run a local tool when one is installed and otherwise fetch the package from the registry and run it, so a legitimate build step (`npx tsc`) and the Atomic Arch shape (`npx evilpkg`) look the same. Reported at Low so it can be reviewed without drowning the stronger findings; `npx -y`, `dlx` and named installs are ATOMIC-005.",
+      "recommendation": "Make sure the tool is a declared devDependency installed from a lockfile, not fetched at build time.",
+      "cwe": "CWE-494",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "BIN-001",
+      "name": "Prebuilt binary committed in the package directory",
+      "severity": "high",
+      "category": "suspicious_metadata",
+      "description": "An executable ships inside the package directory rather than being fetched from a declared source. An AUR repository holds a build recipe; a compiled artifact in it has no upstream anyone can review. High when nothing in the PKGBUILD references it, Medium when package() installs it.",
+      "recommendation": "Confirm why a compiled artifact ships with the build recipe, and where it came from.",
+      "cwe": "CWE-494",
+      "owner": "binary",
+      "pattern_based": false
+    },
+    {
+      "id": "BIN-002",
+      "name": "Prebuilt binary executed during the build",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "A build function runs an executable that was committed alongside the PKGBUILD. Building should compile source, not run an opaque binary that arrived with the recipe -- the shape reported in issue #29 (openconnect-sso).",
+      "recommendation": "Do not build. A build step that runs a bundled binary is running unreviewed code.",
+      "cwe": "CWE-506",
+      "owner": "binary",
+      "pattern_based": false
+    },
+    {
+      "id": "BIN-003",
+      "name": "Prebuilt eBPF object",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "An eBPF object ships as a compiled blob. eBPF runs in the KERNEL, and this one has no source to read. The June 2026 Atomic Arch campaign delivered an eBPF rootkit through AUR packages this way.",
+      "recommendation": "Do not install; obtain the eBPF source and build it.",
+      "cwe": "CWE-506",
+      "owner": "binary",
+      "pattern_based": false
+    },
+    {
+      "id": "BIN-004",
+      "name": "Binary searches for libraries in an unsafe location",
+      "severity": "high",
+      "category": "privilege_escalation",
+      "description": "A DT_RPATH/DT_RUNPATH points somewhere world-writable, resolves against the working directory, or climbs out of the install tree. A library placed there is loaded in preference to the system copy.",
+      "recommendation": "Do not install a binary whose library search path others can write.",
+      "cwe": "CWE-426",
+      "owner": "binary",
+      "pattern_based": false
+    },
+    {
+      "id": "BIN-005",
+      "name": "Binary contains a packed or encrypted section",
+      "severity": "medium",
+      "category": "obfuscation",
+      "description": "A section measures over 7.5 bits/byte of entropy. Ordinary compiled code measures 6.0-6.9 and compressed data ~8.0, so content this dense is packed or encrypted and cannot be statically reviewed.",
+      "recommendation": "Treat a packed binary in a source package as unreviewable.",
+      "cwe": "CWE-506",
+      "owner": "binary",
+      "pattern_based": false
     },
     {
       "id": "BROWSER-001",
@@ -128,6 +227,17 @@
       "category": "cryptography",
       "description": "A checksum is not valid hex of the algorithm's expected length (md5=32, sha1=40, sha256=64, sha512/b2=128).",
       "recommendation": "Regenerate checksums with updpkgsums; a malformed hash silently disables integrity verification.",
+      "cwe": "CWE-354",
+      "owner": "checksum",
+      "pattern_based": false
+    },
+    {
+      "id": "CHK-009",
+      "name": "Checksum alignment cannot be determined",
+      "severity": "medium",
+      "category": "cryptography",
+      "description": "An element of source=() or a checksum array cannot be counted statically (unquoted command substitution or variable, whole-array expansion, or an oversized brace list), so sources from that position on cannot be matched to their checksums. Positions before it are still checked.",
+      "recommendation": "Write source= and the checksum arrays as plain literal lists.",
       "cwe": "CWE-354",
       "owner": "checksum",
       "pattern_based": false
@@ -254,6 +364,17 @@
       "pattern_based": false
     },
     {
+      "id": "DEEP-003",
+      "name": "Unicode bidirectional control characters",
+      "severity": "critical",
+      "category": "obfuscation",
+      "description": "Bidi control characters reorder how text DISPLAYS without changing what executes, so a reviewer can read different code than makepkg runs (Trojan Source, CVE-2021-42574). Shell source has no legitimate use for an explicit directional override.",
+      "recommendation": "Strip the bidi characters and re-read the file before trusting any review of it.",
+      "cwe": "CWE-94",
+      "owner": "deep",
+      "pattern_based": false
+    },
+    {
       "id": "DEP-001",
       "name": "Provides a core package name (dependency confusion)",
       "severity": "high",
@@ -274,6 +395,50 @@
       "cwe": "CWE-494",
       "owner": "rules",
       "pattern_based": true
+    },
+    {
+      "id": "DIFF-001",
+      "name": "New findings since the last scan",
+      "severity": "high",
+      "category": "suspicious_metadata",
+      "description": "The package raised findings it did not raise when it was last scanned. Reported at the severity of the worst NEW finding: a long-standing SKIP checksum is not news, a newly-appeared curl|sh is. Silent on a first scan.",
+      "recommendation": "Review the new findings specifically -- they are what changed since you approved this package.",
+      "cwe": null,
+      "owner": "diff",
+      "pattern_based": false
+    },
+    {
+      "id": "DIFF-002",
+      "name": "Package ownership changed",
+      "severity": "high",
+      "category": "suspicious_metadata",
+      "description": "The maintainer changed since the last scan. Adoption of a previously orphaned package is High and is the documented mechanism of both the 2018 xeactor hijack and the 2026 Atomic Arch campaign; an ordinary handover, or a package becoming orphaned, is Medium.",
+      "recommendation": "Confirm the handover is legitimate before installing an update.",
+      "cwe": null,
+      "owner": "diff",
+      "pattern_based": false
+    },
+    {
+      "id": "DIFF-003",
+      "name": "Package fetches from a new upstream",
+      "severity": "high",
+      "category": "network_security",
+      "description": "A source now points at a host/owner/repo it did not use at the last scan. Compared at owner/repo depth, so routine version bumps and new release tarballs do not fire -- upstream itself moved.",
+      "recommendation": "Verify the new upstream is the project's real home and not a fork impersonating it.",
+      "cwe": "CWE-494",
+      "owner": "diff",
+      "pattern_based": false
+    },
+    {
+      "id": "DIFF-004",
+      "name": "Install script added or changed",
+      "severity": "high",
+      "category": "persistence",
+      "description": "The package gained an install scriptlet or ALPM hook (High), or an existing one changed (Medium). This code runs as root at install time, so acquiring one changes what the package can do to the system regardless of its current contents.",
+      "recommendation": "Read the new or changed install script in full before installing.",
+      "cwe": "CWE-506",
+      "owner": "diff",
+      "pattern_based": false
     },
     {
       "id": "DLE-001",
@@ -332,24 +497,24 @@
     },
     {
       "id": "ENV-003",
-      "name": "Bashrc/profile modification",
+      "name": "Shell startup file modification",
       "severity": "critical",
       "category": "persistence",
-      "description": "Modifying shell config for persistence",
+      "description": "Modifying shell config for persistence (bashrc, zshrc, fish, profile.d)",
       "recommendation": "Packages should not modify shell configuration",
       "cwe": "CWE-506",
       "owner": "rules",
       "pattern_based": true
     },
     {
-      "id": "EXAMPLE-001",
-      "name": "Example: references example.com",
-      "severity": "info",
-      "category": "configuration",
-      "description": "Demonstration rule. Flags any source/command that references example.com.",
-      "recommendation": "This is only an example rule; delete or replace it.",
-      "cwe": null,
-      "owner": "user",
+      "id": "ESCAPE-001",
+      "name": "Extraction or copy outside the build root",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "description": "An archive is extracted, or files are copied, to an absolute system path instead of $srcdir/$pkgdir. A build runs as your user and must only ever write inside its own directories; writing to / or /usr or /etc during build() installs files that no package owns and that pacman will never remove.",
+      "recommendation": "Extract and install into $srcdir and $pkgdir only. makepkg copies $pkgdir into the package; anything written elsewhere during a build is invisible to pacman.",
+      "cwe": "CWE-22",
+      "owner": "rules",
       "pattern_based": true
     },
     {
@@ -492,6 +657,17 @@
       "description": "Uploads to a throwaway file-drop or tunnels through ngrok/webhook.site/requestbin/IPFS — exfil and ad-hoc C2 endpoints.",
       "recommendation": "Review the destination; these are common exfil/C2 hosts.",
       "cwe": "CWE-200",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "EXFIL-010",
+      "name": "Tor hidden service or local SOCKS proxy",
+      "severity": "medium",
+      "category": "data_exfiltration",
+      "description": "Reaches a .onion address or routes a network call through a local Tor SOCKS port (127.0.0.1:9050/9150). Package builds and scriptlets have no reason to use Tor; it hides where a payload comes from or where data goes.",
+      "recommendation": "Remove the Tor routing; the build should fetch only from declared sources.",
+      "cwe": "CWE-319",
       "owner": "rules",
       "pattern_based": true
     },
@@ -661,6 +837,28 @@
       "pattern_based": false
     },
     {
+      "id": "META-007",
+      "name": "install= cannot be statically resolved",
+      "severity": "high",
+      "category": "suspicious_metadata",
+      "description": "The install scriptlet name is built at runtime or by an expansion the scanner cannot evaluate, so makepkg may run any file beside the PKGBUILD as the scriptlet.",
+      "recommendation": "Use a literal install=<pkgname>.install and review the file it names.",
+      "cwe": "CWE-426",
+      "owner": "metadata",
+      "pattern_based": false
+    },
+    {
+      "id": "META-008",
+      "name": "Install message mentions a privileged command",
+      "severity": "medium",
+      "category": "suspicious_metadata",
+      "description": "A one-line echo/printf/msg/note whose only argument is a literal string mentions something a High or Critical rule would flag as a command (for example `sudo systemctl enable`). On a package that redefines no printer it only tells the user what to run, so it is reported as a mention, with the matched rule id in metadata.",
+      "recommendation": "Confirm the message only describes a step for the user.",
+      "cwe": null,
+      "owner": "pattern",
+      "pattern_based": false
+    },
+    {
       "id": "OBF-001",
       "name": "Base64 decoding",
       "severity": "high",
@@ -760,6 +958,72 @@
       "pattern_based": true
     },
     {
+      "id": "OBF-012",
+      "name": "Message function redefined to execute its arguments",
+      "severity": "critical",
+      "category": "obfuscation",
+      "description": "A function or alias named like a message printer (echo, printf, msg, note, warning, plain, error ...) is redefined so that it runs what it is given (\"$@\", eval, sh -c, a pipe to a shell). Scanners and reviewers treat those names as harmless text, so every call that looks like a status message becomes a command. Calls to a redefined printer are analyzed as code, and the name stops being treated as inert everywhere in the package.",
+      "recommendation": "Do not install. A legitimate package has no reason to make a message helper execute its arguments.",
+      "cwe": "CWE-94",
+      "owner": "deep",
+      "pattern_based": false
+    },
+    {
+      "id": "OBF-020",
+      "name": "Dynamic command name",
+      "severity": "high",
+      "category": "obfuscation",
+      "description": "The command word is an expansion the scanner cannot resolve (${x:1:3}, ${x//a/b}, ${x#p}, ${a[1]}, $(echo ... | tr ...), \"$1\") on a line that fetches a URL into a shell, or in front of a package-manager verb (install, add, i). Hiding the command name this way is how a payload dodges name-based rules; ordinary build lines such as ${CC:-gcc} or \"${CMAKE[@]}\" are not matched.",
+      "recommendation": "Review the line; the command being run is assembled at run time to avoid matching.",
+      "cwe": "CWE-94",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "OWN-001",
+      "name": "Package is orphaned",
+      "severity": "low",
+      "category": "suspicious_metadata",
+      "description": "The package has no maintainer, so anyone may adopt it and inherit every existing installation. About 12% of the AUR is orphaned, so this is context rather than evidence -- but adoption of an orphan is how the known AUR supply-chain campaigns began.",
+      "recommendation": "Note that nobody is responsible for this package; review updates to it yourself.",
+      "cwe": null,
+      "owner": "ownership",
+      "pattern_based": false
+    },
+    {
+      "id": "OWN-002",
+      "name": "Package is orphaned and flagged out-of-date",
+      "severity": "medium",
+      "category": "suspicious_metadata",
+      "description": "No maintainer AND visibly behind upstream -- roughly 4% of the AUR, and the exact profile the 2018 xeactor and 2026 Atomic Arch campaigns selected for.",
+      "recommendation": "Prefer a maintained alternative; review the PKGBUILD yourself if you install it.",
+      "cwe": null,
+      "owner": "ownership",
+      "pattern_based": false
+    },
+    {
+      "id": "OWN-003",
+      "name": "Flagged out-of-date for over a year",
+      "severity": "low",
+      "category": "suspicious_metadata",
+      "description": "The package has a maintainer but has been flagged out-of-date for more than a year, so it is unmaintained in practice and likely missing upstream fixes.",
+      "recommendation": "Check whether upstream has fixes this package does not carry.",
+      "cwe": null,
+      "owner": "ownership",
+      "pattern_based": false
+    },
+    {
+      "id": "OWN-004",
+      "name": "New package with no community validation",
+      "severity": "low",
+      "category": "suspicious_metadata",
+      "description": "Submitted within the last 30 days, zero votes, and runs build or install code. Each part is unremarkable alone (half the AUR has zero votes); together they mean nobody has reviewed this yet.",
+      "recommendation": "Read the PKGBUILD and any install script in full before building.",
+      "cwe": null,
+      "owner": "ownership",
+      "pattern_based": false
+    },
+    {
       "id": "PASTE-001",
       "name": "Pastebin download",
       "severity": "critical",
@@ -837,6 +1101,105 @@
       "pattern_based": true
     },
     {
+      "id": "PERSIST-007",
+      "name": "SSH authorized_keys modified",
+      "severity": "critical",
+      "category": "persistence",
+      "description": "Writes, appends to, copies over or installs an ssh authorized_keys file outside $pkgdir, or copies a directory tree into a live ~/.ssh. Adding a key to a user's or root's authorized_keys is a persistent backdoor: the key's owner can log in after the package is gone.",
+      "recommendation": "Do NOT install. A package must never touch authorized_keys. Remove any unknown keys from ~/.ssh/authorized_keys and /root/.ssh/authorized_keys and treat the host as compromised.",
+      "cwe": "CWE-506",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "PERSIST-008",
+      "name": "AI coding assistant config or hook written",
+      "severity": "critical",
+      "category": "persistence",
+      "description": "Writes into an AI coding assistant's per-user configuration (Claude Code, Cursor, Codex, Gemini CLI, OpenCode, Continue, Aider, Copilot) outside $pkgdir. Settings, hooks and MCP definitions there run commands with the user's authority whenever the assistant starts, which supply-chain malware has used for persistence.",
+      "recommendation": "Do NOT install. A package must never write into a user's assistant configuration. Inspect ~/.claude, ~/.cursor, ~/.codex, ~/.gemini and ~/.config/opencode for hooks or MCP servers you did not add.",
+      "cwe": "CWE-506",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "PERSIST-009",
+      "name": "pacman hook written outside $pkgdir",
+      "severity": "critical",
+      "category": "persistence",
+      "description": "Writes a libalpm hook into /etc/pacman.d/hooks/ or /usr/share/libalpm/hooks/ directly instead of shipping it in the package. A hook runs as root on pacman transactions, so a hook planted by a scriptlet or build function is a root persistence mechanism.",
+      "recommendation": "Do NOT install. Hooks belong in the package file list under $pkgdir, where pacman owns and can remove them.",
+      "cwe": "CWE-506",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "PERSIST-010",
+      "name": "udev rule written outside $pkgdir",
+      "severity": "high",
+      "category": "persistence",
+      "description": "Writes a udev rule into /etc/udev/rules.d or the system rules directory directly. A rule can RUN a program as root when a device appears, so a rule planted by a scriptlet or build function is a persistence mechanism.",
+      "recommendation": "Ship udev rules in the package under $pkgdir/usr/lib/udev/rules.d instead of writing them from a scriptlet.",
+      "cwe": "CWE-506",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "PERSIST-011",
+      "name": "pacman hook triggers on every transaction",
+      "severity": "medium",
+      "category": "persistence",
+      "description": "A shipped libalpm hook has a trigger of Target = * (any package or path), so its Exec runs as root on every pacman transaction.",
+      "recommendation": "Check that the hook needs to run for every package and that Exec is a program you trust.",
+      "cwe": "CWE-506",
+      "owner": "shipped",
+      "pattern_based": false
+    },
+    {
+      "id": "PERSIST-012",
+      "name": "pacman hook runs a fetch, a shell command or a user/temp path",
+      "severity": "high",
+      "category": "persistence",
+      "description": "A shipped libalpm hook (runs as root) has an Exec that downloads, runs from /tmp, /dev/shm or a home directory, or runs a shell command string on every transaction.",
+      "recommendation": "Do not install. A hook should run a fixed, packaged program with a narrow Target.",
+      "cwe": "CWE-506",
+      "owner": "shipped",
+      "pattern_based": false
+    },
+    {
+      "id": "PERSIST-013",
+      "name": "udev rule runs a package-shipped program",
+      "severity": "medium",
+      "category": "persistence",
+      "description": "A shipped udev rule launches a program (RUN, PROGRAM or IMPORT{program}) that is not a routine system tool, as root, whenever its device matches.",
+      "recommendation": "Check the program the rule launches and that the match is narrow.",
+      "cwe": "CWE-506",
+      "owner": "shipped",
+      "pattern_based": false
+    },
+    {
+      "id": "PERSIST-014",
+      "name": "udev rule runs a shell command, a fetch or a user/temp path",
+      "severity": "high",
+      "category": "persistence",
+      "description": "A shipped udev rule runs a shell command string, downloads, or runs from /tmp, /dev/shm or a home directory when a device appears.",
+      "recommendation": "Do not install. A udev rule should call a fixed, packaged program.",
+      "cwe": "CWE-506",
+      "owner": "shipped",
+      "pattern_based": false
+    },
+    {
+      "id": "PERSIST-015",
+      "name": "Hook or udev rule content is generated at build time",
+      "severity": "medium",
+      "category": "persistence",
+      "description": "A PKGBUILD or scriptlet writes a libalpm hook or udev rule with printf, echo, cat, tee or a heredoc whose content is built from variables or commands, so the scanner cannot read what the root-run file will do.",
+      "recommendation": "Ship the hook or rule as a plain file in source= so it can be reviewed.",
+      "cwe": "CWE-506",
+      "owner": "shipped",
+      "pattern_based": false
+    },
+    {
       "id": "PRIV-001",
       "name": "Sudo usage in a build function",
       "severity": "critical",
@@ -885,7 +1248,7 @@
       "name": "Kernel module operations",
       "severity": "high",
       "category": "privilege_escalation",
-      "description": "A function performs kernel module operations (insmod/modprobe).",
+      "description": "A PKGBUILD function or an install scriptlet performs kernel module operations (insmod/modprobe/rmmod).",
       "recommendation": "Kernel module handling in a package is suspicious.",
       "cwe": null,
       "owner": "privilege",
@@ -925,6 +1288,17 @@
       "pattern_based": true
     },
     {
+      "id": "PRIV-009",
+      "name": "Kernel module loaded from a package-shipped file",
+      "severity": "critical",
+      "category": "privilege_escalation",
+      "description": "An install scriptlet loads a kernel module the package itself ships (insmod of a file outside the kernel's own module tree, or modprobe/insmod of a module whose .ko the package carries). A module runs with full kernel privilege and can hide itself; this is the rootkit-installation pattern. Loading a module that is not shipped by the package is reported as PRIV-005 (High).",
+      "recommendation": "Do not install. Kernel modules belong in the kernel packages or a reviewed DKMS package, not loaded from an AUR scriptlet.",
+      "cwe": "CWE-506",
+      "owner": "privilege",
+      "pattern_based": false
+    },
+    {
       "id": "PROV-001",
       "name": "Package gained risky behavior",
       "severity": "high",
@@ -933,6 +1307,50 @@
       "recommendation": "Review the PKGBUILD/install diff before building.",
       "cwe": "CWE-506",
       "owner": "provenance",
+      "pattern_based": false
+    },
+    {
+      "id": "SCAN-001",
+      "name": "Package file could not be analyzed",
+      "severity": "critical",
+      "category": "configuration",
+      "description": "A file the package declares or ships (install script, .hook, a local source=() entry, a sidecar script) could not be fully analyzed: it was unreadable, not a regular file (symlink, FIFO, device), or larger than the 2 MiB scan cap so only a prefix was read. Content that was not read cannot be reported clean, and padding a file past the cap or planting a symlink is exactly how a payload would hide.",
+      "recommendation": "Do not install. Inspect the named file by hand; a legitimate package has no reason to ship an oversized, unreadable, or symlinked script.",
+      "cwe": "CWE-693",
+      "owner": "scanner",
+      "pattern_based": false
+    },
+    {
+      "id": "SCAN-002",
+      "name": "Opaque local archive: contents not reviewed",
+      "severity": "medium",
+      "category": "configuration",
+      "description": "A compressed or unreadable archive (gzip, xz, bzip2, zstd, lz4, zip, 7z, or a tar past the scan bounds) is committed beside the PKGBUILD and named by source=(). makepkg extracts it and the build uses what is inside, but the scanner cannot read it.",
+      "recommendation": "Unpack it by hand and read it; a recipe has little reason to carry an archive that cannot be reviewed.",
+      "cwe": "CWE-693",
+      "owner": "scanner",
+      "pattern_based": false
+    },
+    {
+      "id": "SCAN-003",
+      "name": "Archive member escapes the extraction directory",
+      "severity": "high",
+      "category": "configuration",
+      "description": "A local tar archive holds a member whose name is absolute or contains '..'. makepkg extracts local archives into $srcdir, so such a member writes outside it.",
+      "recommendation": "Do not install. A legitimate archive has no path-traversal members.",
+      "cwe": "CWE-22",
+      "owner": "scanner",
+      "pattern_based": false
+    },
+    {
+      "id": "SCAN-004",
+      "name": "Archive uses structures where tar readers disagree",
+      "severity": "high",
+      "category": "configuration",
+      "description": "A local tar archive uses structures outside the plain ustar/GNU subset (unknown type flags, pax global headers or unusual keys, non-octal numbers, directory-named files with data, data on links, duplicate names, bytes after the end marker). Tar readers extract different files from such an archive, so what makepkg unpacks may differ from what was reviewed.",
+      "recommendation": "Do not install. Re-create the archive with plain tar, or ship the files directly.",
+      "cwe": "CWE-436",
+      "owner": "scanner",
       "pattern_based": false
     },
     {
@@ -951,7 +1369,7 @@
       "name": "Netcat reverse shell",
       "severity": "critical",
       "category": "malicious_code",
-      "description": "Netcat with execute flag indicates reverse shell",
+      "description": "Netcat with an execute flag indicates a reverse shell",
       "recommendation": "Remove reverse shell code immediately",
       "cwe": "CWE-506",
       "owner": "rules",
@@ -1057,6 +1475,50 @@
       "pattern_based": true
     },
     {
+      "id": "SQUAT-001",
+      "name": "Package name imitates a trusted name",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "The package name renders like a trusted package's name -- via non-ASCII lookalike characters, or a separator swap. Two distinct packages do not display the same name by accident.",
+      "recommendation": "Compare the name character by character against the package you meant to install.",
+      "cwe": "CWE-1007",
+      "owner": "squat",
+      "pattern_based": false
+    },
+    {
+      "id": "SQUAT-002",
+      "name": "Package name is one keystroke from a widely-installed package",
+      "severity": "high",
+      "category": "malicious_code",
+      "description": "The name differs by a single visually-similar or keyboard-adjacent character from a high-value package, and the package has no age or community standing of its own.",
+      "recommendation": "Confirm which package you actually meant to install.",
+      "cwe": "CWE-1007",
+      "owner": "squat",
+      "pattern_based": false
+    },
+    {
+      "id": "SQUAT-003",
+      "name": "Build variant is in different hands from its base",
+      "severity": "low",
+      "category": "suspicious_metadata",
+      "description": "The package is the -bin/-git build of another AUR package but is published by a different account. Informational only: measured against the live AUR, 42.5% of build variants are in different hands and are legitimate, so this is context for a human, never evidence on its own.",
+      "recommendation": "If you expected the base project to publish this build, confirm that they do; declare names you own under [[owned_namespaces]] to make this decisive.",
+      "cwe": null,
+      "owner": "squat",
+      "pattern_based": false
+    },
+    {
+      "id": "SQUAT-004",
+      "name": "Package occupies an owned namespace under an unauthorised account",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "A package matching a name prefix the operator declared they publish is maintained by an account they did not authorise. The AUR reserves no variant namespace, so owning 'foo' does not reserve 'foo-bin'.",
+      "recommendation": "Do not install it; report it to the AUR maintainers as an impersonation.",
+      "cwe": "CWE-1007",
+      "owner": "squat",
+      "pattern_based": false
+    },
+    {
       "id": "SRC-001",
       "name": "Insecure source/transport protocol",
       "severity": "medium",
@@ -1156,6 +1618,28 @@
       "pattern_based": true
     },
     {
+      "id": "SRC-010",
+      "name": "Source is a different owner's copy of the upstream repo",
+      "severity": "high",
+      "category": "network_security",
+      "description": "url= names one owner/repo on a forge while a source= fetches the SAME repository name under a different account -- the shape of a fork substituted for the real project, reported in the openconnect-sso case (issue #29).",
+      "recommendation": "Confirm the source account is an official mirror of the declared upstream.",
+      "cwe": "CWE-494",
+      "owner": "source",
+      "pattern_based": false
+    },
+    {
+      "id": "SRC-011",
+      "name": "References files outside the package directory",
+      "severity": "high",
+      "category": "configuration",
+      "description": "A PKGBUILD or scriptlet reaches above the package directory through $startdir/.., $BUILDDIR/.. or $srcdir/../.. (srcdir is startdir/src, so two levels). Whatever sits there, such as a sibling package in an AUR helper's build cache, is code the scanner never saw, and the package can read it, source it or run it. Their contents were not reviewed.",
+      "recommendation": "Do not build. A package must only use files it ships in its own directory; put anything else in source= with a checksum.",
+      "cwe": "CWE-22",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
       "id": "TAMPER-001",
       "name": "Auth database write",
       "severity": "critical",
@@ -1220,6 +1704,83 @@
       "cwe": "CWE-295",
       "owner": "rules",
       "pattern_based": true
+    },
+    {
+      "id": "TAMPER-018",
+      "name": "Name resolution configuration modified",
+      "severity": "high",
+      "category": "malicious_code",
+      "description": "Writes to /etc/hosts, /etc/resolv.conf or /etc/nsswitch.conf outside $pkgdir. Packages do not ship these files; editing them redirects hostnames (update servers, package mirrors, login hosts) to an attacker or disables resolution safeguards.",
+      "recommendation": "Remove the edit. Hostname and resolver configuration is the administrator's, not a package's.",
+      "cwe": "CWE-350",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "TAMPER-019",
+      "name": "Per-user git config set to run a program",
+      "severity": "high",
+      "category": "malicious_code",
+      "description": "Sets core.fsmonitor or core.hooksPath in the user's global git configuration, or writes the user's gitconfig outside $pkgdir. Both settings make git run a program on every repository command (status, commit, checkout), so every repo the user touches runs the package's code.",
+      "recommendation": "Remove the git configuration change. Check `git config --global --list` and ~/.gitconfig for core.fsmonitor and core.hooksPath.",
+      "cwe": "CWE-829",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "TAMPER-020",
+      "name": "git fsmonitor/hooksPath set from an install script",
+      "severity": "high",
+      "category": "malicious_code",
+      "description": "An install scriptlet sets core.fsmonitor or core.hooksPath in some git configuration. Scriptlets run as root and have no repository of their own to configure, so the setting can only be aimed at repositories the user owns. Repo-local use inside build() is a different, harmless thing and is not reported.",
+      "recommendation": "Remove the git configuration change from the install script.",
+      "cwe": "CWE-829",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "TAMPER-021",
+      "name": "System-wide git config set to run a program",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "Sets core.fsmonitor or core.hooksPath in the SYSTEM git configuration, or writes /etc/gitconfig outside $pkgdir. Every user's git, including root's, then runs the program on every repository command.",
+      "recommendation": "Do NOT install. Inspect /etc/gitconfig and remove the setting.",
+      "cwe": "CWE-829",
+      "owner": "rules",
+      "pattern_based": true
+    },
+    {
+      "id": "TI-UNCHECKED-001",
+      "name": "Threat-intel lookups incomplete",
+      "severity": "info",
+      "category": "configuration",
+      "description": "Some source hashes or URLs were not checked by the opt-in threat-intel providers (per-scan lookup cap reached or provider rate limit), so a clean result does not cover them.",
+      "recommendation": "Re-scan later (cached verdicts are reused), raise AUR_SCAN_VT_MAX_LOOKUPS if your key allows it, or review the remaining sources manually.",
+      "cwe": null,
+      "owner": "threat_intel",
+      "pattern_based": false
+    },
+    {
+      "id": "TI-URLHAUS-001",
+      "name": "URLhaus lists a source URL",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "An opt-in abuse.ch/URLhaus lookup lists a source= URL as a known malware/payload distribution URL.",
+      "recommendation": "Do not build or install; the source URL is a known-bad distribution point.",
+      "cwe": "CWE-494",
+      "owner": "threat_intel",
+      "pattern_based": false
+    },
+    {
+      "id": "TI-VT-001",
+      "name": "VirusTotal flags a source artifact",
+      "severity": "critical",
+      "category": "malicious_code",
+      "description": "An opt-in VirusTotal lookup reports engines detecting the declared sha256 of a source artifact as malicious.",
+      "recommendation": "Do not build or install; review the VirusTotal report for this hash.",
+      "cwe": "CWE-506",
+      "owner": "threat_intel",
+      "pattern_based": false
     },
     {
       "id": "TRUST-001",

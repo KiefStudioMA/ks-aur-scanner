@@ -3,6 +3,8 @@
 CRYPTO-001 Mining pool connection [CRITICAL]
 ======================================================================
 
+Severity: CRITICAL
+
 Category:
   Cryptomining  (detector: rules)
 

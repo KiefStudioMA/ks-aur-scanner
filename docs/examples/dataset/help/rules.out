@@ -8,4 +8,5 @@ Options:
   -c, --config <CONFIG>      Configuration file path
   -v, --verbose              Enable verbose output
   -q, --quiet                Quiet mode (only show findings)
+      --no-color             Disable colored output (also honored: the NO_COLOR environment variable)
   -h, --help                 Print help

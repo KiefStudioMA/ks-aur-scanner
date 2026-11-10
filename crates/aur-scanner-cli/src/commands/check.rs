@@ -46,7 +46,7 @@ pub struct CheckArgs {
 }
 
 /// How a `--local` dir's self-declared pkgname relates to what the user asked
-/// for (audit ME-6). A local PKGBUILD is untrusted input that *names itself*, so
+/// for. A local PKGBUILD is untrusted input that *names itself*, so
 /// a clean scan of it must never be silently attributed to an AUR node the user
 /// did not explicitly request.
 #[derive(Debug, PartialEq, Eq)]
@@ -106,26 +106,7 @@ pub(crate) fn diff_against_history(
     // Hash the package-side scripts separately from the PKGBUILD so "gained an
     // install script" is distinguishable from "the PKGBUILD changed".
     let dir = pkgbuild_path.parent().unwrap_or(std::path::Path::new("."));
-    let mut scripts: Vec<String> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        let mut paths: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                p.is_file()
-                    && matches!(
-                        p.extension().and_then(|e| e.to_str()),
-                        Some("install") | Some("hook")
-                    )
-            })
-            .collect();
-        paths.sort();
-        for path in paths {
-            if let Ok(c) = aur_scanner_core::read_text_capped(&path) {
-                scripts.push(c);
-            }
-        }
-    }
+    let scripts: Vec<String> = aur_scanner_core::pkgfiles::install_script_contents(dir, &parsed);
 
     let previous = history.get(key, scope);
 
@@ -885,7 +866,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    // --- --local name binding (audit ME-6) -----------------------------------
+    // --- --local name binding -----------------------------------
     // A local dir's declared name is honored as a stand-in only for a node the
     // user explicitly requested; any other name is an unrequested shadow whose
     // real AUR source is not what gets scanned.
@@ -919,7 +900,7 @@ mod tests {
 
     #[test]
     fn illegal_pkgnames_are_rejected_before_binding() {
-        // The name-validation half of ME-6: a local PKGBUILD's declared name is an
+        // The name-validation half: a local PKGBUILD's declared name is an
         // identifier that becomes a resolution key + network query; illegal ones
         // are refused up front (run() drops them) so they can never bind at all.
         for bad in ["../etc/passwd", "a/b", "a;rm -rf /", "", "-rf", "a$(id)"] {
@@ -943,7 +924,7 @@ mod tests {
             title: "Bashrc/profile modification".to_string(),
             description: "test".to_string(),
             location: aur_scanner_core::Location {
-                file: PathBuf::from("/home/eric/.cache/yay/cdu/cdu.install"),
+                file: PathBuf::from("/home/user/.cache/yay/cdu/cdu.install"),
                 line,
                 column: None,
                 snippet: None,

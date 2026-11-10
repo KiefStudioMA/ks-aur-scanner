@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = usr/share/info/*
+
+[Action]
+Description = Updating the info directory...
+When = PostTransaction
+Exec = /usr/share/libalpm/scripts/info-install
+NeedsTargets

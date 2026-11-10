@@ -1,0 +1,12 @@
+{
+  "package_name": "demo",
+  "package_version": "1-1",
+  "findings": [],
+  "scanned_files": [
+    "tests/fixtures/clean/local-tar-patches/PKGBUILD",
+    "tests/fixtures/clean/local-tar-patches/patches.tar:0001-fix.patch",
+    "tests/fixtures/clean/local-tar-patches/patches.tar:0002-more.patch"
+  ],
+  "timestamp": "2026-11-10T14:50:52.719491205Z",
+  "scan_duration_ms": 18
+}

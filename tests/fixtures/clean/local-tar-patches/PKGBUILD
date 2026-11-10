@@ -1,0 +1,12 @@
+pkgname=demo
+pkgver=1
+pkgrel=1
+arch=(any)
+license=(MIT)
+source=(patches.tar)
+sha256sums=('1a2f5e8b6a2de73a6fc114f26e157d93e32af20b290eaa56ca782ef739c9e473')
+prepare() {
+  cd "$srcdir"
+  for p in 0001-fix.patch 0002-more.patch; do patch -Np1 -i "$p"; done
+}
+package() { :; }

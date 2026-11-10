@@ -1,0 +1,38 @@
+
+Scan Results: outside
+============================================================
+
+[HIGH] META-007 install= cannot be statically resolved
+    The install scriptlet name is not a plain value the scanner can resolve (eval of an expansion, or source of another file). makepkg runs whichever file it names as the package's install scriptlet, so every file beside the PKGBUILD was scanned as a possible scriptlet.
+    Code: install=eval of an expansion, or source of another file
+    Recommendation: Do not install. Use a literal `install=<pkgname>.install` and review the file it names.
+    Reference: CWE-426
+
+[HIGH] SRC-011 References files outside the package directory
+    A PKGBUILD or scriptlet reaches above the package directory through $startdir/.., $BUILDDIR/.. or $srcdir/../.. (srcdir is startdir/src, so two levels). Whatever sits there, such as a sibling package in an AUR helper's build cache, is code the scanner never saw, and the package can read it, source it or run it. Their contents were not reviewed.
+    Location: tests/fixtures/malicious/outside-package-dir/PKGBUILD:13
+    Code:     bash "$srcdir/../../sibling-pkg/helper.sh"
+    Recommendation: Do not build. A package must only use files it ships in its own directory; put anything else in source= with a checksum.
+    Reference: CWE-22
+
+[HIGH] SRC-011 References files outside the package directory
+    A PKGBUILD or scriptlet reaches above the package directory through $startdir/.., $BUILDDIR/.. or $srcdir/../.. (srcdir is startdir/src, so two levels). Whatever sits there, such as a sibling package in an AUR helper's build cache, is code the scanner never saw, and the package can read it, source it or run it. Their contents were not reviewed.
+    Location: tests/fixtures/malicious/outside-package-dir/PKGBUILD:17
+    Code:     . "$startdir/../sibling-pkg/lib.sh"
+    Recommendation: Do not build. A package must only use files it ships in its own directory; put anything else in source= with a checksum.
+    Reference: CWE-22
+
+[MEDIUM] SRC-005 No sources with build function
+    Package has build() function but no source array
+    Recommendation: Verify this is intentional; build() usually needs sources
+
+
+
+============================================================
+Package: outside v1.0.0-1
+Scan duration: 21ms
+
+Found 4 issue(s):
+  3 HIGH
+  1 MEDIUM
+============================================================

