@@ -11,7 +11,7 @@ the [aur-scanner.kief.studio](https://aur-scanner.kief.studio) documentation.
 
   ```bash
   cargo build --release --all
-  docs/examples/capture.sh
+  docs/examples/capture.sh      # GIT_COMMIT=<sha> when the tree has no .git
   ```
 
 The harness discovers fixtures and detection codes from the tool itself (it never
@@ -29,7 +29,8 @@ runtime values and vary between runs.
 ```
 dataset/
   meta.txt                     version + commit provenance
-  scan/<fixture>/{text,json,sarif}.{out,err,exit}
+  scan/<fixture>/{text,json}.{out,exit}  .err only when stderr was not empty
+  scan/malicious-curl-bash/sarif.out    SARIF, for one fixture
   scan/<fixture>/fail-on-high.exit      the CI gate, as an exit code
   codes/{text,json,markdown}.out        the detection catalog
   explain/<CODE>.out                    per-code detail

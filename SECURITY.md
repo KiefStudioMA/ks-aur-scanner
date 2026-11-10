@@ -33,8 +33,14 @@ issues.
 
 ## Supported versions
 
-We support the **latest released version**. The AUR is rolling; please update
-before reporting (`paru -S aur-scanner-git` / re-build the tagged package).
+We support the **latest release**, currently **3.0.x**. Older versions get no
+fixes. Please update before reporting: `paru -S aur-scanner` (or rebuild the
+tagged package you use).
+
+| Version | Supported |
+|---------|-----------|
+| 3.0.x   | Yes       |
+| < 3.0   | No        |
 
 ## Threat model (what this tool does and does not do)
 
@@ -49,6 +55,22 @@ before reporting (`paru -S aur-scanner-git` / re-build the tagged package).
   can't fully read — oversized, symlinked, not a regular file, or a declared
   `install=` that is missing — is reported as the Critical `SCAN-001`, and
   every install gate treats that package as unreviewed.
+- **Opaque archives are reported, not blocked.** A local archive the scanner
+  cannot open (compressed, or past the size and member bounds) is `SCAN-002`
+  (Medium): its contents were not reviewed, and the gate does not block on it
+  by default. To block on it, lower the gate to medium: `--fail-on medium`,
+  `aur-scan install --gate medium`, or `AUR_SCAN_SEVERITY=medium` for the shell
+  integration.
+- **Race-free install.** `aur-scan install` clones a package once, scans that
+  tree in place, and builds the same tree. Nothing is fetched again between the
+  scan and the build, so what was reviewed is what runs.
+- **No shell interpolation.** Every external command is started with an
+  argument vector, never through a shell, so a package name or path can never
+  become shell syntax.
+- **Bounded, validated input.** File reads are size-capped. Network responses
+  are size-capped, HTTPS-only, and redirects are refused. Package and base names
+  are checked against a strict character set before they can become a path or
+  a request parameter.
 - **Building is a separate, explicit step.** `aur-scan install` runs `makepkg`
   and `aur-scan-wrap` hands off to your AUR helper, but only after the scan gate
   passes. That is the point where the package's own code runs, by your choice,
@@ -72,9 +94,12 @@ before reporting (`paru -S aur-scanner-git` / re-build the tagged package).
   signer by fingerprint, not with a bare `git verify-commit`, which would accept
   any good signature in the builder's keyring. GitHub's own "Merge pull request"
   commits pass only when they are a clean merge of a release-key-signed head
-  onto an already trusted base. This is still weaker than tag verification: it
-  proves where the code came from but does not pin a reviewed release. Prefer
-  the tagged packages for production systems.
+  onto an already trusted base, or when the merge's tree is identical to the
+  tree of a release-key-signed PR head (that signature already covers the whole
+  tree). A merge that adds an edit, or merges an unsigned head, is refused.
+  This is still weaker than tag verification: it proves where the code came
+  from but does not pin a reviewed release. Prefer the tagged packages for
+  production systems.
 - `main` is protected by a ruleset: changes land through a pull request,
   commits must be signed, and force-push and deletion are blocked. `v*` tags
   cannot be deleted or moved. GitHub does not enforce tag signatures; the tagged

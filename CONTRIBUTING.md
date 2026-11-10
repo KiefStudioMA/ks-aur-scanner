@@ -34,8 +34,8 @@ change, no matter how useful the rest of it is.
 
 You have two paths:
 
-- **Community rule (no Rust):** add a TOML rule to `install/rules.d/` following
-  `example.toml`. These load from `rules.d/` at runtime and are the easiest way
+- **Community rule (no Rust):** add a TOML rule to `install/rules.d/`, starting
+  from `install/example-rule.toml`. These load from `rules.d/` at runtime and are the easiest way
   to extend coverage. Give it a unique `id` and a clear `severity`.
 - **Built-in rule:** add it to the relevant analyzer plus a catalog entry, with
   tests. Run `cargo test` — the catalog audit tests will tell you if the code is

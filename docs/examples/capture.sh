@@ -36,7 +36,8 @@ trap 'rm -rf "$STAGING"' EXIT
 echo ">> aur-scan $VERSION — capturing into staging $STAGING"
 
 # Run a command, capturing stdout/.out, stderr/.err and exit/.exit. Never aborts
-# the script on a non-zero exit (a non-zero exit is itself data we record).
+# the script on a non-zero exit (a non-zero exit is itself data we record). An
+# empty .err is dropped, so only stderr that says something is committed.
 capture() {  # capture <dest-prefix> <cmd...>
     local dest="$1"; shift
     mkdir -p "$(dirname "$dest")"
@@ -44,6 +45,7 @@ capture() {  # capture <dest-prefix> <cmd...>
     "$@" >"$dest.out" 2>"$dest.err"
     echo "$?" >"$dest.exit"
     set -e
+    [ -s "$dest.err" ] || rm -f "$dest.err"
 }
 
 # --- meta ---------------------------------------------------------------------
@@ -51,21 +53,26 @@ mkdir -p "$STAGING"
 {
     echo "tool: aur-scan"
     echo "version: $VERSION"
-    echo "git_commit: $(git rev-parse HEAD)"
-    echo "git_branch: $(git rev-parse --abbrev-ref HEAD)"
+    # GIT_COMMIT overrides the lookup, for a copy of the tree with no .git.
+    echo "git_commit: ${GIT_COMMIT:-$(git rev-parse HEAD 2>/dev/null)}"
     echo "generated_by: docs/examples/capture.sh"
     echo "note: timestamp and scan_duration_ms in JSON are runtime values and vary per run."
 } >"$STAGING/meta.txt"
 
-# --- 1. scan every fixture in every format ------------------------------------
-# Discover fixtures: any directory that contains a PKGBUILD.
+# --- 1. scan every fixture -----------------------------------------------------
+# Discover fixtures: any directory that contains a PKGBUILD. Text and JSON for
+# every fixture; SARIF for one, since its shape does not change per fixture.
+SARIF_FIXTURE="malicious-curl-bash"
 echo ">> scanning fixtures"
 while IFS= read -r pkgdir; do
     rel="${pkgdir#"$FIXTURES"/}"          # e.g. malicious/curl-bash
     slug="${rel//\//-}"                    # e.g. malicious-curl-bash
-    for fmt in text json sarif; do
+    for fmt in text json; do
         capture "$STAGING/scan/$slug/$fmt" "$BIN" scan "$pkgdir" --format "$fmt"
     done
+    if [ "$slug" = "$SARIF_FIXTURE" ]; then
+        capture "$STAGING/scan/$slug/sarif" "$BIN" scan "$pkgdir" --format sarif
+    fi
     # the documented CI gate, recorded as its own exit-code artifact
     capture "$STAGING/scan/$slug/fail-on-high" "$BIN" scan "$pkgdir" --fail-on high
 done < <(find "$FIXTURES" -name PKGBUILD -printf '%h\n' | sort -u)
@@ -111,7 +118,7 @@ fi
 # --- 4. help for every subcommand + version -----------------------------------
 echo ">> help + version"
 capture "$STAGING/help/aur-scan" "$BIN" --help
-for sub in scan check install system rules explain codes ioc version; do
+for sub in scan check install system rules explain codes ioc version diff completions; do
     capture "$STAGING/help/$sub" "$BIN" "$sub" --help
 done
 capture "$STAGING/version" "$BIN" --version
@@ -120,7 +127,7 @@ capture "$STAGING/version" "$BIN" --version
 # The scanner echoes the (absolute) path it was given into every finding's
 # `file` field. Strip the absolute repo + staging prefixes so the committed
 # dataset is byte-identical regardless of WHERE it was generated (no
-# /home/<user> leak; no churn between the repo root and a .mycelium clone).
+# /home/<user> leak; no churn between checkouts in different directories).
 echo ">> canonicalizing paths (repo-relative)"
 # Order matters: the staging temp dir and the repo root are stripped to a
 # relative form first; anything else under the maintainer's $HOME (e.g. a
@@ -139,13 +146,15 @@ need_nonempty() { [ -s "$1" ] || { echo "   EMPTY: ${1#$STAGING/}" >&2; fail=1; 
 valid_json()   { python3 -c "import json,sys; json.load(open('$1'))" 2>/dev/null \
                  || { echo "   BAD JSON: ${1#$STAGING/}" >&2; fail=1; }; }
 
-# Every scanned fixture must have produced text + parseable json + sarif.
+# Every scanned fixture must have produced text + parseable json, and the
+# SARIF fixture parseable sarif.
 while IFS= read -r pkgdir; do
     rel="${pkgdir#"$FIXTURES"/}"; slug="${rel//\//-}"
     need_nonempty "$STAGING/scan/$slug/text.out"
     need_nonempty "$STAGING/scan/$slug/json.out"; valid_json "$STAGING/scan/$slug/json.out"
-    valid_json "$STAGING/scan/$slug/sarif.out"
 done < <(find "$FIXTURES" -name PKGBUILD -printf '%h\n' | sort -u)
+need_nonempty "$STAGING/scan/$SARIF_FIXTURE/sarif.out"
+valid_json "$STAGING/scan/$SARIF_FIXTURE/sarif.out"
 need_nonempty "$STAGING/codes/text.out"; valid_json "$STAGING/codes/json.out"
 
 # Privacy guard (fail closed): the maintainer's absolute home must never survive
