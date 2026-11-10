@@ -220,6 +220,46 @@ impl SecurityAnalyzer for ChecksumAnalyzer {
             ("sha512", 128, checksums.sha512sums.as_slice()),
             ("b2", 128, checksums.b2sums.as_slice()),
         ];
+
+        // CHK-007 — Placeholder checksum consisting of repeated identical hex digits.
+        // A placeholder checksum cannot pass makepkg's integrity verification.
+        let mut placeholder_sources: Vec<String> = Vec::new();
+        for (algo, len, arr) in algos {
+            for sum in arr.iter().flatten() {
+                let s = sum.trim();
+                if s.eq_ignore_ascii_case("SKIP") {
+                    continue;
+                }
+                if s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    let first = s.as_bytes()[0];
+                    if s.bytes().all(|b| b == first) {
+                        placeholder_sources.push(format!("{algo}sums has trivial repeated '{s}'"));
+                    }
+                }
+            }
+        }
+        if !placeholder_sources.is_empty() {
+            findings.push(Finding {
+                id: "CHK-007".to_string(),
+                severity: Severity::Info,
+                category: Category::Cryptography,
+                title: "Placeholder checksum: this package will not pass makepkg's integrity check".to_string(),
+                description: format!(
+                    "One or more checksums consist of repeated identical hex digits (e.g. all zeros), acting as placeholders that will fail makepkg integrity verification: {}.",
+                    placeholder_sources.join("; ")
+                ),
+                location: Location {
+                    file: context.file_path.clone(),
+                    line: None,
+                    column: None,
+                    snippet: None,
+                },
+                recommendation: "Compute real checksums with updpkgsums before distributing or installing.".to_string(),
+                cwe_id: Some("CWE-354".to_string()),
+                metadata: serde_json::json!({ "placeholders": placeholder_sources }),
+            });
+        }
+
         let mut malformed: Vec<String> = Vec::new();
         for (algo, len, arr) in algos {
             for sum in arr.iter().flatten() {
@@ -620,6 +660,26 @@ sha256sums=('SKIP')
         assert!(
             findings.iter().any(|f| f.id == "CHK-005"),
             "Non-VCS source with SKIP should trigger CHK-005"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_trivial_placeholder_checksum_detected() {
+        let analyzer = ChecksumAnalyzer::new();
+        let context = create_test_context(
+            r#"
+pkgname=test
+pkgver=1.0
+pkgrel=1
+source=("https://example.com/file.tar.gz")
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+"#,
+        );
+
+        let findings = analyzer.analyze(&context).await.unwrap();
+        assert!(
+            findings.iter().any(|f| f.id == "CHK-007"),
+            "Trivial repeated all-zeros checksum should trigger CHK-007"
         );
     }
 }
