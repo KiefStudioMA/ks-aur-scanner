@@ -1,4 +1,0 @@
-# `cargo update` picks the newest release that supports the workspace
-# rust-version (1.85) instead of one that would break the MSRV build.
-[resolver]
-incompatible-rust-versions = "fallback"

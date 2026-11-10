@@ -126,6 +126,10 @@ impl IocDatabase {
     pub fn load() -> Self {
         Self::try_load().unwrap_or_else(|e| {
             eprintln!("aur-scan: error: {e}; using the embedded IOC defaults only");
+            tracing::error!(
+                target: crate::rules::LOUD_LOG_TARGET,
+                "{e}; using the embedded IOC defaults only"
+            );
             Self::embedded()
         })
     }
@@ -143,6 +147,7 @@ impl IocDatabase {
                         return Err(ScanError::Config(msg));
                     }
                     eprintln!("aur-scan: error: {msg}; ignoring it");
+                    tracing::error!(target: crate::rules::LOUD_LOG_TARGET, "{msg}; ignoring it");
                     continue;
                 }
             };
@@ -157,6 +162,7 @@ impl IocDatabase {
                         return Err(ScanError::Config(msg));
                     }
                     eprintln!("aur-scan: error: {msg}; ignoring it");
+                    tracing::error!(target: crate::rules::LOUD_LOG_TARGET, "{msg}; ignoring it");
                 }
             }
         }
@@ -337,7 +343,7 @@ mod tests {
 
     #[test]
     fn domain_ioc_is_host_aware_not_substring() {
-        // Task 4120: domain IOCs must match on the parsed host (equal or a true
+        // Domain IOCs must match on the parsed host (equal or a true
         // subdomain), after defang normalization -- not a raw substring.
         let mut db = IocDatabase::embedded();
         db.domains.insert(

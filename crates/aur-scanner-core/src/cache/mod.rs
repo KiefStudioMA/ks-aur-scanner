@@ -29,7 +29,7 @@ pub trait Cache: Send + Sync {
 pub struct DiskCache {
     directory: PathBuf,
     max_size_bytes: usize,
-    /// Per-user key for the integrity tag on stored verdicts (audit ME-2). Stored
+    /// Per-user key for the integrity tag on stored verdicts. Stored
     /// beside the entries, so it detects corruption and other-user tampering,
     /// not a same-user attacker.
     mac_key: [u8; 32],
@@ -79,8 +79,8 @@ impl DiskCache {
             // the owner, so a pre-existing dir owned by another user (e.g. a
             // squatted `/tmp/aur-scanner` fallback) is refused here.
             std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
-            // Verify the tighten stuck: a world/group-accessible cache dir (audit
-            // ME-2: the /tmp fallback must refuse world-writable) is rejected
+            // Verify the tighten stuck: a world/group-accessible cache dir (the /tmp
+            // fallback must refuse world-writable) is rejected
             // rather than used to store security verdicts.
             let mode = std::fs::metadata(&directory)?.permissions().mode();
             if mode & 0o077 != 0 {
@@ -180,7 +180,7 @@ impl DiskCache {
 }
 
 /// Load the per-user cache integrity key, creating it (32 CSPRNG bytes, `0600`)
-/// on first use (audit ME-2).
+/// on first use.
 ///
 /// An entry whose tag does not verify under this key is treated as a cache MISS
 /// rather than trusted data, which detects corruption and a flipped
@@ -265,7 +265,7 @@ impl Cache for DiskCache {
         // Verify before trusting: the file is a tagged envelope. An entry whose
         // tag does not verify under our per-user key (corrupted, or planted or
         // flipped by another user) is a cache MISS, not data. A non-envelope/old-format file also fails here
-        // and is discarded. (audit ME-2)
+        // and is discarded.
         let envelope: MacEnvelope = match serde_json::from_str(&content) {
             Ok(e) => e,
             Err(_) => {
@@ -333,7 +333,7 @@ impl Cache for DiskCache {
 
         // Serialize the entry, then tag it under the per-user key so later
         // corruption or other-user tampering is detected on read and treated as
-        // a miss (audit ME-2). Not authentication against same-user code.
+        // a miss. Not authentication against same-user code.
         let data = serde_json::to_string(&entry)?;
         let mac = self.mac(data.as_bytes()).to_hex().to_string();
         let envelope = MacEnvelope { data, mac };
@@ -438,7 +438,7 @@ mod tests {
         );
     }
 
-    // --- verdict authenticity / MAC (audit ME-2) -----------------------------
+    // --- verdict authenticity / MAC -----------------------------
 
     #[test]
     fn tampered_verdict_is_rejected_as_miss() {
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn world_writable_cache_dir_is_tightened() {
         // A pre-existing world-writable cache dir (a squatted /tmp fallback) must
-        // not be used as-is: it is tightened to 0700 (audit ME-2).
+        // not be used as-is: it is tightened to 0700.
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let cdir = dir.path().join("c");

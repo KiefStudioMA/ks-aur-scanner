@@ -1,0 +1,12 @@
+pkgname=demo
+pkgver=1
+pkgrel=1
+arch=(any)
+license=(MIT)
+source=(assets.tar)
+sha256sums=('aa5e0345b2e9a766264f62a471def8e843a7186d9397d4c57e85a9a680860a35')
+build() {
+  bsdtar -xf "$srcdir/assets.tar" -C "$srcdir"
+  sh "$srcdir/helper.sh"
+}
+package() { :; }

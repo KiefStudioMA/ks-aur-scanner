@@ -1,0 +1,34 @@
+# Maintainer: Example <maintainer@example.org>
+pkgname=clean-shipped-files
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Ships a narrow libalpm hook and a uaccess udev rule"
+arch=('x86_64')
+url="https://example.org/clean-shipped-files"
+license=('MIT')
+makedepends=('npm' 'git')
+install=clean-shipped-files.install
+source=("$pkgname-$pkgver.tar.gz::https://example.org/$pkgname-$pkgver.tar.gz"
+        'narrow.hook'
+        '70-clean.rules')
+sha256sums=('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+            'a33d5afc16cd0ebaa34b2bc316ef5cf9d3491d05aabf355c579efeb5f364bc01'
+            '65a6b3b9ec3928f2808b500114f78f58e84794a5bcd828bf54097dd2ef3ce670')
+
+build() {
+    cd "$srcdir/$pkgname-$pkgver"
+    git -c core.hooksPath=/dev/null clone --quiet "$srcdir/vendor" vendor-copy || true
+    git config core.hooksPath .githooks
+    npm ci
+    npm install --production
+    npm install --no-audit --offline
+    npm run build
+}
+
+package() {
+    cd "$srcdir/$pkgname-$pkgver"
+    install -Dm755 bin/tool "$pkgdir/usr/bin/tool"
+    install -Dm644 ../narrow.hook "$pkgdir/usr/share/libalpm/hooks/70-clean.hook"
+    install -Dm644 ../70-clean.rules "$pkgdir/usr/lib/udev/rules.d/70-clean.rules"
+    install -Dm644 /dev/null "$pkgdir/etc/hosts.example"
+}

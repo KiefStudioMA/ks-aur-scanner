@@ -2,7 +2,7 @@
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
-use crate::rules::informational_lines_with;
+use crate::rules::{inert_kinds_with, MsgContext};
 use crate::textutil::{logical_lines, normalize_shell_quoting, split_statements, split_words};
 use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
@@ -18,9 +18,14 @@ use std::collections::HashSet;
 /// Without this, the analyzer matched its regexes over the raw function body and
 /// raised a Critical false positive on a benign package that merely *printed* a
 /// `sudo systemctl ...` instruction, or shipped a heredoc/`note` mentioning
-/// `/etc/sudoers` or `setcap` (defect #5). A printed mention is not an action.
-fn executable_body(content: &str, shadowed: &HashSet<String>) -> String {
-    executable_lines(content, shadowed)
+/// `/etc/sudoers` or `setcap`. A printed mention is not an action.
+fn executable_body(
+    content: &str,
+    shadowed: &HashSet<String>,
+    sev: Severity,
+    ctx: MsgContext,
+) -> String {
+    executable_lines(content, shadowed, sev, ctx)
         .into_iter()
         .map(|(_, l)| l)
         .collect::<Vec<_>>()
@@ -28,14 +33,19 @@ fn executable_body(content: &str, shadowed: &HashSet<String>) -> String {
 }
 
 /// The executable logical lines of `content` with the line each starts on.
-fn executable_lines(content: &str, shadowed: &HashSet<String>) -> Vec<(usize, String)> {
+fn executable_lines(
+    content: &str,
+    shadowed: &HashSet<String>,
+    sev: Severity,
+    ctx: MsgContext,
+) -> Vec<(usize, String)> {
     let lines = logical_lines(content);
     let strs: Vec<&str> = lines.iter().map(|(_, s)| s.as_str()).collect();
-    let info = informational_lines_with(&strs, shadowed);
+    let info = inert_kinds_with(&strs, shadowed, ctx);
     lines
         .into_iter()
         .enumerate()
-        .filter(|(i, (_, l))| !l.trim_start().starts_with('#') && !info[*i])
+        .filter(|(i, (_, l))| !l.trim_start().starts_with('#') && !info[*i].suppresses(sev))
         .map(|(_, l)| l)
         .collect()
 }
@@ -219,7 +229,12 @@ fn install_module_findings(context: &AnalysisContext, shadowed: &HashSet<String>
             continue;
         }
         let mut first_plain: Option<(usize, String)> = None;
-        for (line_no, line) in executable_lines(&script.content, shadowed) {
+        for (line_no, line) in executable_lines(
+            &script.content,
+            shadowed,
+            Severity::High,
+            MsgContext::Scriptlet,
+        ) {
             for (stmt, _) in split_statements(&line) {
                 match classify_module_stmt(&stmt, &shipped) {
                     None => {}
@@ -283,10 +298,42 @@ pub struct PrivilegeAnalyzer {
 }
 
 impl PrivilegeAnalyzer {
+    /// Medium mentions for exempt one-literal message lines in `content` that the
+    /// privilege checks would otherwise have flagged (the lines themselves are
+    /// skipped by the High+ checks).
+    fn message_mentions(
+        &self,
+        content: &str,
+        shadowed: &HashSet<String>,
+        file: &std::path::Path,
+        base_line: usize,
+        kind: &str,
+        ctx: MsgContext,
+    ) -> Vec<Finding> {
+        crate::rules::message_lines(content, shadowed, ctx)
+            .into_iter()
+            .filter(|(_, l)| {
+                self.sudo_pattern.is_match(l)
+                    || self.suid_pattern.is_match(l)
+                    || self.sudoers_pattern.is_match(l)
+                    || self.module_pattern.is_match(l)
+            })
+            .map(|(start, l)| {
+                crate::rules::message_mention_finding(
+                    file,
+                    base_line + start - 1,
+                    &l,
+                    "PRIV-001",
+                    kind,
+                )
+            })
+            .collect()
+    }
+
     /// Create a new privilege analyzer
     pub fn new() -> Self {
         Self {
-            // `(?i)` so `SUDO`/`Sudo` cannot evade PRIV-001 (audit HI-6). The
+            // `(?i)` so `SUDO`/`Sudo` cannot evade PRIV-001. The
             // analyzer matches only `executable_body()` (printed/informational
             // lines stripped), so a documented mention still cannot false-fire.
             sudo_pattern: Regex::new(r"(?i)\bsudo\b").unwrap(),
@@ -298,8 +345,8 @@ impl PrivilegeAnalyzer {
             // (`u+s`, `g+s`, `+s`, `u=s`) are covered; forms that *clear* it
             // (`u-s`, `g-s`, `-s`) must NOT fire — removing a setuid bit is the
             // safe direction (issue #21, visual-studio-code-bin).
-            // `(?ix)` so `CHMOD`/`INSTALL` case variants cannot evade PRIV-002
-            // (audit HI-6). The octal mode digits are case-irrelevant; `(?i)` only
+            // `(?ix)` so `CHMOD`/`INSTALL` case variants cannot evade PRIV-002.
+            // The octal mode digits are case-irrelevant; `(?i)` only
             // additionally lets the symbolic suid bit match `S` as well as `s`,
             // which is still a suid set.
             suid_pattern: Regex::new(
@@ -310,7 +357,7 @@ impl PrivilegeAnalyzer {
                 ",
             )
             .unwrap(),
-            // `(?i)` for audit HI-6 consistency; printed mentions are already
+            // `(?i)` for consistency with the other sinks; printed mentions are already
             // stripped by `executable_body()` so this adds no false positives.
             sudoers_pattern: Regex::new(r"(?i)/etc/sudoers").unwrap(),
             capabilities_pattern: Regex::new(r"(?i)setcap\s+").unwrap(),
@@ -336,14 +383,34 @@ impl Default for PrivilegeAnalyzer {
 impl SecurityAnalyzer for PrivilegeAnalyzer {
     async fn analyze(&self, context: &AnalysisContext) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
-        let shadowed = context.shadowed_printers().names();
+        let shadowed = context.shadowed_names().clone();
 
         // Check functions for privilege escalation patterns. Match only the
         // executable lines of the body (printed/informational lines stripped) so
         // a documented `sudo`/`setcap`/`sudoers` mention cannot raise a Critical
-        // false positive (defect #5).
+        // false positive.
         for (func_name, func_body) in &context.pkgbuild.functions {
-            let body = executable_body(&func_body.content, &shadowed);
+            let body = executable_body(
+                &func_body.content,
+                &shadowed,
+                Severity::High,
+                MsgContext::Pkgbuild,
+            );
+            // Medium-and-below checks still ignore printed heredoc text.
+            let mention_body = executable_body(
+                &func_body.content,
+                &shadowed,
+                Severity::Medium,
+                MsgContext::Pkgbuild,
+            );
+            findings.extend(self.message_mentions(
+                &func_body.content,
+                &shadowed,
+                &context.file_path,
+                func_body.line_start,
+                "pkgbuild",
+                MsgContext::Pkgbuild,
+            ));
             // Check for sudo in build functions
             if self.sudo_pattern.is_match(&body) {
                 let severity = if func_name == "build" || func_name.starts_with("package") {
@@ -471,7 +538,7 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
             }
 
             // Check for capabilities setting (could be legitimate but worth noting)
-            if self.capabilities_pattern.is_match(&body) {
+            if self.capabilities_pattern.is_match(&mention_body) {
                 findings.push(Finding {
                     id: "PRIV-004".to_string(),
                     severity: Severity::Medium,
@@ -527,7 +594,20 @@ impl SecurityAnalyzer for PrivilegeAnalyzer {
         // Check install scriptlets and ALPM side scripts for sudo in hook bodies.
         for script in context.all_scripts() {
             for hook in &script.hooks {
-                let body = executable_body(&hook.content, &shadowed);
+                findings.extend(self.message_mentions(
+                    &hook.content,
+                    &shadowed,
+                    &script.path,
+                    hook.line_start,
+                    "install script",
+                    MsgContext::Scriptlet,
+                ));
+                let body = executable_body(
+                    &hook.content,
+                    &shadowed,
+                    Severity::High,
+                    MsgContext::Scriptlet,
+                );
                 if self.sudo_pattern.is_match(&body) {
                     findings.push(Finding {
                         id: "PRIV-006".to_string(),
@@ -575,6 +655,7 @@ mod tests {
         let pkgbuild = parser.parse(pkgbuild_content).unwrap();
 
         AnalysisContext {
+            shadow: Default::default(),
             pkgbuild,
             install_script: None,
             side_scripts: vec![],
@@ -625,7 +706,7 @@ package() {
 
     #[tokio::test]
     async fn case_variation_does_not_evade_privilege() {
-        // Audit HI-6: upper/mixed-case privilege tokens must still fire. sudo
+        // Upper/mixed-case privilege tokens must still fire. sudo
         // (PRIV-001), setcap (PRIV-004), and CHMOD/INSTALL suid modes (PRIV-002).
         let analyzer = PrivilegeAnalyzer::new();
         let context = create_test_context(
@@ -707,12 +788,19 @@ EOF
 "#,
         );
         let findings = analyzer.analyze(&context).await.unwrap();
+        // Exempt one-literal prints are Medium mentions, not PRIV-001/004; the
+        // heredoc is never exempt, so its sudoers text is still reported.
         assert!(
             !findings
                 .iter()
-                .any(|f| matches!(f.id.as_str(), "PRIV-001" | "PRIV-003" | "PRIV-004")),
-            "printed sudo/sudoers/setcap messages must not raise a privilege finding, got: {:?}",
+                .any(|f| matches!(f.id.as_str(), "PRIV-001" | "PRIV-004")),
+            "one-literal printed messages must not raise PRIV-001/004, got: {:?}",
             findings.iter().map(|f| &f.id).collect::<Vec<_>>()
+        );
+        assert!(findings.iter().any(|f| f.id == "META-008"));
+        assert!(
+            findings.iter().any(|f| f.id == "PRIV-003"),
+            "sudoers text in a printed heredoc is still reported (fail toward scanning)"
         );
     }
 
@@ -782,7 +870,7 @@ build() {
 
     #[tokio::test]
     async fn test_redirected_heredoc_privilege_still_fires() {
-        // Boundary lock (task 4050b): the informational carve-out must NOT
+        // Boundary lock: the informational carve-out must NOT
         // suppress a heredoc that is REDIRECTED to a file. Writing a setcap/SUID
         // script INTO a file is an action, not a printed message, so the body
         // must still be scanned and fire.
@@ -814,7 +902,7 @@ EOF
 
     #[tokio::test]
     async fn test_privilege_action_after_heredoc_still_fires() {
-        // Boundary lock (task 4050b): a non-redirected heredoc message is
+        // Boundary lock: a non-redirected heredoc message is
         // suppressed, but a real privilege action AFTER the terminator must NOT
         // be swallowed by the carve-out — the informational state resets at EOF.
         let analyzer = PrivilegeAnalyzer::new();
@@ -833,10 +921,11 @@ EOF
         );
         let findings = analyzer.analyze(&context).await.unwrap();
         let ids: Vec<&String> = findings.iter().map(|f| &f.id).collect();
-        // The printed reminder must NOT fire...
+        // The reminder inside the printed heredoc is High+ text and is reported
+        // too (heredoc inertness never hides a High or Critical finding)...
         assert!(
-            !findings.iter().any(|f| f.id == "PRIV-001"),
-            "the printed sudo reminder must not fire PRIV-001: {ids:?}"
+            findings.iter().any(|f| f.id == "PRIV-001"),
+            "sudo text in a printed heredoc must still fire PRIV-001: {ids:?}"
         );
         // ...but the real SUID install AFTER the heredoc must.
         assert!(

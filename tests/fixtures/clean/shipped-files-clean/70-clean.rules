@@ -1,0 +1,2 @@
+# Give the logged-in user access to the device.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1234", ATTRS{idProduct}=="5678", TAG+="uaccess", MODE="0660", GROUP="plugdev"

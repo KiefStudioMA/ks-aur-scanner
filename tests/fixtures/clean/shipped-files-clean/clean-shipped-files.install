@@ -1,0 +1,8 @@
+post_install() {
+    udevadm control --reload-rules || true
+    systemctl daemon-reload
+    echo "Add your user to the plugdev group to use the device."
+}
+post_upgrade() {
+    post_install
+}

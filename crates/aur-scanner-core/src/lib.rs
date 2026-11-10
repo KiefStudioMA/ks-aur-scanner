@@ -34,6 +34,7 @@ pub use pkgfiles::read_text_capped;
 pub use types::*;
 
 use analyzer::SecurityAnalyzer;
+use futures::FutureExt;
 use parser::PkgbuildParser;
 use rules::RuleEngine;
 use std::path::{Path, PathBuf};
@@ -85,6 +86,7 @@ impl Scanner {
             Arc::new(analyzer::SquatAnalyzer::new()),
             Arc::new(analyzer::OwnershipAnalyzer::new()),
             Arc::new(analyzer::BinaryAnalyzer::new()),
+            Arc::new(analyzer::ShippedAnalyzer::new()),
         ];
 
         // Opt-in, networked threat-intel analyzer. Added ONLY when the operator
@@ -175,6 +177,43 @@ impl Scanner {
     /// get the reduced set, which is greppable, reviewable, and impossible to
     /// reach by omission.
     pub async fn scan_pkgbuild(&self, path: &Path, registry: Registry) -> Result<ScanResult> {
+        // Any panic while scanning one package (parse, file collection, variant
+        // building, analyzers) is contained here and reported as a Critical
+        // SCAN-001 for that package, so a hostile package fails closed alone and
+        // callers that loop over packages carry on with the next one.
+        match std::panic::AssertUnwindSafe(self.scan_pkgbuild_inner(path, registry))
+            .catch_unwind()
+            .await
+        {
+            Ok(r) => r,
+            Err(payload) => {
+                let msg = panic_message(payload.as_ref());
+                tracing::error!("scan of {} panicked: {msg}", path.display());
+                let mut f = pkgfiles::unanalyzable_finding(path, "was not fully reviewed");
+                f.title = "Scan crashed on this package".to_string();
+                f.description = "The scan crashed on this package; contents not reviewed. A crash \
+                     on input is treated as hostile input, not as a clean result."
+                    .to_string();
+                f.recommendation = "Do not install. Inspect the package by hand.".to_string();
+                f.metadata = serde_json::json!({ "stage": "scan", "panic": msg });
+                let name = path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                Ok(ScanResult {
+                    package_name: name,
+                    package_version: String::new(),
+                    findings: vec![f],
+                    scanned_files: vec![path.to_path_buf()],
+                    timestamp: chrono::Utc::now(),
+                    scan_duration_ms: 0,
+                })
+            }
+        }
+    }
+
+    async fn scan_pkgbuild_inner(&self, path: &Path, registry: Registry) -> Result<ScanResult> {
         let registry = registry.into_context();
         let start = std::time::Instant::now();
         info!("Scanning PKGBUILD: {}", path.display());
@@ -183,6 +222,10 @@ impl Scanner {
         // so a multi-megabyte one is itself abnormal and a memory-DoS risk from
         // a hostile repo. Refuse rather than load it all.
         let content = read_text_capped(path)?;
+        #[cfg(test)]
+        if TEST_PANIC_IN_PARSE.with(|c| c.get()) {
+            panic!("injected parse-stage panic");
+        }
         let pkgbuild = self.parser.parse(&content)?;
 
         debug!(
@@ -204,7 +247,15 @@ impl Scanner {
             Some(p) if !p.as_os_str().is_empty() => p,
             _ => Path::new("."),
         };
-        let pkg_files = pkgfiles::collect(dir, &pkgbuild);
+        // Off the async thread: this walks and parses a hostile directory, and a
+        // timeout around a future that never yields (`with_deadline`) cannot
+        // fire while it runs inline.
+        let pkg_files = {
+            let (d, pb) = (dir.to_path_buf(), pkgbuild.clone());
+            tokio::task::spawn_blocking(move || pkgfiles::collect(&d, &pb))
+                .await
+                .map_err(|e| ScanError::Validation(format!("package file scan failed: {e}")))?
+        };
         let unanalyzed = pkg_files.findings;
         let install_script = pkg_files.install;
         let side_scripts = pkg_files.side;
@@ -223,6 +274,7 @@ impl Scanner {
 
         // Create analysis context
         let context = AnalysisContext {
+            shadow: Default::default(),
             pkgbuild: pkgbuild.clone(),
             install_script,
             side_scripts,
@@ -232,10 +284,33 @@ impl Scanner {
             registry,
         };
 
-        // Run all analyzers
+        // Run all analyzers. Each runs on the blocking pool: the analyzers are
+        // CPU-bound, and run inline they would hold the async thread, so a
+        // caller's deadline (`with_deadline`) could never fire while one ground
+        // through hostile input. Awaiting the join handle keeps the caller
+        // cancellable. A panic inside one analyzer surfaces as a join error and
+        // becomes a Critical SCAN-001 for this package, so the scan fails
+        // closed for it alone without discarding the other analyzers' findings.
         let mut findings = unanalyzed;
+        let context = Arc::new(context);
         for analyzer in &self.analyzers {
-            match analyzer.analyze(&context).await {
+            let (a, c) = (analyzer.clone(), context.clone());
+            let handle = tokio::runtime::Handle::current();
+            let joined = tokio::task::spawn_blocking(move || handle.block_on(a.analyze(&c))).await;
+            let outcome = match joined {
+                Ok(r) => r,
+                Err(e) => {
+                    let msg = if e.is_panic() {
+                        panic_message(e.into_panic().as_ref())
+                    } else {
+                        "analyzer task cancelled".to_string()
+                    };
+                    tracing::error!("analyzer {} failed abnormally: {msg}", analyzer.name());
+                    findings.push(analyzer_crashed_finding(analyzer.name(), path, &msg));
+                    continue;
+                }
+            };
+            match outcome {
                 Ok(analyzer_findings) => {
                     debug!(
                         "Analyzer {} found {} issues",
@@ -262,6 +337,20 @@ impl Scanner {
         // Sort by severity (critical first)
         findings.sort_by_key(|f| f.severity);
 
+        // A sidecar is scanned under more than one file type (see
+        // `pkgfiles::collect`), so the same rule can match the same line twice.
+        let mut seen_lines = std::collections::HashSet::new();
+        findings.retain(|f| match f.location.line {
+            Some(l) => seen_lines.insert((
+                f.id.clone(),
+                f.location.file.clone(),
+                l,
+                f.location.column,
+                f.location.snippet.clone(),
+            )),
+            None => true,
+        });
+
         let duration = start.elapsed();
         info!(
             "Scan complete: {} findings in {:?}",
@@ -276,6 +365,8 @@ impl Scanner {
         scanned_files.extend(scanned_side);
         scanned_files.extend(scanned_binaries);
         scanned_files.dedup();
+        let mut seen_files = std::collections::HashSet::new();
+        scanned_files.retain(|p| seen_files.insert(p.clone()));
 
         Ok(ScanResult {
             package_name: pkgbuild.pkgname.first().cloned().unwrap_or_default(),
@@ -346,6 +437,33 @@ fn resolve_key(configured: Option<&String>, env_vars: &[&str]) -> Option<String>
         .or_else(|| env_vars.iter().find_map(|v| std::env::var(v).ok()))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: make the parse stage of `scan_pkgbuild` panic on this thread.
+    static TEST_PANIC_IN_PARSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_default()
+}
+
+/// Critical `SCAN-001` for an analyzer that panicked on this package.
+fn analyzer_crashed_finding(analyzer: &str, path: &Path, panic_msg: &str) -> Finding {
+    let mut f = pkgfiles::unanalyzable_finding(path, "was not fully reviewed");
+    f.title = format!("Analyzer crashed on this package: {analyzer}");
+    f.description = format!(
+        "The '{analyzer}' analyzer crashed on this package; contents not fully reviewed. \
+         A crash on input is treated as hostile input, not as a clean result."
+    );
+    f.recommendation = "Do not install. Inspect the package by hand.".to_string();
+    f.metadata = serde_json::json!({ "analyzer": analyzer, "panic": panic_msg });
+    f
 }
 
 /// Construct the opt-in threat-intel analyzer from config + environment.
@@ -720,19 +838,26 @@ mod tests {
         )
         .unwrap();
         let files = pkgfiles::collect(d.path(), &parse_dir(d.path()));
-        // Every text-like file is read (a shell can run or source any of them
-        // via $startdir); a binary blob is left to the BIN-* checks.
+        // Every file is read (a shell can run or source any of them via
+        // $startdir), the binary blob included: it is scanned with its NULs
+        // removed and reported as not plain text.
         let mut names: Vec<String> = files
             .side
             .iter()
+            .filter(|s| s.file_type == FileType::SourceFile)
             .filter_map(|s| s.path.file_name().map(|n| n.to_string_lossy().into_owned()))
             .collect();
         names.sort();
-        assert_eq!(names, vec!["notes.txt", "run"]);
+        assert_eq!(names, vec!["blob", "notes.txt", "run"]);
+        // None of them defines a scriptlet function, so none is typed as one.
         assert!(files
             .side
             .iter()
             .all(|s| s.file_type == FileType::SourceFile));
+        assert!(files
+            .findings
+            .iter()
+            .any(|f| f.id == types::OPAQUE_ARCHIVE_CODE && f.location.file.ends_with("blob")));
     }
 
     #[test]
@@ -836,6 +961,103 @@ mod tests {
             r.is_err(),
             "an analyzer error must not yield a clean result"
         );
+    }
+
+    #[tokio::test]
+    async fn analyzer_panic_becomes_critical_and_keeps_other_findings() {
+        struct Crash;
+        #[async_trait::async_trait]
+        impl SecurityAnalyzer for Crash {
+            fn name(&self) -> &str {
+                "crash"
+            }
+            async fn analyze(&self, _: &AnalysisContext) -> Result<Vec<Finding>> {
+                panic!("boom");
+            }
+        }
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "");
+        let mut scanner = Scanner::with_defaults().unwrap();
+        scanner.analyzers.insert(0, Arc::new(Crash));
+        let r = scanner
+            .scan_directory(d.path(), Registry::None)
+            .await
+            .expect("a panicking analyzer must not abort the scan");
+        let f = r
+            .findings
+            .iter()
+            .find(|f| f.id == types::UNANALYZABLE_CODE && f.title.contains("crash"))
+            .expect("SCAN-001 naming the analyzer");
+        assert_eq!(f.severity, Severity::Critical);
+        // The analyzers after it still ran: the baseline package has findings
+        // from other analyzers besides the crash record.
+        let clean = Scanner::with_defaults()
+            .unwrap()
+            .scan_directory(d.path(), Registry::None)
+            .await
+            .unwrap();
+        assert_eq!(r.findings.len(), clean.findings.len() + 1);
+    }
+
+    #[tokio::test]
+    async fn a_cpu_bound_analyzer_does_not_block_the_callers_deadline() {
+        struct Slow;
+        #[async_trait::async_trait]
+        impl SecurityAnalyzer for Slow {
+            fn name(&self) -> &str {
+                "slow"
+            }
+            async fn analyze(&self, _: &AnalysisContext) -> Result<Vec<Finding>> {
+                // Synchronous busy work with no await point, like a regex or
+                // string pass over hostile input.
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                Ok(vec![])
+            }
+        }
+        let d = tempfile::tempdir().unwrap();
+        write_pkg(d.path(), "");
+        let mut scanner = Scanner::with_defaults().unwrap();
+        scanner.analyzers.insert(0, Arc::new(Slow));
+        let t = std::time::Instant::now();
+        let r = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            scanner.scan_directory(d.path(), Registry::None),
+        )
+        .await;
+        assert!(r.is_err(), "the deadline must fire");
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            t.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn panic_in_parse_stage_is_critical_and_next_package_still_scans() {
+        let bad = tempfile::tempdir().unwrap();
+        let good = tempfile::tempdir().unwrap();
+        write_pkg(bad.path(), "");
+        write_pkg(good.path(), "");
+        let scanner = Scanner::with_defaults().unwrap();
+
+        TEST_PANIC_IN_PARSE.with(|c| c.set(true));
+        let r = scanner
+            .scan_directory(bad.path(), Registry::None)
+            .await
+            .expect("a panic must not escape or become an error");
+        TEST_PANIC_IN_PARSE.with(|c| c.set(false));
+        assert_eq!(r.findings.len(), 1, "{:?}", r.findings);
+        assert_eq!(r.findings[0].id, types::UNANALYZABLE_CODE);
+        assert_eq!(r.findings[0].severity, Severity::Critical);
+        assert!(r.findings[0].description.contains("not reviewed"));
+
+        // The next package in a loop scans normally.
+        let next = scanner
+            .scan_directory(good.path(), Registry::None)
+            .await
+            .unwrap();
+        assert!(!next.package_version.is_empty(), "parsed normally");
+        assert!(!next.findings.iter().any(|f| f.title.contains("crashed")));
     }
 
     #[tokio::test]

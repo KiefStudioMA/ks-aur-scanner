@@ -12,6 +12,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "CLI tool for AUR package security scanning - detect malicious PKGBUILDs before installation"
 readme = "../../README.md"
+# The integration tests read ../../tests/fixtures and install/, which are not
+# in the published package, so they are left out of it.
+exclude = ["tests/"]
 
 [[bin]]
 name = "aur-scan"
@@ -22,7 +25,6 @@ aur-scanner-core.workspace = true
 tokio.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

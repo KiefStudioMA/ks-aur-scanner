@@ -1,0 +1,9 @@
+pkgname=demo
+pkgver=1
+pkgrel=1
+arch=('any')
+license=('MIT')
+_n=demo
+true && _n=evilpkg
+install=$_n.scr
+package() { :; }

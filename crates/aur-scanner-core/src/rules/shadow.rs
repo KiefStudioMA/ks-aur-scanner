@@ -1,7 +1,7 @@
 //! Redefined message printers.
 //!
 //! `echo`, `printf`, `msg`, `note`, `warning` ... are treated as inert text by
-//! [`super::informational_lines`]: a line that only prints cannot run anything.
+//! the rule engine's inert-line classification: a line that only prints cannot run anything.
 //! That only holds while those names mean what they say. Shell functions and
 //! aliases shadow builtins and commands, so a package that defines
 //! `warning() { "$@" | sh; }` turns every `warning ...` line into code.
@@ -44,6 +44,35 @@ lazy_static! {
         r#"(?m)(?:^|[;&|(){{}}\s])alias\s+(?:-\w+\s+)*({CHECKED})=(?:'([^']*)'|"([^"]*)"|(\S*))"#
     ))
     .unwrap();
+    /// `enable -n echo` / `enable -n` (turns a builtin off so a same-named
+    /// script or function wins), and `enable` aimed at a printer name.
+    static ref ENABLE_OVERRIDE: Regex = Regex::new(&format!(
+        r"(?m)(?:^|[;&|(){{}}\s])enable\s+(?:-\w*[nf]\w*\b|(?:-\w+\s+)*(?:{CHECKED})\b)"
+    ))
+    .unwrap();
+    /// Functions or aliases that redefine the commands used to reach a builtin
+    /// (`builtin() {..}`, `alias command=..`), which can re-route any printer.
+    static ref LOOKUP_OVERRIDE: Regex = Regex::new(
+        r"(?m)(?:^|[;&|(){}\s])(?:(?:function\s+)?(?:builtin|command|enable|unalias|unset|hash|type)\s*\(\s*\)|function\s+(?:builtin|command|enable|unalias|unset|hash|type)\b|alias\s+(?:-\w+\s+)*(?:builtin|command|enable|unalias|unset|hash|type)=)"
+    )
+    .unwrap();
+    /// Any definition of a printer name in any syntax: `name()`, `name ()`,
+    /// `name` then newlines/comments then `(`, or `function name`. Deliberately
+    /// broad: a false trigger only turns the message exemption off.
+    static ref ANY_PRINTER_DEF: Regex = Regex::new(
+        r"(?m)(?:^|[;&|(){}$\s])(?:function\s+(?:echo|printf|msg2?|plain|warning|error|note)\b|(?:echo|printf|msg2?|plain|warning|error|note)(?:[ \t]|#[^\n]*|\n)*\()"
+    )
+    .unwrap();
+    /// Command-position `alias` / `enable`, DEBUG/RETURN/ERR traps, `extdebug`,
+    /// `functrace`, `set -T`, `BASH_ENV`: each can re-route a print.
+    static ref MESSAGE_BLOCKERS: Regex = Regex::new(
+        r"\b(?:alias|unalias|shopt|expand_aliases|BASH_ALIASES|BASH_CMDS|command_not_found_handle|trap|eval|BASH_ENV|ENV|PROMPT_COMMAND|extdebug|functrace)\b|\b(?:declare|typeset)\s+-[A-Za-z]*f|\bset\s+-[A-Za-z]*T"
+    )
+    .unwrap();
+    static ref SOURCE_WORD: Regex = Regex::new(r"\bsource\b").unwrap();
+    /// `. file` (a lone dot followed by blanks and a word).
+    static ref DOT_WORD: Regex = Regex::new(r"(?:^|[\s;&|({])\.[ \t]+\S").unwrap();
+    static ref ENABLE_WORD: Regex = Regex::new(r"\benable\b").unwrap();
     static ref POSITIONAL: Regex =
         Regex::new(r#"\$(?:[@*1-9]|\{[@*1-9])"#).unwrap();
     static ref SHELL_DASH_C: Regex = Regex::new(&format!(
@@ -79,7 +108,22 @@ pub struct ShadowDef {
 pub struct ShadowSet {
     /// All definitions, in discovery order.
     pub defs: Vec<ShadowDef>,
+    /// Some file turns a builtin off (`enable -n`) or redefines `builtin`/
+    /// `command`/...: any printer name may now run code.
+    pub overrides: bool,
+    /// Something in the package can re-route a printer (any printer definition,
+    /// alias, `enable`, DEBUG/RETURN/ERR trap, `extdebug`, `functrace`,
+    /// `set -T`, `BASH_ENV`): the one-line message exemption is off.
+    pub blocked: bool,
+    /// [`ShadowSet::names`], computed once.
+    names_cache: std::sync::OnceLock<HashSet<String>>,
+    /// Whether any definition is not provably a plain print, computed once.
+    untrusted_cache: std::sync::OnceLock<bool>,
 }
+
+/// Sentinel member of [`ShadowSet::names`] meaning "the message exemption is
+/// off for this package".
+pub(crate) const EXEMPTION_BLOCKED: &str = "\u{0}message-exemption-blocked";
 
 fn closing(open: char) -> char {
     if open == '(' {
@@ -92,17 +136,21 @@ fn closing(open: char) -> char {
 /// The text between the group opened at `open_idx` and its matching closer.
 /// Quote- and escape-aware; an unterminated group runs to the end of the text.
 fn group_body(text: &str, open_idx: usize) -> String {
-    let chars: Vec<(usize, char)> = text[open_idx..].char_indices().collect();
-    let open = chars[0].1;
+    /// A definition body longer than this is cut (and then never provably a
+    /// plain print), so scanning stays linear on hostile input.
+    const MAX_BODY: usize = 64 * 1024;
+    let mut it = text[open_idx..].char_indices();
+    let open = it.next().map_or('{', |(_, c)| c);
     let close = closing(open);
-    let (mut depth, mut sq, mut dq) = (0i32, false, false);
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i].1;
+    let (mut depth, mut sq, mut dq) = (1i32, false, false);
+    while let Some((i, c)) = it.next() {
+        if i > MAX_BODY {
+            return text[open_idx + 1..open_idx + i].to_string();
+        }
         if sq {
             sq = c != '\'';
         } else if c == '\\' {
-            i += 1;
+            it.next();
         } else if dq {
             dq = c != '"';
         } else if c == '\'' {
@@ -114,16 +162,53 @@ fn group_body(text: &str, open_idx: usize) -> String {
         } else if c == close {
             depth -= 1;
             if depth == 0 {
-                return text[open_idx + 1..open_idx + chars[i].0].to_string();
+                return text[open_idx + 1..open_idx + i].to_string();
             }
         }
-        i += 1;
     }
     text[open_idx + 1..].to_string()
 }
 
-fn line_of(text: &str, idx: usize) -> usize {
-    text[..idx].bytes().filter(|&b| b == b'\n').count() + 1
+/// Words that may precede a command without being the command.
+const COMMAND_PREFIX: &[&str] = &[
+    "then", "do", "else", "elif", "if", "while", "until", "!", "builtin", "command", "exec", "env",
+    "time", "nohup", "sudo",
+];
+
+/// Whether the match starting at `start` is at command position: after nothing,
+/// a separator, or only keywords/wrappers such as `then`, `builtin`, `command`.
+fn at_command_position(flat: &str, start: usize) -> bool {
+    let seg = flat[..start]
+        .rsplit([';', '&', '|', '(', ')', '{', '}', '`', '\n'])
+        .next()
+        .unwrap_or("");
+    seg.split_whitespace().all(|w| COMMAND_PREFIX.contains(&w))
+}
+
+/// Any `enable` that can be the builtin. `systemctl enable` and prose like "To
+/// enable the service" are not.
+fn enable_command_word(flat: &str) -> bool {
+    ENABLE_WORD
+        .find_iter(flat)
+        .any(|m| at_command_position(flat, m.start()))
+}
+
+/// `source <word>` or `. <word>` as a command. Never the PKGBUILD `source=`,
+/// `source+=` or `source_<arch>=` arrays (the `\b` also keeps `source_x86_64`
+/// out), and never prose in the middle of a message.
+fn source_command_word(flat: &str) -> bool {
+    SOURCE_WORD.find_iter(flat).any(|m| {
+        let t = flat[m.end()..].trim_start_matches([' ', '\t']);
+        !(t.starts_with('=') || t.starts_with("+=")) && at_command_position(flat, m.start())
+    }) || DOT_WORD.find_iter(flat).any(|m| {
+        let dot = m.start() + m.as_str().find('.').unwrap_or(0);
+        at_command_position(flat, dot)
+    })
+}
+
+/// 1-based line of byte `idx`, given the sorted offsets of every `\n`.
+fn line_of(newlines: &[usize], idx: usize) -> usize {
+    newlines.partition_point(|&n| n < idx) + 1
 }
 
 impl ShadowSet {
@@ -142,10 +227,36 @@ impl ShadowSet {
     }
 
     fn add_text(&mut self, path: &Path, text: &str) {
+        // Search a copy with quotes, backslashes and line continuations removed,
+        // so `ms\<nl>g() {..}`, `m""sg() {..}` and `'msg'()` read as `msg()`.
+        let flat: String = text
+            .replace("\\\n", "")
+            .chars()
+            .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+            .collect();
+        if ANY_PRINTER_DEF.is_match(&flat)
+            || MESSAGE_BLOCKERS.is_match(&flat)
+            || source_command_word(&flat)
+            || enable_command_word(&flat)
+        {
+            self.blocked = true;
+        }
+        if text.contains("enable") || text.contains("builtin") || text.contains("command") {
+            if ENABLE_OVERRIDE.is_match(text) || LOOKUP_OVERRIDE.is_match(text) {
+                self.overrides = true;
+            }
+        } else if text.contains("alias") && LOOKUP_OVERRIDE.is_match(text) {
+            self.overrides = true;
+        }
         // Cheap precheck: no printer name, no definition.
         if !PRINTERS.iter().chain(&["cat"]).any(|n| text.contains(n)) {
             return;
         }
+        let newlines: Vec<usize> = text
+            .bytes()
+            .enumerate()
+            .filter_map(|(i, b)| (b == b'\n').then_some(i))
+            .collect();
         for caps in FN_PARENS.captures_iter(text) {
             let (name, open) = (caps.get(1).unwrap(), caps.get(2).unwrap());
             self.defs.push(ShadowDef {
@@ -153,7 +264,7 @@ impl ShadowSet {
                 body: group_body(text, open.start()),
                 alias: false,
                 file: path.to_path_buf(),
-                line: line_of(text, name.start()),
+                line: line_of(&newlines, name.start()),
             });
         }
         for caps in FN_KEYWORD.captures_iter(text) {
@@ -165,7 +276,7 @@ impl ShadowSet {
                     body: group_body(text, open),
                     alias: false,
                     file: path.to_path_buf(),
-                    line: line_of(text, name.start()),
+                    line: line_of(&newlines, name.start()),
                 });
             }
         }
@@ -182,7 +293,7 @@ impl ShadowSet {
                 body: val.to_string(),
                 alias: true,
                 file: path.to_path_buf(),
-                line: line_of(text, name.start()),
+                line: line_of(&newlines, name.start()),
             });
         }
     }
@@ -193,12 +304,40 @@ impl ShadowSet {
     /// keeps the name inert, because nothing it can do differs from the printer
     /// it replaces. Anything else, including a body this module cannot show to
     /// be a plain print, un-trusts the name for the whole package.
+    ///
+    /// One untrusted redefinition (or a builtin override such as `enable -n`)
+    /// un-trusts EVERY printer name in the package, not just its own: a harmless
+    /// looking `msg() { echo "$1"; }` is code the moment `echo` can run its
+    /// arguments, and `msg "curl .."` / `msg "sh .."` then execute with no
+    /// operator on either line. The whole package falls back to full scanning.
     pub fn names(&self) -> HashSet<String> {
-        self.defs
-            .iter()
-            .filter(|d| !is_benign(d))
-            .map(|d| d.name.clone())
-            .collect()
+        self.names_ref().clone()
+    }
+
+    /// [`Self::names`] computed once per set (call after every file is added).
+    pub fn names_ref(&self) -> &HashSet<String> {
+        self.names_cache.get_or_init(|| self.compute_names())
+    }
+
+    fn compute_names(&self) -> HashSet<String> {
+        // Identical bodies (a flood of `msg() { echo "$1"; }`) are judged once.
+        let mut verdict: std::collections::HashMap<(&str, bool), bool> = Default::default();
+        let mut names: HashSet<String> = HashSet::new();
+        for d in &self.defs {
+            let benign = *verdict
+                .entry((d.body.as_str(), d.alias))
+                .or_insert_with(|| is_benign(d));
+            if !benign {
+                names.insert(d.name.clone());
+            }
+        }
+        if self.overrides || !names.is_empty() {
+            names.extend(PRINTERS.iter().chain(&["cat"]).map(|n| n.to_string()));
+        }
+        if self.blocked || self.overrides || !self.defs.is_empty() || !names.is_empty() {
+            names.insert(EXEMPTION_BLOCKED.to_string());
+        }
+        names
     }
 
     /// Definitions whose body runs its arguments.
@@ -216,7 +355,15 @@ impl ShadowSet {
     /// that really runs. Line numbers are preserved. `None` when no call was
     /// inlined.
     pub fn inline_calls(&self, text: &str) -> Option<String> {
-        let names = self.names();
+        // Only a definition that is not a plain print makes a call worth inlining
+        // (a benign-only package keeps the cheap early return).
+        if !*self
+            .untrusted_cache
+            .get_or_init(|| self.defs.iter().any(|d| !is_benign(d)))
+        {
+            return None;
+        }
+        let names = self.names_ref();
         if names.is_empty() {
             return None;
         }
@@ -224,7 +371,7 @@ impl ShadowSet {
         let mut out = vec![String::new(); total.max(1)];
         let mut changed = false;
         for (start, line) in logical_lines(text) {
-            let rebuilt = self.inline_line(&line, &names);
+            let rebuilt = self.inline_line(&line, names);
             if rebuilt.is_some() {
                 changed = true;
             }
@@ -480,7 +627,11 @@ mod tests {
         let t =
             "msg() { echo \"==> $1\" >&2; }\nerror() {\n  printf '%s\\n' \"$@\"\n  return 1\n}\n";
         let s = ShadowSet::from_text(t);
-        assert!(s.names().is_empty(), "{:?}", s.names());
+        // No printer name is untrusted; only the message exemption is off (any
+        // printer definition turns it off).
+        let names = s.names();
+        assert!(names.iter().all(|n| n == EXEMPTION_BLOCKED), "{names:?}");
+        assert!(names.contains(EXEMPTION_BLOCKED));
         assert_eq!(s.executing().count(), 0);
     }
 

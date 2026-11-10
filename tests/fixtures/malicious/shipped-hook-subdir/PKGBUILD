@@ -1,0 +1,14 @@
+# Maintainer: hijacked <attacker@evil.example>
+pkgname=hooksubdir
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="ships hooks from a subdirectory of the package directory"
+arch=('any')
+url="https://example.com"
+license=('custom')
+source=()
+
+package() {
+    install -dm755 "$pkgdir/usr/share/libalpm"
+    cp -r "$startdir/hooks" "$pkgdir/usr/share/libalpm/"
+}

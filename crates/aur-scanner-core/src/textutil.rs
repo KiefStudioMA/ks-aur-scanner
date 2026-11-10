@@ -3,39 +3,642 @@
 //! Detectors match line by line, but bash treats a backslash-newline as a line
 //! *continuation*: the two physical lines are one logical command. A naive
 //! per-physical-line matcher is therefore trivially evaded --
-//! `curl evil \`<newline>`| bash` puts `curl ...` and `| bash` on different
+//! `curl evil \` + newline + `| bash` puts `curl ...` and `| bash` on different
 //! physical lines so a `curl .*| sh` rule never fires. [`logical_lines`] splices
 //! continuations back together so detectors see the command the shell will
 //! actually run, while still reporting the originating physical line number.
+
+/// One open construct on the lexer's stack.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Frame {
+    /// `'...'`
+    Single,
+    /// `$'...'` (backslash escapes the next byte).
+    Ansi,
+    /// `"..."`
+    Double,
+    /// `$( .. )`, `<( .. )`, `>( .. )`: code context; payload is plain-paren depth.
+    CmdSub(i32),
+    /// `` `..` ``: code context.
+    Backtick,
+    /// `${ .. }`: nothing inside is a comment or a heredoc opener.
+    Brace,
+    /// `$(( .. ))` / `(( .. ))`: payload is paren depth.
+    Arith(i32),
+    /// `$[ .. ]`
+    ArithBracket,
+}
+
+/// Lexer state carried across physical lines: the stack of open quotes and
+/// expansions.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LexState {
+    stack: Vec<Frame>,
+    /// Plain `(` minus `)` outside every quote and expansion (array bodies and
+    /// subshell groups), carried across lines. Never below zero.
+    pub(crate) depth: i32,
+}
+
+impl LexState {
+    /// Whether a quote or expansion is open (the next line starts inside it).
+    pub(crate) fn is_open(&self) -> bool {
+        !self.stack.is_empty()
+    }
+}
+
+const MAX_LEX_DEPTH: usize = 48;
+
+/// One heredoc operator found on a line (`<<EOF`, `<<-'EOF'`, `<<"E"OF`).
+#[derive(Clone, Debug)]
+pub(crate) struct HeredocOpener {
+    /// The full delimiter word after shell quote removal.
+    pub delim: String,
+    /// Any quote or backslash appeared in the delimiter word: the body is not
+    /// expanded by the shell.
+    pub quoted: bool,
+    /// `<<-`: leading tabs are stripped from the terminator line.
+    pub strip_tabs: bool,
+    /// Byte offset of the `<<`.
+    pub start: usize,
+    /// Byte offset just past the delimiter word.
+    pub end: usize,
+}
+
+/// What [`scan_line`] learned about one physical line.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LineScan {
+    /// The line ends in an unescaped backslash outside single quotes and
+    /// comments: bash joins the next physical line onto it.
+    pub continues: bool,
+    /// The line ends in an unquoted `|`, `|&`, `&&` or `||`: bash keeps reading
+    /// the command on the next line.
+    pub ends_op: bool,
+    /// Heredoc operators on this line, in order.
+    pub openers: Vec<HeredocOpener>,
+    /// Byte offsets of the `&` of every unquoted `|&` (shorthand for `2>&1 |`).
+    pub pipe_amps: Vec<usize>,
+    /// The lexer met something it does not model faithfully (a heredoc inside
+    /// backticks, `case` inside `$( )`, a `$'..'` ending in a backslash, a stack
+    /// that is too deep). Nothing may be treated as inert from this line on.
+    pub uncertain: bool,
+    /// Byte offset of the `)` that brought [`LexState::depth`] back to zero on
+    /// this line, if it did.
+    pub close_at: Option<usize>,
+    /// A quote or expansion was already open when the line began.
+    pub open_at_start: bool,
+    /// Paren depth ([`LexState::depth`]) when the line began.
+    pub depth_at_start: i32,
+    /// A quote or expansion was still open when the line ended (set by
+    /// [`classify_lines`]).
+    pub open_at_end: bool,
+}
+
+fn is_word_break(c: u8) -> bool {
+    c.is_ascii_whitespace() || matches!(c, b';' | b'|' | b'&' | b'(' | b')' | b'<' | b'>')
+}
+
+/// Whether a `#` at `i` starts a comment: it must begin a word, i.e. follow
+/// whitespace or a shell metacharacter (`;` `&` `|` `(` `)` `<` `>`).
+fn comment_starts_at(b: &[u8], i: usize) -> bool {
+    i == 0 || is_word_break(b[i - 1])
+}
+
+/// Parse the heredoc delimiter word starting at `j` (after `<<` and optional
+/// `-`/blanks). Returns `(word, quoted, end)`.
+fn read_heredoc_word(b: &[u8], mut j: usize) -> (Vec<u8>, bool, usize) {
+    let n = b.len();
+    let mut word: Vec<u8> = Vec::new();
+    let mut quoted = false;
+    while j < n && !is_word_break(b[j]) {
+        match b[j] {
+            b'\\' => {
+                quoted = true;
+                if let Some(&nx) = b.get(j + 1) {
+                    word.push(nx);
+                }
+                j += 2;
+            }
+            b'\'' => {
+                quoted = true;
+                j += 1;
+                while j < n && b[j] != b'\'' {
+                    word.push(b[j]);
+                    j += 1;
+                }
+                j += 1;
+            }
+            b'"' => {
+                quoted = true;
+                j += 1;
+                while j < n && b[j] != b'"' {
+                    if b[j] == b'\\' && j + 1 < n {
+                        j += 1;
+                    }
+                    word.push(b[j]);
+                    j += 1;
+                }
+                j += 1;
+            }
+            b'$' if b.get(j + 1) == Some(&b'\'') => {
+                quoted = true;
+                j += 2;
+                while j < n && b[j] != b'\'' {
+                    if b[j] == b'\\' && j + 1 < n {
+                        j += 1;
+                    }
+                    word.push(b[j]);
+                    j += 1;
+                }
+                j += 1;
+            }
+            ch => {
+                word.push(ch);
+                j += 1;
+            }
+        }
+    }
+    (word, quoted, j.min(n))
+}
+
+/// Lex one physical line the way bash would, with a stack of open quotes and
+/// expansions carried in `st` across lines. Models single/double/ANSI-C quotes,
+/// `$( )`, `<( )`, backticks, `${ }`, `$(( ))`/`(( ))`/`$[ ]`, comments (a `#`
+/// only at the start of a word, never inside `${ }`), here-strings, heredoc
+/// operators and trailing continuations. Anything it cannot follow faithfully
+/// sets [`LineScan::uncertain`].
+pub(crate) fn scan_line(line: &str, st: &mut LexState) -> LineScan {
+    let b = line.as_bytes();
+    let n = b.len();
+    let mut out = LineScan {
+        open_at_start: st.is_open(),
+        depth_at_start: st.depth,
+        ..LineScan::default()
+    };
+    let mut i = 0usize;
+    macro_rules! push {
+        ($f:expr) => {{
+            if st.stack.len() >= MAX_LEX_DEPTH {
+                out.uncertain = true;
+            } else {
+                st.stack.push($f);
+            }
+        }};
+    }
+    while i < n {
+        let c = b[i];
+        let top = st.stack.last().cloned();
+        match top {
+            Some(Frame::Single) => {
+                if c == b'\'' {
+                    st.stack.pop();
+                }
+                i += 1;
+                continue;
+            }
+            Some(Frame::Ansi) => {
+                match c {
+                    b'\\' => {
+                        if i + 1 == n {
+                            out.uncertain = true;
+                        }
+                        i += 2;
+                    }
+                    b'\'' => {
+                        st.stack.pop();
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+                continue;
+            }
+            Some(Frame::Arith(d)) => {
+                match c {
+                    b'(' => {
+                        if let Some(Frame::Arith(x)) = st.stack.last_mut() {
+                            *x += 1;
+                        }
+                    }
+                    b')' => {
+                        if d <= 1 {
+                            st.stack.pop();
+                        } else if let Some(Frame::Arith(x)) = st.stack.last_mut() {
+                            *x -= 1;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+                continue;
+            }
+            Some(Frame::ArithBracket) => {
+                if c == b']' {
+                    st.stack.pop();
+                }
+                i += 1;
+                continue;
+            }
+            Some(Frame::Double) | Some(Frame::Brace) => {
+                let in_brace = top == Some(Frame::Brace);
+                match c {
+                    b'\\' => {
+                        if i + 1 == n {
+                            out.continues = true;
+                        }
+                        i += 2;
+                    }
+                    b'"' if !in_brace => {
+                        st.stack.pop();
+                        i += 1;
+                    }
+                    b'"' => {
+                        push!(Frame::Double);
+                        i += 1;
+                    }
+                    b'\'' if in_brace => {
+                        push!(Frame::Single);
+                        i += 1;
+                    }
+                    b'}' if in_brace => {
+                        st.stack.pop();
+                        i += 1;
+                    }
+                    b'`' => {
+                        push!(Frame::Backtick);
+                        i += 1;
+                    }
+                    b'$' => match b.get(i + 1) {
+                        Some(b'(') if b.get(i + 2) == Some(&b'(') => {
+                            push!(Frame::Arith(2));
+                            i += 3;
+                        }
+                        Some(b'(') => {
+                            push!(Frame::CmdSub(0));
+                            i += 2;
+                        }
+                        Some(b'{') => {
+                            push!(Frame::Brace);
+                            i += 2;
+                        }
+                        Some(b'[') => {
+                            push!(Frame::ArithBracket);
+                            i += 2;
+                        }
+                        Some(b'\'') if in_brace => {
+                            push!(Frame::Ansi);
+                            i += 2;
+                        }
+                        _ => i += 1,
+                    },
+                    _ => i += 1,
+                }
+                continue;
+            }
+            Some(Frame::Backtick) if c == b'`' => {
+                st.stack.pop();
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        // Code context: top level, `$( )` or backticks.
+        let in_cmdsub = matches!(top, Some(Frame::CmdSub(_)));
+        let in_backtick = top == Some(Frame::Backtick);
+        let prev_op = out.ends_op;
+        if !c.is_ascii_whitespace() {
+            out.ends_op = false;
+        }
+        match c {
+            b'\\' => {
+                if i + 1 == n {
+                    out.continues = true;
+                }
+                i += 2;
+            }
+            b'\'' => {
+                push!(Frame::Single);
+                i += 1;
+            }
+            b'"' => {
+                push!(Frame::Double);
+                i += 1;
+            }
+            b'`' => {
+                push!(Frame::Backtick);
+                i += 1;
+            }
+            b'$' => match b.get(i + 1) {
+                Some(b'\'') => {
+                    push!(Frame::Ansi);
+                    i += 2;
+                }
+                Some(b'(') if b.get(i + 2) == Some(&b'(') => {
+                    push!(Frame::Arith(2));
+                    i += 3;
+                }
+                Some(b'(') => {
+                    push!(Frame::CmdSub(0));
+                    i += 2;
+                }
+                Some(b'{') => {
+                    push!(Frame::Brace);
+                    i += 2;
+                }
+                Some(b'[') => {
+                    push!(Frame::ArithBracket);
+                    i += 2;
+                }
+                _ => i += 1,
+            },
+            b'<' | b'>' if b.get(i + 1) == Some(&b'(') => {
+                push!(Frame::CmdSub(0));
+                i += 2;
+            }
+            b'(' => {
+                if in_cmdsub {
+                    if let Some(Frame::CmdSub(d)) = st.stack.last_mut() {
+                        *d += 1;
+                    }
+                    i += 1;
+                } else if b.get(i + 1) == Some(&b'(')
+                    && (i == 0 || (is_word_break(b[i - 1]) && b[i - 1] != b'<' && b[i - 1] != b'>'))
+                {
+                    // `(( x << 2 ))` arithmetic command. (bash may re-parse
+                    // `((a); b)` as nested subshells; any opener skipped here is
+                    // simply never treated as inert.)
+                    push!(Frame::Arith(2));
+                    i += 2;
+                } else {
+                    if st.stack.is_empty() {
+                        st.depth += 1;
+                    }
+                    i += 1;
+                }
+            }
+            b')' => {
+                if in_cmdsub {
+                    if let Some(Frame::CmdSub(d)) = st.stack.last_mut() {
+                        if *d == 0 {
+                            st.stack.pop();
+                        } else {
+                            *d -= 1;
+                        }
+                    }
+                } else if st.stack.is_empty() && st.depth > 0 {
+                    st.depth -= 1;
+                    if st.depth == 0 && out.close_at.is_none() {
+                        out.close_at = Some(i);
+                    }
+                }
+                i += 1;
+            }
+            b'#' if comment_starts_at(b, i) => {
+                // Comment to end of line: no continuation, nothing else to see.
+                out.continues = false;
+                out.ends_op = prev_op;
+                return out;
+            }
+            b'|' => {
+                if b.get(i + 1) == Some(&b'&') && b.get(i + 2) != Some(&b'&') {
+                    out.pipe_amps.push(i + 1);
+                    i += 1;
+                }
+                out.ends_op = true;
+                i += 1;
+            }
+            b'&' if b.get(i + 1) == Some(&b'&') => {
+                out.ends_op = true;
+                i += 2;
+            }
+            b'<' if b.get(i + 1) == Some(&b'<') => {
+                if b.get(i + 2) == Some(&b'<') {
+                    i += 3; // here-string
+                    continue;
+                }
+                let start = i;
+                let mut j = i + 2;
+                let strip_tabs = b.get(j) == Some(&b'-');
+                if strip_tabs {
+                    j += 1;
+                }
+                while j < n && (b[j] == b' ' || b[j] == b'\t') {
+                    j += 1;
+                }
+                let (word, quoted, end) = read_heredoc_word(b, j);
+                if !word.is_empty() {
+                    if in_backtick {
+                        out.uncertain = true;
+                    }
+                    out.openers.push(HeredocOpener {
+                        delim: String::from_utf8_lossy(&word).into_owned(),
+                        quoted,
+                        strip_tabs,
+                        start,
+                        end,
+                    });
+                }
+                i = end.max(start + 2);
+            }
+            b'c' if st.stack.iter().any(|f| matches!(f, Frame::CmdSub(_)))
+                && comment_starts_at(b, i)
+                && b[i..].starts_with(b"case")
+                && b.get(i + 4).is_none_or(|&x| is_word_break(x)) =>
+            {
+                // The `)` of a case pattern would be miscounted as the end of
+                // the `$( )`.
+                out.uncertain = true;
+                i += 4;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// A heredoc found by [`classify_lines`].
+#[derive(Clone, Debug)]
+pub(crate) struct Heredoc {
+    /// Index of the line carrying the operator.
+    pub open_line: usize,
+    /// Index of the first body line.
+    pub body_start: usize,
+    /// Index of the terminator line (body is `body_start..end`).
+    pub end: usize,
+    /// Number of heredoc operators on the opening line.
+    pub openers_on_line: usize,
+    pub opener: HeredocOpener,
+}
+
+/// Per-line lexer facts for a list of lines.
+pub(crate) struct Classified {
+    /// `None` for heredoc body and terminator lines (not lexed as shell).
+    pub scans: Vec<Option<LineScan>>,
+    pub heredocs: Vec<Heredoc>,
+    /// First line the lexer was unsure about; nothing from here on may be
+    /// treated as inert.
+    pub uncertain_from: Option<usize>,
+}
+
+/// Split `content` into physical lines on `\n` only. Unlike `str::lines` this
+/// keeps a trailing `\r`, because bash does not accept `EOF\r` as a heredoc
+/// terminator.
+pub fn split_lines(content: &str) -> Vec<&str> {
+    let mut v: Vec<&str> = content.split('\n').collect();
+    if v.last() == Some(&"") {
+        v.pop();
+    }
+    v
+}
+
+fn is_terminator(line: &str, o: &HeredocOpener) -> bool {
+    let l = if o.strip_tabs {
+        line.trim_start_matches('\t')
+    } else {
+        line
+    };
+    l == o.delim
+}
+
+/// Lex `lines` (physical or already-spliced) and locate every heredoc. A heredoc
+/// whose terminator never arrives is NOT a region: bash would swallow the rest of
+/// the file, but the scanner fails toward scanning instead, so an unterminated
+/// opener can never hide later code. Terminators match byte-for-byte (a trailing
+/// `\r` is part of the line).
+pub(crate) fn classify_lines(lines: &[&str]) -> Classified {
+    let n = lines.len();
+    let mut scans: Vec<Option<LineScan>> = vec![None; n];
+    let mut heredocs = Vec::new();
+    let mut st = LexState::default();
+    let mut uncertain_from = None;
+    let mut pending: std::collections::VecDeque<(usize, usize, HeredocOpener)> = Default::default();
+    let mut last_continues = false;
+    let mut no_term_from: std::collections::HashMap<(String, bool), usize> = Default::default();
+    let mut i = 0usize;
+    while i < n {
+        if !last_continues {
+            if let Some((open_line, on_line, o)) = pending.front().cloned() {
+                // Negative cache: if no terminator exists from line `p` on, none
+                // exists from any later line either (keeps a flood of unterminated
+                // openers linear).
+                let key = (o.delim.clone(), o.strip_tabs);
+                let found = if no_term_from.get(&key).is_some_and(|&p| i >= p) {
+                    None
+                } else {
+                    let f = (i..n).find(|&j| is_terminator(lines[j], &o));
+                    if f.is_none() {
+                        no_term_from.insert(key, i);
+                    }
+                    f
+                };
+                match found {
+                    Some(j) => {
+                        heredocs.push(Heredoc {
+                            open_line,
+                            body_start: i,
+                            end: j,
+                            openers_on_line: on_line,
+                            opener: o,
+                        });
+                        pending.pop_front();
+                        i = j + 1;
+                        continue;
+                    }
+                    None => {
+                        pending.pop_front();
+                        continue;
+                    }
+                }
+            }
+        }
+        let mut s = scan_line(lines[i], &mut st);
+        s.open_at_end = st.is_open();
+        if s.uncertain && uncertain_from.is_none() {
+            uncertain_from = Some(i);
+        }
+        last_continues = s.continues;
+        let cnt = s.openers.len();
+        for o in &s.openers {
+            pending.push_back((i, cnt, o.clone()));
+        }
+        scans[i] = Some(s);
+        i += 1;
+    }
+    Classified {
+        scans,
+        heredocs,
+        uncertain_from,
+    }
+}
 
 /// Split shell `content` into logical lines, splicing backslash-newline
 /// continuations. Returns `(first_physical_line, logical_line)` pairs where
 /// `first_physical_line` is the 1-based number of the physical line the logical
 /// line started on (for accurate finding locations).
 ///
-/// A line ending in an *odd* number of backslashes is a continuation (an even
-/// count is escaped backslashes, not a continuation). Mirroring bash, the
-/// trailing backslash and the newline are removed and the next physical line is
-/// concatenated directly.
+/// Mirrors bash: a trailing backslash is a continuation only when it is
+/// unquoted-or-double-quoted and outside a comment and a heredoc body (a `\` at
+/// the end of `# note \` or of a body line is literal text, so the next line is
+/// NOT joined). The backslash and newline are removed and the next physical line
+/// concatenated directly. A line ending in an unquoted `|`, `|&`, `&&` or `||`
+/// also continues onto the next line (bash keeps reading the pipeline), joined
+/// with a space; blank and comment-only lines in between are absorbed. `|&` is
+/// rewritten to `|`. Line numbers stay anchored to the first physical line.
 pub fn logical_lines(content: &str) -> Vec<(usize, String)> {
+    let phys: Vec<&str> = split_lines(content);
+    let cls = classify_lines(&phys);
     let mut out: Vec<(usize, String)> = Vec::new();
     let mut cur = String::new();
     let mut start_line = 0usize;
+    let mut open = false;
+    let mut op_join = false;
 
-    for (i, phys) in content.lines().enumerate() {
-        if cur.is_empty() {
-            start_line = i + 1;
+    for (i, line) in phys.iter().enumerate() {
+        let Some(scan) = &cls.scans[i] else {
+            // Heredoc body / terminator: stands alone, never spliced.
+            if open {
+                out.push((start_line, std::mem::take(&mut cur)));
+                open = false;
+                op_join = false;
+            }
+            out.push((i + 1, (*line).to_string()));
+            continue;
+        };
+        if op_join {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('#') {
+                continue; // blank / comment between `|` and the next command
+            }
         }
-        let trailing_backslashes = phys.chars().rev().take_while(|&c| c == '\\').count();
-        if trailing_backslashes % 2 == 1 {
+        if !open {
+            start_line = i + 1;
+            open = true;
+        }
+        op_join = false;
+        // Drop the `&` of each `|&` (stderr merge) so pipe sinks see a plain `|`.
+        let mut text = std::borrow::Cow::Borrowed(*line);
+        if !scan.pipe_amps.is_empty() {
+            let mut s = String::with_capacity(line.len());
+            let mut last = 0;
+            for &p in &scan.pipe_amps {
+                s.push_str(&line[last..p]);
+                last = p + 1;
+            }
+            s.push_str(&line[last..]);
+            text = std::borrow::Cow::Owned(s);
+        }
+        if scan.continues {
             // Continuation: drop the final backslash and keep accumulating.
-            cur.push_str(&phys[..phys.len() - 1]);
+            cur.push_str(&text[..text.len() - 1]);
+        } else if scan.ends_op && scan.openers.is_empty() && i + 1 < phys.len() {
+            cur.push_str(&text);
+            cur.push(' ');
+            op_join = true;
         } else {
-            cur.push_str(phys);
+            cur.push_str(&text);
             out.push((start_line, std::mem::take(&mut cur)));
+            open = false;
         }
     }
-    if !cur.is_empty() {
+    if open {
         out.push((start_line, cur));
     }
     out
@@ -185,7 +788,7 @@ pub fn split_words(stmt: &str) -> Vec<String> {
 /// A `#` only begins a comment when it is unquoted and preceded by whitespace
 /// (or the start of a line) -- the same rule the shell uses -- so it does NOT
 /// mistake `${var#word}` parameter expansion or `$#` for a comment. Comment
-/// state ends at a newline (and is reset at the start of each [`feed`] call,
+/// state ends at a newline (and is reset at the start of each [`BraceScanner::feed`] call,
 /// since callers feed one line at a time). Quote/escape state persists across
 /// calls so multi-line strings are handled.
 pub struct BraceScanner {
@@ -217,7 +820,7 @@ impl Default for BraceScanner {
 }
 
 impl BraceScanner {
-    /// Feed a single character, updating quote/comment state and brace [`depth`].
+    /// Feed a single character, updating quote/comment state and brace depth.
     pub fn feed_char(&mut self, c: char) {
         if c == '\n' {
             self.in_comment = false;
@@ -338,7 +941,16 @@ pub fn normalize_shell_quoting(line: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        if c == '$' && i + 1 < chars.len() && chars[i + 1] == '\'' {
+        if c == '$' && chars.get(i + 1) == Some(&'(') && chars.get(i + 2) == Some(&')') {
+            // `$()` expands to nothing: `n$()pm` is `npm`.
+            i += 3;
+        } else if c == '`' && chars.get(i + 1) == Some(&'`') {
+            // An empty backtick pair expands to nothing as well.
+            i += 2;
+        } else if c == '$' && chars.get(i + 1) == Some(&'"') {
+            // Locale quoting `$"..."` behaves as plain `"..."`; drop the `$`.
+            i += 1;
+        } else if c == '$' && i + 1 < chars.len() && chars[i + 1] == '\'' {
             // ANSI-C quoting: decode until the closing single quote.
             i += 2;
             while i < chars.len() && chars[i] != '\'' {
@@ -362,7 +974,14 @@ pub fn normalize_shell_quoting(line: &str) -> String {
         } else if c == '"' {
             i += 1;
             while i < chars.len() && chars[i] != '"' {
-                if chars[i] == '\\'
+                if chars[i] == '$'
+                    && chars.get(i + 1) == Some(&'(')
+                    && chars.get(i + 2) == Some(&')')
+                {
+                    i += 3;
+                } else if chars[i] == '`' && chars.get(i + 1) == Some(&'`') {
+                    i += 2;
+                } else if chars[i] == '\\'
                     && i + 1 < chars.len()
                     && matches!(chars[i + 1], '$' | '`' | '"' | '\\')
                 {
@@ -401,7 +1020,7 @@ pub fn looks_obfuscated(line: &str) -> bool {
 /// `looks_obfuscated` gate only recognized single-character quote-splitting
 /// (`"b"'u''n'`) and ANSI-C escapes, so a 2-character split (`"cu""rl"`) or a
 /// backslash-escaped word (`c\url`) slipped past de-obfuscation entirely (the
-/// marquee feature missed them — defect #6). Instead we normalize every line and
+/// marquee feature missed them). Instead we normalize every line and
 /// emit the result only when it differs from the raw line, so *any* quoting /
 /// escaping that the shell would collapse is decoded for matching. Normalization
 /// is faithful (it only removes quoting/escaping the shell removes; word
@@ -469,7 +1088,7 @@ pub const SHELLS: &str = r"(?:elvish|xonsh|ksh93|pdksh|loksh|rbash|bash|dash|mks
 ///
 /// The R-language names `Rscript` and the single-letter `R` are wrapped in
 /// `(?-i:…)` so they match their CANONICAL upper-case spelling even when a
-/// consumer compiles the whole pattern case-insensitively (the audit-HI-6
+/// consumer compiles the whole pattern case-insensitively (as the
 /// analyzer sinks now do). Without this, a case-insensitive `R` would match a
 /// lower-case `r` — an extremely common token — and trip a `fetch | r` FP storm.
 /// Every other member is a normal command name where case-folding is wanted
@@ -499,6 +1118,16 @@ pub const SHELL_PATH: &str = r"(?:/\S+/)?";
 /// behavior is unchanged. Linear-time (the `regex` crate has no backtracking) so
 /// the nested `*` is ReDoS-free.
 pub const SHELL_LAUNCHER: &str = r"(?:(?:/\S+/)?(?:busybox|toybox|env|command|exec|setsid|stdbuf|nice)\s+(?:-\S+\s+|\w+=\S*\s+)*)*";
+
+/// Extra stdin-to-code sinks reachable right after a `|`, beyond a bare shell:
+/// `. /dev/stdin` / `source /dev/stdin` (also `/dev/fd/0`, `/proc/self/fd/0`),
+/// `xargs ... bash -c`, and `tee >(bash)` / `tee >(sh)`. Non-capturing; embed as
+/// `\|\s*(?:{shell sink}|{pipe_sink_extra()})`.
+pub fn pipe_sink_extra() -> String {
+    format!(
+        r"(?:(?:\.|source)\s+(?:/dev/stdin|/dev/fd/0|/proc/self/fd/0)(?:\s|;|&|\)|$)|xargs\b[^|;&\n]*?\b{SHELLS}\b|tee\b[^|\n]*?>\(\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b)"
+    )
+}
 
 /// Anchor a command NAME to a position where a command can actually start:
 /// the beginning of a logical line, after a shell separator (`;`, `&&`, `||`,
@@ -659,7 +1288,7 @@ mod tests {
     fn shell_sink_handles_launcher_and_path() {
         // The composed sink form `{LAUNCHER}{PATH}\b{SHELLS}\b` must catch a shell
         // reached via an absolute path and/or one or more launcher words, while
-        // staying clean on non-shell sinks (task 4050 exhaustive scope).
+        // staying clean on non-shell sinks.
         let sink = Regex::new(&format!(r"\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b")).unwrap();
         for ok in [
             "x | sh",
@@ -804,7 +1433,9 @@ pub fn sanitize_for_terminal(s: &str) -> String {
 
 #[cfg(test)]
 mod sanitize_tests {
-    use super::sanitize_for_terminal;
+    use super::{
+        classify_lines, logical_lines, sanitize_for_terminal, scan_line, split_lines, LexState,
+    };
 
     #[test]
     fn strips_escape_sequences_from_untrusted_text() {
@@ -842,5 +1473,143 @@ mod sanitize_tests {
     fn neutralises_c1_controls() {
         let safe = sanitize_for_terminal("before\u{9b}31mafter");
         assert!(!safe.contains('\u{9b}'));
+    }
+
+    #[test]
+    fn comment_trailing_backslash_does_not_join_next_line() {
+        let ll = logical_lines("# note \\\ncurl x | bash\n");
+        assert_eq!(ll.len(), 2, "{ll:?}");
+        assert_eq!(ll[1], (2, "curl x | bash".to_string()));
+        let ll = logical_lines("echo hi # trailing \\\ncurl x | bash\n");
+        assert_eq!(ll.len(), 2, "{ll:?}");
+        // `#` inside a word or expansion is not a comment.
+        let ll = logical_lines("echo ${x#a} \\\nfoo\n");
+        assert_eq!(ll, vec![(1, "echo ${x#a} foo".to_string())]);
+    }
+
+    #[test]
+    fn heredoc_body_backslash_does_not_join() {
+        let ll = logical_lines("cat <<'EOF'\nsee README \\\nEOF\ncurl x | bash\n");
+        assert_eq!(ll.len(), 4, "{ll:?}");
+        assert_eq!(ll[3], (4, "curl x | bash".to_string()));
+    }
+
+    #[test]
+    fn trailing_pipe_and_logic_operators_join_with_alignment() {
+        let ll = logical_lines("curl x |\n  # c\n\n  bash\nnext\n");
+        assert_eq!(ll[0], (1, "curl x |   bash".to_string()));
+        assert_eq!(ll[1], (5, "next".to_string()));
+        let ll = logical_lines("a &&\nb ||\nc\nd\n");
+        assert_eq!(ll.len(), 2);
+        assert_eq!(ll[1].0, 4);
+        // a quoted or escaped `|` does not continue
+        assert_eq!(logical_lines("echo '|'\nx\n").len(), 2);
+        assert_eq!(logical_lines("echo \\|\nx\n").len(), 2);
+    }
+
+    #[test]
+    fn pipe_amp_is_normalized() {
+        let ll = logical_lines("curl x |& bash\necho '|&' y\n");
+        assert_eq!(ll[0].1, "curl x | bash");
+        assert_eq!(ll[1].1, "echo '|&' y");
+    }
+
+    #[test]
+    fn heredoc_openers_are_quote_comment_arith_aware() {
+        let mut q = LexState::default();
+        assert!(scan_line("echo '<<EOF'", &mut q).openers.is_empty());
+        assert!(scan_line("echo \"<<EOF\"", &mut q).openers.is_empty());
+        assert!(scan_line("true # cat <<EOF", &mut q).openers.is_empty());
+        assert!(scan_line("x=$((1<<n))", &mut q).openers.is_empty());
+        assert!(scan_line("(( x = 1 << y ))", &mut q).openers.is_empty());
+        assert!(scan_line("cat <<< word", &mut q).openers.is_empty());
+        let o = &scan_line("cat <<-\"E\"OF", &mut q).openers[0];
+        assert_eq!(
+            (o.delim.as_str(), o.quoted, o.strip_tabs),
+            ("EOF", true, true)
+        );
+        let o = &scan_line("cat <<END-OF-NOTES", &mut q).openers[0];
+        assert_eq!((o.delim.as_str(), o.quoted), ("END-OF-NOTES", false));
+        let o = &scan_line("cat <<E\\OF", &mut q).openers[0];
+        assert_eq!((o.delim.as_str(), o.quoted), ("EOF", true));
+    }
+
+    #[test]
+    fn unterminated_heredoc_is_not_a_region() {
+        let c = classify_lines(&["cat <<EOF", "text", "more"]);
+        assert!(c.heredocs.is_empty());
+        let c = classify_lines(&["cat <<-EOF", "\ttext", "\tEOF", "x"]);
+        assert_eq!(c.heredocs.len(), 1);
+        assert_eq!((c.heredocs[0].body_start, c.heredocs[0].end), (1, 2));
+        // `<<` without `-` needs the terminator at column 0.
+        let c = classify_lines(&["cat <<EOF", "text", "\tEOF"]);
+        assert!(c.heredocs.is_empty());
+    }
+
+    fn openers(src: &str) -> usize {
+        let mut q = LexState::default();
+        scan_line(src, &mut q).openers.len()
+    }
+
+    #[test]
+    fn nested_expansions_do_not_desync_quotes() {
+        // inner `"` inside `$( )` inside `".."` must not close the outer quote
+        let c = classify_lines(&[
+            "_x=\"$(cat <<END",
+            "\"; cat <<true",
+            "END",
+            ")\"",
+            "code",
+            "true",
+        ]);
+        assert_eq!(c.heredocs.len(), 1);
+        assert_eq!((c.heredocs[0].body_start, c.heredocs[0].end), (1, 2));
+        // `#` inside `${ }` is not a comment, and does not hide a quote
+        let mut q = LexState::default();
+        let s = scan_line("wget x ${p/ #/} \\", &mut q);
+        assert!(s.continues);
+        let mut q = LexState::default();
+        scan_line("echo ${p/ #/}'", &mut q);
+        assert!(q.is_open());
+    }
+
+    #[test]
+    fn hash_after_metacharacters_is_a_comment() {
+        for l in [
+            "(:)# cat <<true",
+            "a;# cat <<true",
+            "a|# cat <<true",
+            "a >#c <<true",
+        ] {
+            assert_eq!(openers(l), 0, "{l}");
+        }
+        assert_eq!(openers("echo a#b <<true"), 1);
+    }
+
+    #[test]
+    fn numeric_delimiters_are_heredocs_outside_arithmetic() {
+        assert_eq!(openers("cat <<1"), 1);
+        assert_eq!(openers("x=$((1<<3))"), 0);
+        assert_eq!(openers("x=$[1<<3]"), 0);
+    }
+
+    #[test]
+    fn carriage_return_terminator_does_not_close() {
+        let lines = split_lines("cat <<EOF\r\nbody\r\nEOF\r\ncode\r\n");
+        assert_eq!(lines[2], "EOF\r");
+        assert!(classify_lines(&lines).heredocs.is_empty());
+        let lines = split_lines("cat <<EOF\nbody\nEOF\ncode\n");
+        assert_eq!(classify_lines(&lines).heredocs.len(), 1);
+    }
+
+    #[test]
+    fn unmodelled_constructs_mark_uncertain() {
+        let c = classify_lines(&["x=`cat <<EOF", "EOF", "`"]);
+        assert_eq!(c.uncertain_from, Some(0));
+        let c = classify_lines(&["x=$(case a in a) echo;; esac)"]);
+        assert_eq!(c.uncertain_from, Some(0));
+        let c = classify_lines(&["echo $'a\\", "b'"]);
+        assert_eq!(c.uncertain_from, Some(0));
+        assert_eq!(classify_lines(&["echo hi", "ls"]).uncertain_from, None);
     }
 }

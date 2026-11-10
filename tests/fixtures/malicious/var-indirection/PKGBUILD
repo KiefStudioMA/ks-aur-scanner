@@ -1,5 +1,5 @@
 # Test fixture (inert, never executed): a fetch-and-execute payload hidden
-# behind shell-variable indirection — the audit HI-6 class. Before the resolve
+# behind shell-variable indirection — the command-name indirection class. Before the resolve
 # pass this "tripped nothing" (no literal `curl`/`bash` on one line); the scanner
 # must now resolve the variables and flag the curl|bash it really runs.
 pkgname=var-indirection

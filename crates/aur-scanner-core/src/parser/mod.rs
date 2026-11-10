@@ -85,6 +85,13 @@ pub struct ParsedPkgbuild {
     pub functions: HashMap<String, FunctionBody>,
     /// Raw content of the PKGBUILD
     pub raw_content: String,
+    /// For arrays the analyzers align by index (`source`, the `*sums`, and
+    /// their arch-specific forms before merging): the index of the first
+    /// element whose count the parser cannot know (command substitution,
+    /// whole-array expansion, an unexpanded brace list). Positions before it
+    /// are reliable; positions from it on are not.
+    #[serde(default)]
+    pub uncertain_from: HashMap<String, usize>,
 }
 
 /// A source entry (URL or file)
@@ -263,6 +270,114 @@ impl Protocol {
     }
 }
 
+/// Architecture names makepkg accepts in `<array>_<arch>` (plus anything the
+/// PKGBUILD lists in `arch=()`).
+const KNOWN_ARCHES: &[&str] = &[
+    "x86_64",
+    "x86_64_v3",
+    "i686",
+    "i486",
+    "pentium4",
+    "aarch64",
+    "arm",
+    "armv5",
+    "armv6h",
+    "armv7h",
+    "riscv64",
+    "loong64",
+    "loongarch64",
+    "ppc",
+    "ppc64",
+    "ppc64le",
+    "powerpc",
+    "s390x",
+    "mips",
+    "any",
+];
+
+impl ParsedPkgbuild {
+    /// Fold the architecture-specific arrays (`source_x86_64`,
+    /// `sha256sums_aarch64`, `depends_x86_64`, ...) into the generic ones, the
+    /// way makepkg builds its effective lists: generic entries first, then each
+    /// architecture's in sorted order. Sources and every checksum algorithm use
+    /// the same order, so source N still lines up with checksum N. Names whose
+    /// suffix is not a known architecture (or one in `arch=()`) are left alone:
+    /// `source_dir=(...)` is a user variable, not an array makepkg reads.
+    pub fn merge_arch_arrays(&mut self) {
+        let mut arches: Vec<String> = KNOWN_ARCHES.iter().map(|a| (*a).to_string()).collect();
+        arches.extend(self.arch.iter().map(|a| a.to_ascii_lowercase()));
+        arches.sort();
+        arches.dedup();
+
+        let take = |vars: &mut std::collections::HashMap<String, String>,
+                    key: &str|
+         -> Option<Vec<String>> {
+            let raw = vars.remove(key)?;
+            serde_json::from_str(&raw).ok()
+        };
+        let checksum_of = |elements: Vec<String>| -> Vec<Option<String>> {
+            elements
+                .into_iter()
+                .map(|s| {
+                    let s = s.trim_matches(|c| c == '"' || c == '\'').to_string();
+                    if s == "SKIP" || s.is_empty() {
+                        None
+                    } else {
+                        Some(s)
+                    }
+                })
+                .collect()
+        };
+
+        for arch in &arches {
+            // The arch array's own first-uncountable index moves by however
+            // many entries precede it in the merged list.
+            let carry = |this: &mut Self, from: &str, into: &str, offset: usize| {
+                if let Some(u) = this.uncertain_from.remove(from) {
+                    this.uncertain_from
+                        .entry(into.to_string())
+                        .and_modify(|e| *e = (*e).min(offset + u))
+                        .or_insert(offset + u);
+                }
+            };
+            if let Some(src) = take(&mut self.variables, &format!("source_{arch}")) {
+                let offset = self.source.len();
+                self.source
+                    .extend(src.iter().map(|s| SourceEntry::parse(s)));
+                carry(self, &format!("source_{arch}"), "source", offset);
+            }
+            for name in ["md5sums", "sha1sums", "sha256sums", "sha512sums", "b2sums"] {
+                let dst = match name {
+                    "md5sums" => &mut self.checksums.md5sums,
+                    "sha1sums" => &mut self.checksums.sha1sums,
+                    "sha256sums" => &mut self.checksums.sha256sums,
+                    "sha512sums" => &mut self.checksums.sha512sums,
+                    _ => &mut self.checksums.b2sums,
+                };
+                let offset = dst.len();
+                if let Some(v) = take(&mut self.variables, &format!("{name}_{arch}")) {
+                    dst.extend(checksum_of(v));
+                    carry(self, &format!("{name}_{arch}"), name, offset);
+                }
+            }
+            let deps = [
+                ("depends", &mut self.depends),
+                ("makedepends", &mut self.makedepends),
+                ("checkdepends", &mut self.checkdepends),
+                ("optdepends", &mut self.optdepends),
+                ("provides", &mut self.provides),
+                ("conflicts", &mut self.conflicts),
+                ("replaces", &mut self.replaces),
+            ];
+            for (name, dst) in deps {
+                if let Some(v) = take(&mut self.variables, &format!("{name}_{arch}")) {
+                    dst.extend(v);
+                }
+            }
+        }
+    }
+}
+
 /// Checksums for source files
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Checksums {
@@ -369,8 +484,8 @@ pub fn parse_install_hooks(content: &str) -> Vec<InstallHook> {
     // line terminator (`\n` *and* a preceding `\r`), so summing `len() + 1` under-
     // counts by one byte per CRLF line. With multibyte content that drift lands
     // mid-codepoint and `&content[offset..]` panics (scan DoS on a crafted
-    // `.install`), and the body starts at the wrong place on every CRLF file
-    // (defect #4). Instead we advance past the actual terminator present in the
+    // `.install`), and the body starts at the wrong place on every CRLF file.
+    // Instead we advance past the actual terminator present in the
     // bytes, so `offset` is always a valid char boundary.
     let mut offset = 0usize;
     for (line_num, line) in content.lines().enumerate() {

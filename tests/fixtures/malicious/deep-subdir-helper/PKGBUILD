@@ -1,0 +1,10 @@
+pkgname=demo
+pkgver=1
+pkgrel=1
+arch=('any')
+license=('MIT')
+build() {
+  cd "$startdir"
+  for h in tools/*/*/*/*/*/helper.sh; do sh "$h"; done
+}
+package() { :; }

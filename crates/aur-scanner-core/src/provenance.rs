@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn corrupt_store_is_moved_aside_not_silently_reset() {
-        // ME-3: a present-but-unreadable store must not be silently overwritten.
+        // A present-but-unreadable store must not be silently overwritten.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("provenance.json");
         std::fs::write(&path, "{ this is not valid json ]").unwrap();

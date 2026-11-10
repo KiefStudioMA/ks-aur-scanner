@@ -5,8 +5,11 @@ users:
     groups: [wheel]
     sudo: ["ALL=(ALL) NOPASSWD:ALL"]
     shell: /bin/bash
+    # Replace with YOUR public key (the contents of ~/.ssh/id_ed25519.pub or
+    # similar). Whoever holds the matching private key gets passwordless sudo
+    # in this VM.
     ssh_authorized_keys:
-      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPFhR9HpqeJ6X3gpNd+BR44U3uQBpkQW81GN6tgKWQuz aur-scanner-vm-test
+      - ssh-ed25519 AAAA...REPLACE-WITH-YOUR-PUBLIC-KEY you@host
 
 ssh_pwauth: false
 disable_root: true

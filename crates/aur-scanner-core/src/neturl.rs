@@ -36,7 +36,7 @@ static HOST_SPAN: LazyLock<Regex> = LazyLock::new(|| {
         (?: : \d+ )?                            # optional :port
         (?: [/?\#] [^\s'\x22]* )?               # consume the path/query/fragment so
                                                 # a dotted PATH segment (…/evil.example)
-                                                # is NOT re-read as a host (F2)
+                                                # is NOT re-read as a host
         ",
     )
     .unwrap()
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn extract_host_fails_closed_on_backslash_authority() {
-        // F1 (Echo review): the `url` crate rewrites `\`->`/` so it parses
+        // The `url` crate rewrites `\`->`/` so it parses
         // host=github.com, but git/curl fetch evil.tld. Refuse to assert a host
         // -> caller treats None as untrusted and flags it.
         assert_eq!(
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn extract_hosts_does_not_treat_path_segments_as_hosts() {
-        // F2 (Echo review): a dotted token in the URL path is not the host.
+        // A dotted token in the URL path is not the host.
         let hosts = extract_hosts("https://github.com/u/evil.example");
         assert_eq!(hosts, vec!["github.com".to_string()]);
         assert!(!line_has_host(

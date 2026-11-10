@@ -1,0 +1,9 @@
+pkgname=demo
+pkgver=1
+pkgrel=1
+arch=('any')
+license=('MIT')
+let "x = 1"
+IFS= read -r install < /dev/null
+install=$HOME_NAME.scr
+package() { :; }

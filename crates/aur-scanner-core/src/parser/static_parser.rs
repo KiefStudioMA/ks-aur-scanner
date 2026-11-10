@@ -11,6 +11,7 @@ use regex::Regex;
 lazy_static! {
     // Variable assignment patterns
     static ref VAR_SIMPLE: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=([^(].*?)$"#).unwrap();
+    static ref VAR_EMPTY: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=(?:""|'')?$"#).unwrap();
     static ref VAR_QUOTED: Regex = Regex::new(r#"^([a-zA-Z_][a-zA-Z0-9_]*)=["'](.*)["']$"#).unwrap();
 
     // Array patterns. Group 2 captures an optional `+` so `name+=(...)` (append)
@@ -57,16 +58,60 @@ impl StaticParser {
     }
 
     /// Parse array elements from a string
-    fn parse_array_elements(&self, content: &str) -> Vec<String> {
-        let mut elements = Vec::new();
-        let mut current = String::new();
+    /// Split an array body into its elements, also returning the index (in the
+    /// returned list) of the first element whose COUNT or content the parser
+    /// cannot know statically -- a command substitution, a whole-word
+    /// `$var`, an array expansion, a brace list past the expansion limits.
+    /// Everything before that index is still positionally reliable; callers
+    /// that align two arrays by index must stop there.
+    fn parse_array_elements_ex(
+        &self,
+        content: &str,
+        vars: &std::collections::HashMap<String, String>,
+    ) -> (Vec<String>, Option<usize>) {
+        let mut elements: Vec<String> = Vec::new();
+        let mut first_uncertain: Option<usize> = None;
+        let mut current: Vec<(char, Q)> = Vec::new();
         let mut in_quote = false;
         let mut quote_char = ' ';
         let mut escape_next = false;
 
+        let flush = |current: &mut Vec<(char, Q)>,
+                     elements: &mut Vec<String>,
+                     first_uncertain: &mut Option<usize>| {
+            let text: String = current.iter().map(|(c, _)| *c).collect();
+            // A bare unquoted `$name` whose value the PKGBUILD assigned
+            // earlier is just that value, word-split: an empty value is zero
+            // words, so `($_e 'SKIP')` is one element.
+            if current.iter().all(|(_, q)| *q == Q::Un) {
+                if let Some(value) = known_plain_var(&text, vars) {
+                    for w in value.split_whitespace() {
+                        elements.push(w.to_string());
+                    }
+                    current.clear();
+                    return;
+                }
+            }
+            if !text.trim().is_empty() {
+                let (expanded, complete) = expand_braces(current);
+                let uncertain = !complete || element_is_uncountable(current);
+                for e in expanded {
+                    let t = e.trim();
+                    if t.is_empty() {
+                        continue;
+                    }
+                    if uncertain && first_uncertain.is_none() {
+                        *first_uncertain = Some(elements.len());
+                    }
+                    elements.push(t.to_string());
+                }
+            }
+            current.clear();
+        };
+
         for ch in content.chars() {
             if escape_next {
-                current.push(ch);
+                current.push((ch, Q::Lit));
                 escape_next = false;
                 continue;
             }
@@ -81,22 +126,23 @@ impl StaticParser {
                     in_quote = false;
                 }
                 ' ' | '\t' | '\n' if !in_quote => {
-                    let trimmed = current.trim();
-                    if !trimmed.is_empty() {
-                        elements.push(trimmed.to_string());
-                    }
-                    current.clear();
+                    flush(&mut current, &mut elements, &mut first_uncertain)
                 }
-                _ => current.push(ch),
+                _ => {
+                    let q = if !in_quote {
+                        Q::Un
+                    } else if quote_char == '"' {
+                        Q::Dq
+                    } else {
+                        Q::Lit
+                    };
+                    current.push((ch, q));
+                }
             }
         }
+        flush(&mut current, &mut elements, &mut first_uncertain);
 
-        let trimmed = current.trim();
-        if !trimmed.is_empty() {
-            elements.push(trimmed.to_string());
-        }
-
-        elements
+        (elements, first_uncertain)
     }
 
     /// Parse checksums into Option<String> (SKIP becomes None)
@@ -185,7 +231,7 @@ impl PkgbuildParser for StaticParser {
             // opened on an earlier line (bash keeps it as part of the value), so
             // it must reach the continuation handler below, which strips comments
             // quote-awarely. Dropping it here would silently delete quoted
-            // content -- the same comment/quote desync class as defect #3.
+            // content -- the same comment/quote desync class as the array-terminator bug.
             if pending_array.is_none() && (trimmed.is_empty() || COMMENT.is_match(trimmed)) {
                 i += 1;
                 continue;
@@ -200,8 +246,8 @@ impl PkgbuildParser for StaticParser {
             // that is unquoted and at paren-depth 0 (`array_terminator`); a `)`
             // inside a quoted value -- e.g. a multi-line quoted source whose first
             // physical line ends in `)` -- must NOT close it, or every following
-            // source/checksum line would be dropped before reaching the analyzers
-            // (defect #3). `take()` so we can re-store the buffer without a borrow
+            // source/checksum line would be dropped before reaching the analyzers.
+            // `take()` so we can re-store the buffer without a borrow
             // conflict when the array is not yet closed.
             if let Some((name, append, mut collected)) = pending_array.take() {
                 // Strip THIS continuation line's inline comment using the quote
@@ -211,7 +257,7 @@ impl PkgbuildParser for StaticParser {
                 // on an earlier array line is part of the value, not a comment;
                 // stripping it with a reset state would delete the real closing
                 // quote/paren and silently drop the whole array (the desync that
-                // re-opened defect #3).
+                // let comment text hide array content).
                 //
                 // The join `\n` is pushed BEFORE computing the carried state so a
                 // trailing `\` line-continuation escapes the newline exactly as
@@ -227,8 +273,9 @@ impl PkgbuildParser for StaticParser {
                 collected.push_str(cline);
 
                 if let Some(end) = array_terminator(&collected) {
-                    let elements = self.parse_array_elements(&collected[..end]);
-                    self.assign_array(&mut pkgbuild, &name, elements, append);
+                    let (elements, unc) =
+                        self.parse_array_elements_ex(&collected[..end], &pkgbuild.variables);
+                    self.assign_array(&mut pkgbuild, &name, elements, append, unc);
                     // pending_array already None (taken); leave it closed.
                 } else {
                     pending_array = Some((name, append, collected));
@@ -254,8 +301,9 @@ impl PkgbuildParser for StaticParser {
                 // Single-line only when the closing `)` is unquoted at depth 0.
                 // A quoted `)` in the first element does not close the array.
                 if let Some(end) = array_terminator(first_content) {
-                    let elements = self.parse_array_elements(&first_content[..end]);
-                    self.assign_array(&mut pkgbuild, &name, elements, append);
+                    let (elements, unc) =
+                        self.parse_array_elements_ex(&first_content[..end], &pkgbuild.variables);
+                    self.assign_array(&mut pkgbuild, &name, elements, append, unc);
                 } else {
                     pending_array = Some((name, append, first_content.to_string()));
                 }
@@ -298,6 +346,18 @@ impl PkgbuildParser for StaticParser {
                 continue;
             }
 
+            // `name=` / `name=""` / `name=''`: an empty string (zero words when
+            // used bare), which VAR_SIMPLE (one or more value chars) misses.
+            if let Some(caps) = VAR_EMPTY.captures(code) {
+                // (only the scratch-variable table: an empty `install=` or
+                // `pkgname=` must not become a real, empty entry)
+                pkgbuild
+                    .variables
+                    .insert(caps.get(1).unwrap().as_str().to_string(), String::new());
+                i += 1;
+                continue;
+            }
+
             // Check for simple variable assignment
             if let Some(caps) = VAR_SIMPLE.captures(code) {
                 let name = caps.get(1).unwrap().as_str();
@@ -326,7 +386,7 @@ impl PkgbuildParser for StaticParser {
         // unbalanced quote/paren in a crafted PKGBUILD) must NOT be silently
         // dropped -- that would re-blind the source/checksum analyzers, which
         // iterate the parsed `source`/`checksums` fields rather than the raw
-        // text (the defect #3 evasion class). Flush the buffered content
+        // text (the comment/quote desync evasion class). Flush the buffered content
         // best-effort so it still reaches the analyzers, and warn loudly.
         if let Some((name, append, collected)) = pending_array.take() {
             tracing::warn!(
@@ -335,9 +395,14 @@ impl PkgbuildParser for StaticParser {
                 name,
                 collected.len()
             );
-            let elements = self.parse_array_elements(&collected);
-            self.assign_array(&mut pkgbuild, &name, elements, append);
+            let (elements, unc) = self.parse_array_elements_ex(&collected, &pkgbuild.variables);
+            self.assign_array(&mut pkgbuild, &name, elements, append, unc);
         }
+
+        // makepkg appends `source_<arch>`, `<algo>sums_<arch>` and
+        // `depends_<arch>` to the generic arrays; fold them in so every
+        // analyzer sees the effective lists.
+        pkgbuild.merge_arch_arrays();
 
         // Validate required fields in strict mode
         if self.strict_mode {
@@ -388,7 +453,38 @@ impl StaticParser {
         name: &str,
         elements: Vec<String>,
         append: bool,
+        uncertain: Option<usize>,
     ) {
+        // Where the first uncountable element of this array will sit once
+        // appended, recorded for the analyzers that align arrays by index.
+        let base = if append {
+            match name {
+                "source" => pkgbuild.source.len(),
+                "md5sums" => pkgbuild.checksums.md5sums.len(),
+                "sha1sums" => pkgbuild.checksums.sha1sums.len(),
+                "sha256sums" => pkgbuild.checksums.sha256sums.len(),
+                "sha512sums" => pkgbuild.checksums.sha512sums.len(),
+                "b2sums" => pkgbuild.checksums.b2sums.len(),
+                _ => pkgbuild
+                    .variables
+                    .get(name)
+                    .and_then(|v| serde_json::from_str::<Vec<String>>(v).ok())
+                    .map_or(0, |v| v.len()),
+            }
+        } else {
+            0
+        };
+        if !append {
+            pkgbuild.uncertain_from.remove(name);
+        }
+        if let Some(u) = uncertain {
+            let at = base + u;
+            pkgbuild
+                .uncertain_from
+                .entry(name.to_string())
+                .and_modify(|e| *e = (*e).min(at))
+                .or_insert(at);
+        }
         // For Vec<String> fields: replace, or extend when appending.
         let set = |dst: &mut Vec<String>, mut new: Vec<String>| {
             if append {
@@ -430,10 +526,22 @@ impl StaticParser {
             }
             "b2sums" => self.set_checksums(&mut pkgbuild.checksums.b2sums, &elements, append),
             _ => {
-                // Store as JSON array in variables
+                // Store as JSON array in variables. A `+=` extends what is
+                // there so arch-specific arrays (`source_x86_64+=(...)`) keep
+                // every element for `merge_arch_arrays`.
+                let mut all: Vec<String> = if append {
+                    pkgbuild
+                        .variables
+                        .get(name)
+                        .and_then(|v| serde_json::from_str(v).ok())
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                all.extend(elements);
                 pkgbuild
                     .variables
-                    .insert(name.to_string(), serde_json::to_string(&elements).unwrap());
+                    .insert(name.to_string(), serde_json::to_string(&all).unwrap());
             }
         }
     }
@@ -446,6 +554,292 @@ impl StaticParser {
         } else {
             *dst = parsed;
         }
+    }
+}
+
+/// Cap on the elements one brace expression may produce.
+const MAX_BRACE_EXPANSION: usize = 256;
+/// An element longer than this is not brace-expanded (and is reported as
+/// uncountable if it holds an unquoted brace): expansion must stay linear in
+/// attacker-controlled input.
+const MAX_BRACE_ELEMENT_LEN: usize = 4096;
+/// Deepest brace nesting that is expanded.
+const MAX_BRACE_DEPTH: usize = 32;
+
+/// How a character of an array element was written.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Q {
+    /// Single-quoted or backslash-escaped: always literal.
+    Lit,
+    /// Inside double quotes: `$` expansions happen, braces do not.
+    Dq,
+    /// Unquoted: braces and `$` expansions both happen.
+    Un,
+}
+
+/// Whether the number of words this element becomes (or its content) cannot
+/// be known statically. Single-quoted text never counts; a quoted
+/// `"$(cmd)"` or `"$var"` is exactly one word and does not count either.
+fn element_is_uncountable(chars: &[(char, Q)]) -> bool {
+    let live = |i: usize| chars[i].1 != Q::Lit;
+    for i in 0..chars.len() {
+        if !live(i) {
+            continue;
+        }
+        let c = chars[i].0;
+        let next = chars.get(i + 1).map(|(c, _)| *c);
+        // unquoted command substitution / backticks can split into many words
+        if chars[i].1 == Q::Un && ((c == '$' && next == Some('(')) || c == '`') {
+            return true;
+        }
+        // whole-array expansion, quoted or not
+        if c == '['
+            && matches!(chars.get(i + 1), Some(('@' | '*', _)))
+            && matches!(chars.get(i + 2), Some((']', _)))
+        {
+            return true;
+        }
+    }
+    // a bare unquoted `$name` / `${...}` word may be empty or split
+    if chars.iter().all(|(_, q)| *q == Q::Un) {
+        let t: String = chars.iter().map(|(c, _)| *c).collect();
+        if let Some(rest) = t.strip_prefix('$') {
+            let simple = !rest.is_empty()
+                && (rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    || (rest.starts_with('{') && rest.ends_with('}') && !rest[1..].contains('{')));
+            if simple {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The value of a whole-word `$name` / `${name}` that the PKGBUILD assigned as a
+/// plain string with nothing left to expand or glob.
+fn known_plain_var(word: &str, vars: &std::collections::HashMap<String, String>) -> Option<String> {
+    let rest = word.strip_prefix('$')?;
+    let name = match rest.strip_prefix('{') {
+        Some(b) => b.strip_suffix('}')?,
+        None => rest,
+    };
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    let v = vars.get(name)?;
+    let v = v.trim_matches(|c| c == '"' || c == '\'');
+    (!v.contains(['$', '`', '*', '?', '[', '{', '\\', '"', '\'', '(', ')'])).then(|| v.to_string())
+}
+
+/// Parse a brace sequence body (`1..5`, `a..e`, `01..10..3`) into its items,
+/// or `None` when it is not one (or would exceed `limit` items).
+fn brace_sequence(body: &str, limit: usize) -> Option<Result<Vec<String>, ()>> {
+    let parts: Vec<&str> = body.split("..").collect();
+    if !(2..=3).contains(&parts.len()) {
+        return None;
+    }
+    let step_raw = parts
+        .get(2)
+        .map(|s| s.parse::<i64>().ok())
+        .unwrap_or(Some(1))?;
+    let step = step_raw.unsigned_abs().max(1) as i64;
+    let num = |s: &str| -> Option<i64> {
+        let digits = s.strip_prefix('-').unwrap_or(s);
+        (!digits.is_empty() && digits.len() <= 12 && digits.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| s.parse().ok())
+            .flatten()
+    };
+    if let (Some(a), Some(b)) = (num(parts[0]), num(parts[1])) {
+        let width = if parts[0].trim_start_matches('-').starts_with('0')
+            && parts[0].trim_start_matches('-').len() > 1
+            || parts[1].trim_start_matches('-').starts_with('0')
+                && parts[1].trim_start_matches('-').len() > 1
+        {
+            parts[0].len().max(parts[1].len())
+        } else {
+            0
+        };
+        let count = ((a - b).unsigned_abs() / step as u64 + 1) as usize;
+        if count > limit {
+            return Some(Err(()));
+        }
+        let dir = if a <= b { step } else { -step };
+        let mut out = Vec::new();
+        let mut v = a;
+        while (dir > 0 && v <= b) || (dir < 0 && v >= b) {
+            out.push(if width > 0 {
+                format!("{v:0width$}")
+            } else {
+                v.to_string()
+            });
+            v += dir;
+        }
+        return Some(Ok(out));
+    }
+    let single = |s: &str| {
+        let mut it = s.chars();
+        match (it.next(), it.next()) {
+            (Some(c), None) if c.is_ascii_alphabetic() => Some(c as u32),
+            _ => None,
+        }
+    };
+    let (a, b) = (single(parts[0])?, single(parts[1])?);
+    let count = ((a as i64 - b as i64).unsigned_abs() / step as u64 + 1) as usize;
+    if count > limit {
+        return Some(Err(()));
+    }
+    let dir = if a <= b { step } else { -step };
+    let mut out = Vec::new();
+    let mut v = a as i64;
+    while (dir > 0 && v <= b as i64) || (dir < 0 && v >= b as i64) {
+        out.push(char::from_u32(v as u32)?.to_string());
+        v += dir;
+    }
+    Some(Ok(out))
+}
+
+/// Expand bash brace lists (`a{,.asc}`, `x{1,2}y`, `S{K..K}IP`) in the unquoted
+/// parts of one array element, the way bash does. Quoted or escaped braces,
+/// `${...}` parameter expansions and groups with neither a top-level comma nor
+/// a sequence are left alone. The second value is `false` when an expansion
+/// was needed but not carried out (too long, too deeply nested, too many
+/// results): the caller must then treat the element as uncountable.
+fn expand_braces(chars: &[(char, Q)]) -> (Vec<String>, bool) {
+    let whole = || chars.iter().map(|(c, _)| *c).collect::<String>();
+    let has_brace = chars.iter().any(|(c, q)| *c == '{' && *q == Q::Un);
+    if !has_brace {
+        return (vec![whole()], true);
+    }
+    if chars.len() > MAX_BRACE_ELEMENT_LEN {
+        return (vec![whole()], false);
+    }
+    let n = chars.len();
+    // `${...}` interiors are opaque; matching braces found in ONE linear pass.
+    let mut opaque = vec![false; n];
+    let mut close: Vec<Option<usize>> = vec![None; n];
+    {
+        let mut i = 0;
+        let mut stack: Vec<usize> = Vec::new();
+        while i < n {
+            let (c, q) = chars[i];
+            if q == Q::Un && c == '$' && matches!(chars.get(i + 1), Some(('{', Q::Un))) {
+                let mut d = 0usize;
+                let mut j = i + 1;
+                while j < n {
+                    match chars[j] {
+                        ('{', Q::Un) => d += 1,
+                        ('}', Q::Un) => {
+                            d -= 1;
+                            if d == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                let end = j.min(n - 1);
+                for o in opaque.iter_mut().take(end + 1).skip(i) {
+                    *o = true;
+                }
+                i = end + 1;
+                continue;
+            }
+            if q == Q::Un {
+                if c == '{' {
+                    stack.push(i);
+                } else if c == '}' {
+                    if let Some(open) = stack.pop() {
+                        close[open] = Some(i);
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+    let text = |lo: usize, hi: usize| -> String { chars[lo..hi].iter().map(|(c, _)| *c).collect() };
+
+    struct Ctx<'a> {
+        chars: &'a [(char, Q)],
+        opaque: &'a [bool],
+        close: &'a [Option<usize>],
+        budget: usize,
+    }
+    fn go(cx: &mut Ctx, lo: usize, hi: usize, depth: usize) -> Option<Vec<String>> {
+        if depth > MAX_BRACE_DEPTH {
+            return None;
+        }
+        let t = |a: usize, b: usize| -> String { cx.chars[a..b].iter().map(|(c, _)| *c).collect() };
+        let mut i = lo;
+        while i < hi {
+            if cx.chars[i] == ('{', Q::Un) && !cx.opaque[i] {
+                if let Some(e) = cx.close[i].filter(|e| *e < hi) {
+                    // top-level commas of this group
+                    let mut commas = Vec::new();
+                    let mut j = i + 1;
+                    while j < e {
+                        if cx.chars[j] == ('{', Q::Un) && !cx.opaque[j] {
+                            if let Some(c2) = cx.close[j].filter(|c2| *c2 < e) {
+                                j = c2 + 1;
+                                continue;
+                            }
+                        } else if cx.chars[j] == (',', Q::Un) && !cx.opaque[j] {
+                            commas.push(j);
+                        }
+                        j += 1;
+                    }
+                    let items: Option<Vec<String>> = if !commas.is_empty() {
+                        let mut alts = Vec::new();
+                        let mut start = i + 1;
+                        for &c in &commas {
+                            alts.push((start, c));
+                            start = c + 1;
+                        }
+                        alts.push((start, e));
+                        let mut out = Vec::new();
+                        for (a, b) in alts {
+                            out.extend(go(cx, a, b, depth + 1)?);
+                        }
+                        Some(out)
+                    } else if cx.chars[i + 1..e].iter().all(|(_, q)| *q == Q::Un) {
+                        match brace_sequence(&t(i + 1, e), cx.budget) {
+                            Some(Ok(v)) => Some(v),
+                            Some(Err(())) => return None,
+                            None => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(items) = items {
+                        let prefix = t(lo, i);
+                        let tails = go(cx, e + 1, hi, depth + 1)?;
+                        let mut out = Vec::new();
+                        for a in &items {
+                            for tail in &tails {
+                                if cx.budget == 0 {
+                                    return None;
+                                }
+                                cx.budget -= 1;
+                                out.push(format!("{prefix}{a}{tail}"));
+                            }
+                        }
+                        return Some(out);
+                    }
+                }
+            }
+            i += 1;
+        }
+        Some(vec![t(lo, hi)])
+    }
+    let mut cx = Ctx {
+        chars,
+        opaque: &opaque,
+        close: &close,
+        budget: MAX_BRACE_EXPANSION,
+    };
+    match go(&mut cx, 0, n, 0) {
+        Some(v) => (v, true),
+        None => (vec![text(0, n)], false),
     }
 }
 
@@ -466,7 +860,7 @@ fn strip_inline_comment(line: &str) -> &str {
 /// still inside a quote opened on an earlier line: there a `#` is part of the
 /// quoted value, not a comment. Stripping it with a reset state deletes the real
 /// closing quote/paren so [`array_terminator`] never finds the terminator and the
-/// whole array is silently dropped -- the desync that re-opened defect #3. The
+/// whole array is silently dropped -- the comment/quote desync evasion. The
 /// caller seeds this with [`quote_state_at_end`] of the accumulated buffer so the
 /// two scanners agree on what is quoted.
 fn strip_inline_comment_stateful(
@@ -553,7 +947,7 @@ fn quote_state_at_end(buf: &str) -> (bool, bool, bool) {
 /// This is the quote-aware replacement for the old `ends_with(')')` /
 /// `trim_end_matches(')')` heuristic, which let an attacker terminate the array
 /// early with a quoted `)` and hide every following source/checksum line from
-/// the analyzers (defect #3).
+/// the analyzers.
 fn array_terminator(buf: &str) -> Option<usize> {
     let mut in_single = false;
     let mut in_double = false;
@@ -646,7 +1040,7 @@ package() {
 
     #[test]
     fn append_and_inline_comment_sources_are_parsed() {
-        // ME-9: `source+=(...)` must extend (not be dropped), a trailing inline
+        // `source+=(...)` must extend (not be dropped), a trailing inline
         // comment must not break array parsing, and a `#commit=` fragment inside
         // a quoted value must be preserved (not treated as a comment).
         let parser = StaticParser::new();
@@ -710,7 +1104,7 @@ package() {
 
     #[test]
     fn brace_in_string_does_not_truncate_function_body() {
-        // HI-6e: a `}` inside a quoted string must not close the function early.
+        // A `}` inside a quoted string must not close the function early.
         // The payload after it must remain part of the parsed build() body so the
         // privilege/pattern analyzers still see it.
         let parser = StaticParser::new();
@@ -804,7 +1198,7 @@ package() {
 
     #[test]
     fn hash_inside_single_quoted_continuation_is_not_a_comment() {
-        // Task 4049 (defect #3 redux): a single quote opened on array line 1 is
+        // A single quote opened on array line 1 is
         // still open on the continuation line, so the ` # rm -rf` there is part of
         // the quoted value, NOT a comment. The old per-line strip_inline_comment
         // reset quote state and stripped it, deleting the closing `'`/`)` so the
@@ -931,7 +1325,7 @@ package() {
 
     #[test]
     fn escaped_eol_double_quote_does_not_drop_trailing_source() {
-        // Task 4049 round 2 (Echo's seam catch): a trailing `\` line-continuation
+        // A trailing `\` line-continuation
         // escapes the join newline. The carried-state seed must be computed AFTER
         // the `\n` is pushed (so the escape is absorbed exactly like
         // array_terminator sees it); otherwise the next line's leading `"` is
@@ -1026,5 +1420,183 @@ source=(
         let parser = StaticParser::new();
         let result = parser.parse(content).unwrap();
         assert_eq!(result.source.len(), 2);
+    }
+
+    #[test]
+    fn arch_specific_arrays_are_merged_in_a_stable_order() {
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\narch=('x86_64' 'aarch64')\n",
+            "source=('main.tar.gz')\nsha256sums=('aa')\n",
+            "source_x86_64=('https://e.example/x86.tar.gz')\nsha256sums_x86_64=('SKIP')\n",
+            "source_aarch64=('https://e.example/arm.tar.gz')\nsha256sums_aarch64=('bb')\n",
+            "depends_x86_64=('lib32-foo')\nmakedepends_aarch64=('bar')\n",
+            "source_dir=('not-an-array-makepkg-reads')\n",
+        );
+        let r = StaticParser::new().parse(content).unwrap();
+        let urls: Vec<&str> = r.source.iter().map(|s| s.url.as_str()).collect();
+        // generic first, then arches in sorted order (aarch64 < x86_64)
+        assert_eq!(
+            urls,
+            vec![
+                "main.tar.gz",
+                "https://e.example/arm.tar.gz",
+                "https://e.example/x86.tar.gz"
+            ]
+        );
+        assert_eq!(
+            r.checksums.sha256sums,
+            vec![Some("aa".to_string()), Some("bb".to_string()), None]
+        );
+        assert_eq!(r.depends, vec!["lib32-foo"]);
+        assert_eq!(r.makedepends, vec!["bar"]);
+        assert!(r.variables.contains_key("source_dir"));
+    }
+
+    #[test]
+    fn arch_specific_append_keeps_every_element() {
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\narch=('x86_64')\n",
+            "source_x86_64=('a')\nsource_x86_64+=('b')\n",
+        );
+        let r = StaticParser::new().parse(content).unwrap();
+        assert_eq!(r.source.len(), 2);
+    }
+
+    #[test]
+    fn brace_lists_in_array_elements_are_expanded() {
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\n",
+            "source=(\"https://e.example/a-${pkgver}.deb\"{,.asc} https://e.example/b.tar.xz{,.sig}\n",
+            "        # comment ) inside\n",
+            "        'plain.patch' \"q{1,2}\" x{a,b}{1,2})\n",
+        );
+        let r = StaticParser::new().parse(content).unwrap();
+        let urls: Vec<&str> = r.source.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://e.example/a-${pkgver}.deb",
+                "https://e.example/a-${pkgver}.deb.asc",
+                "https://e.example/b.tar.xz",
+                "https://e.example/b.tar.xz.sig",
+                "plain.patch",
+                "q{1,2}",
+                "xa1",
+                "xa2",
+                "xb1",
+                "xb2"
+            ]
+        );
+    }
+
+    #[test]
+    fn brace_expansion_is_bounded_and_skips_parameter_expansion() {
+        let r = StaticParser::new()
+            .parse("pkgname=t\npkgver=1\npkgrel=1\nsource=(${a:-x,y} {1,2}{1,2}{1,2}{1,2}{1,2}{1,2}{1,2}{1,2}{1,2})\n")
+            .unwrap();
+        // `${a:-x,y}` is a parameter expansion, kept whole; the 512-way list
+        // exceeds the cap and is left unexpanded.
+        assert_eq!(r.source.len(), 2);
+        assert_eq!(r.source[0].url, "${a:-x,y}");
+    }
+
+    fn first(src: &str) -> (Vec<String>, Option<usize>) {
+        StaticParser::new().parse_array_elements_ex(src, &Default::default())
+    }
+
+    #[test]
+    fn brace_sequences_expand() {
+        assert_eq!(first("S{K..K}IP").0, vec!["SKIP"]);
+        assert_eq!(first("f{1..3}.txt").0, vec!["f1.txt", "f2.txt", "f3.txt"]);
+        assert_eq!(first("f{03..01}").0, vec!["f03", "f02", "f01"]);
+        assert_eq!(first("{a..c}").0, vec!["a", "b", "c"]);
+        assert_eq!(first("{1..7..3}").0, vec!["1", "4", "7"]);
+        // not sequences: left alone, and certain
+        assert_eq!(first("{1..$n}").0, vec!["{1..$n}"]);
+        assert_eq!(first("'{1..3}'").0, vec!["{1..3}"]);
+        assert_eq!(first("{1..3}").1, None);
+    }
+
+    #[test]
+    fn oversized_or_hostile_brace_input_is_bounded_and_flagged() {
+        let (v, unc) = first("ok {1..300}");
+        assert_eq!(v, vec!["ok", "{1..300}"]);
+        assert_eq!(unc, Some(1));
+        let started = std::time::Instant::now();
+        let hostile = format!("x{}", "{".repeat(100_000));
+        let (v, unc) = first(&hostile);
+        assert_eq!(v.len(), 1);
+        assert_eq!(unc, Some(0));
+        let nested = format!("{}a{}", "{a,".repeat(5000), "}".repeat(5000));
+        let (_, unc) = first(&nested);
+        assert_eq!(unc, Some(0));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn uncountable_elements_are_located() {
+        assert_eq!(first("a b 'c{d,e}'").1, None);
+        assert_eq!(
+            first("a \"$(x)\" b").1,
+            None,
+            "quoted substitution is one word"
+        );
+        assert_eq!(first("a $(x) b").1, Some(1));
+        assert_eq!(first("a `x` b").1, Some(1));
+        assert_eq!(first("a b $files").1, Some(2));
+        assert_eq!(first("a \"${f[@]}\" b").1, Some(1));
+        assert_eq!(first("a 'x[@]' b").1, None);
+        assert_eq!(first("a https://x/$name-$ver.tar b").1, None);
+    }
+
+    #[test]
+    fn first_uncountable_index_survives_appends_and_arch_merge() {
+        let content = concat!(
+            "pkgname=t\npkgver=1\npkgrel=1\narch=('x86_64')\n",
+            "source=('a' 'b')\nsource+=($(echo c))\n",
+            "source_x86_64=('d' $(echo e))\n",
+            "sha256sums=('SKIP' 'SKIP')\n",
+        );
+        let r = StaticParser::new().parse(content).unwrap();
+        assert_eq!(r.uncertain_from.get("source"), Some(&2));
+        assert!(!r.uncertain_from.contains_key("source_x86_64"));
+    }
+
+    #[test]
+    fn known_plain_variables_count_as_their_words() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("e".to_string(), String::new());
+        vars.insert("two".to_string(), "a b".to_string());
+        vars.insert("glob".to_string(), "x*".to_string());
+        let p = StaticParser::new();
+        assert_eq!(
+            p.parse_array_elements_ex("$e 'SKIP'", &vars),
+            (vec!["SKIP".to_string()], None)
+        );
+        assert_eq!(
+            p.parse_array_elements_ex("${two} c", &vars).0,
+            vec!["a", "b", "c"]
+        );
+        // unknown or glob-bearing values stay uncountable
+        assert_eq!(p.parse_array_elements_ex("$nope", &vars).1, Some(0));
+        assert_eq!(p.parse_array_elements_ex("$glob", &vars).1, Some(0));
+        // a quoted use is a single word whatever it holds
+        assert_eq!(
+            p.parse_array_elements_ex("\"$e\"", &vars),
+            (vec!["$e".to_string()], None)
+        );
+    }
+
+    #[test]
+    fn empty_assignments_are_recorded_for_counting() {
+        let r = StaticParser::new()
+            .parse("pkgname=t\npkgver=1\npkgrel=1\n_e=\n_f=\"\"\ninstall=\n")
+            .unwrap();
+        assert_eq!(r.variables.get("_e").map(String::as_str), Some(""));
+        assert_eq!(r.variables.get("_f").map(String::as_str), Some(""));
+        assert!(
+            r.installs.is_empty(),
+            "an empty install= is not an install script"
+        );
     }
 }

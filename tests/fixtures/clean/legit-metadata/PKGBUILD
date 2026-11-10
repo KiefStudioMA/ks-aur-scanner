@@ -1,5 +1,5 @@
 # Maintainer: Good Dev <dev@example.com>
-# Legit-metadata clean fixture (task 3986 FP guard): a -git build of a core
+# Legit-metadata clean fixture (false-positive guard): a -git build of a core
 # package legitimately provides/replaces/conflicts its base, declares a signing
 # key it actually uses (a .sig source), pins its VCS revision, and ships valid
 # checksums. None of META-002/003/004/005/006, DEP-001, SRC-008 or CHK-008 must

@@ -29,6 +29,8 @@ Provision a VM from the official Arch cloud image with
 `cloud-init-user-data.yaml`, which installs the toolchain plus every shell the
 project ships a file for (bash, zsh, fish, nushell, dash) — a missing shell
 makes its checks silently not run, which reports a pass the suite did not earn.
+Put your own public key in its `ssh_authorized_keys` first; the file ships
+with a placeholder.
 
 ```bash
 # On the host, from the repo root

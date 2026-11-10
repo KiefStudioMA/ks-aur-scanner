@@ -1,0 +1,12 @@
+pkgbase=demo
+pkgname=(demo demo-extras)
+pkgver=1
+pkgrel=1
+arch=(any)
+license=(MIT)
+package_demo() {
+  install="$pkgname.scr"
+}
+package_demo-extras() {
+  install="$pkgname.scr"
+}

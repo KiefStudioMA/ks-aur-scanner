@@ -17,7 +17,7 @@ use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 
-use aur_scanner_core::history::{compare, PackageRecord};
+use aur_scanner_core::history::{compare, finding_key, PackageRecord};
 use aur_scanner_core::parser::{PkgbuildParser, StaticParser};
 use aur_scanner_core::{Finding, Registry, ScanConfig, Scanner, Severity};
 
@@ -60,34 +60,15 @@ async fn scan_side(
 }
 
 /// Read every package-side script beside a PKGBUILD, so the diff can tell an
-/// install scriptlet appearing from one merely changing.
-fn side_scripts(dir: &Path) -> Vec<String> {
+/// install scriptlet appearing from one merely changing. Which files count is
+/// the scanner's call (`install=` can name any file), not a file extension.
+fn side_scripts(dir: &Path, pkg: &aur_scanner_core::parser::ParsedPkgbuild) -> Vec<String> {
     let dir = if dir.is_dir() {
         dir.to_path_buf()
     } else {
         dir.parent().unwrap_or(Path::new(".")).to_path_buf()
     };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && matches!(
-                    p.extension().and_then(|e| e.to_str()),
-                    Some("install") | Some("hook")
-                )
-        })
-        .collect();
-    paths.sort();
-    // Capped: `diff` is pointed at arbitrary directories, including ones a
-    // reviewer just cloned from the AUR.
-    paths
-        .iter()
-        .filter_map(|p| aur_scanner_core::read_text_capped(p).ok())
-        .collect()
+    aur_scanner_core::pkgfiles::install_script_contents(&dir, pkg)
 }
 
 /// Run the diff.
@@ -103,32 +84,40 @@ pub async fn run(
     let (old_result, old_pkg) = scan_side(&scanner, &old).await?;
     let (new_result, new_pkg) = scan_side(&scanner, &new).await?;
 
-    let old_record =
-        PackageRecord::from_scan(&old_result, &old_pkg, None).with_scripts(&side_scripts(&old));
-    let new_record =
-        PackageRecord::from_scan(&new_result, &new_pkg, None).with_scripts(&side_scripts(&new));
+    let old_record = PackageRecord::from_scan(&old_result, &old_pkg, None)
+        .with_scripts(&side_scripts(&old, &old_pkg));
+    let new_record = PackageRecord::from_scan(&new_result, &new_pkg, None)
+        .with_scripts(&side_scripts(&new, &new_pkg));
     let changes = compare(&old_record, &new_record);
 
     // Partition findings by whether the other side raised the same code.
-    let old_ids: std::collections::BTreeSet<&str> =
-        old_result.findings.iter().map(|f| f.id.as_str()).collect();
-    let new_ids: std::collections::BTreeSet<&str> =
-        new_result.findings.iter().map(|f| f.id.as_str()).collect();
+    // Keyed per instance (rule, file, normalized snippet), not per rule ID: a
+    // second hit of a rule the old side already raised is still new.
+    let old_ids: std::collections::BTreeSet<String> = old_result
+        .findings
+        .iter()
+        .map(|f| finding_key(f, &old_result.package_version))
+        .collect();
+    let new_ids: std::collections::BTreeSet<String> = new_result
+        .findings
+        .iter()
+        .map(|f| finding_key(f, &new_result.package_version))
+        .collect();
 
     let added: Vec<&Finding> = new_result
         .findings
         .iter()
-        .filter(|f| !old_ids.contains(f.id.as_str()))
+        .filter(|f| !old_ids.contains(&finding_key(f, &new_result.package_version)))
         .collect();
     let removed: Vec<&Finding> = old_result
         .findings
         .iter()
-        .filter(|f| !new_ids.contains(f.id.as_str()))
+        .filter(|f| !new_ids.contains(&finding_key(f, &old_result.package_version)))
         .collect();
     let unchanged = new_result
         .findings
         .iter()
-        .filter(|f| old_ids.contains(f.id.as_str()))
+        .filter(|f| old_ids.contains(&finding_key(f, &new_result.package_version)))
         .count();
 
     match format {

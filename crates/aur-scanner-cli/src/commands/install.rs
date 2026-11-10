@@ -69,7 +69,7 @@ enum ConsentGate {
 
 /// Map `(--noconfirm, stdin-is-a-terminal)` to a consent decision.
 ///
-/// SECURITY (defect #11): without this guard the prompt was read unconditionally,
+/// SECURITY: without this guard the prompt was read unconditionally,
 /// so a piped `y` on a non-terminal stdin (CI, cron, `yes |`) was accepted as
 /// consent to build attacker-authored AUR code. Only an explicit `--noconfirm`
 /// or a real interactive `yes` may proceed.
@@ -84,7 +84,7 @@ fn consent_gate(noconfirm: bool, stdin_is_terminal: bool) -> ConsentGate {
 }
 
 /// What the scan gate decided about building. Pure so the fail-closed invariant
-/// (audit ME-8) is unit-testable.
+/// is unit-testable.
 #[derive(Debug, PartialEq, Eq)]
 enum GateOutcome {
     /// One or more packages could not be fetched/scanned at all. This is a HARD
@@ -100,7 +100,7 @@ enum GateOutcome {
     Pass,
 }
 
-/// Decide the gate outcome (audit ME-8). The ordering is the invariant: an
+/// Decide the gate outcome. The ordering is the invariant: an
 /// unscannable package blocks BEFORE the `--force`-overridable findings gate is
 /// even consulted, so `--force` can never silently build a package that was
 /// never reviewed.
@@ -118,7 +118,7 @@ fn gate_outcome(has_unscannable: bool, gate_tripped: bool, force: bool) -> GateO
     }
 }
 
-/// Build a sanitized environment for the `makepkg` invocation (audit ME-4).
+/// Build a sanitized environment for the `makepkg` invocation.
 ///
 /// A clean scan can be undone at *build* time by a poisoned environment: a
 /// hostile `PATH` pointing `gpg`/`git`/`sed`/`sudo` at attacker binaries, a
@@ -601,7 +601,7 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         );
     }
 
-    // 4. Gate (audit ME-8: --force can override reviewed findings, but NEVER an
+    // 4. Gate (--force can override reviewed findings, but NEVER an
     //    unscannable/never-reviewed package).
     println!();
     match gate_outcome(!unscannable.is_empty(), gate_tripped, args.force) {
@@ -716,7 +716,7 @@ pub async fn run(args: InstallArgs) -> Result<()> {
         let mut cmd = tokio::process::Command::new(makepkg_bin);
         cmd.args(makepkg_args(step.as_dep, args.noconfirm))
             .current_dir(&dir);
-        // Sanitize the build environment (audit ME-4): do not let a poisoned
+        // Sanitize the build environment: do not let a poisoned
         // ambient PATH/GNUPGHOME/GIT_*/BUILDDIR undo the clean scan by redirecting
         // makepkg's trusted helpers. Start empty and apply only the allowlist.
         cmd.env_clear();
@@ -772,7 +772,7 @@ pub async fn run(args: InstallArgs) -> Result<()> {
 mod tests {
     use super::*;
 
-    // --- build-consent fail-closed contract (defect #11) ---------------------
+    // --- build-consent fail-closed contract ---------------------
 
     #[test]
     fn noconfirm_proceeds_regardless_of_tty() {
@@ -788,12 +788,12 @@ mod tests {
 
     #[test]
     fn non_interactive_without_noconfirm_fails_closed() {
-        // The regression for defect #11: a pipe/CI/cron stdin with no
+        // The regression: a pipe/CI/cron stdin with no
         // --noconfirm must abort, never silently accept a piped "y".
         assert_eq!(consent_gate(false, false), ConsentGate::AbortNonInteractive);
     }
 
-    // --- gate: --force never overrides an unscannable package (audit ME-8) ----
+    // --- gate: --force never overrides an unscannable package ----
 
     #[test]
     fn force_cannot_override_unscannable() {
@@ -826,7 +826,7 @@ mod tests {
         assert_eq!(gate_outcome(false, false, true), GateOutcome::Pass);
     }
 
-    // --- sanitized build environment (audit ME-4) ----------------------------
+    // --- sanitized build environment ----------------------------
 
     #[test]
     fn build_env_forces_known_good_path() {

@@ -1,0 +1,35 @@
+# Clean twin of the resolver fixtures: ordinary parameter expansions, default
+# values, arrays and helper functions that must not be reported.
+pkgname=build-expansions
+_pkgname=python-widget
+pkgver=1.2.3
+pkgrel=1
+pkgdesc="Clean package using shell expansions"
+arch=('x86_64')
+url="https://example.org/widget"
+license=('MIT')
+depends=('glibc')
+makedepends=('cmake' 'ninja')
+source=("https://example.org/widget/archive/v${pkgver}.tar.gz")
+sha256sums=('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+
+_cmake_args=(-B build -G Ninja -DCMAKE_BUILD_TYPE=Release)
+
+_say() { echo "==> $1" >&2; }
+_inst() { install -Dm755 "$1" "$pkgdir/usr/bin/$2"; }
+
+build() {
+    cd "${srcdir}/${_pkgname#python-}-${pkgver}"
+    _say "building ${pkgver%.*}"
+    ${CMAKE:-cmake} "${_cmake_args[@]}" -DCMAKE_INSTALL_PREFIX=/usr
+    ${NINJA:-ninja} -C build
+    ${make:-make} -C docs
+}
+
+package() {
+    cd "${srcdir}/${_pkgname#python-}-${pkgver}"
+    DESTDIR="$pkgdir" ${NINJA:-ninja} -C build install
+    _inst build/widget widget
+    _say "see https://example.org/widget/docs for notes"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

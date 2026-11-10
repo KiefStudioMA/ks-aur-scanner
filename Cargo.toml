@@ -1,5 +1,7 @@
 [workspace]
-resolver = "2"
+# Resolver 3 picks the newest release that supports the workspace
+# rust-version (1.85) instead of one that would break the MSRV build.
+resolver = "3"
 members = [
     "crates/aur-scanner-core",
     "crates/aur-scanner-cli",
@@ -8,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.2.2"
+version = "3.0.0"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Kief Studio <packages@kief.studio>"]
@@ -23,7 +25,7 @@ description = "Security scanner for Arch Linux AUR packages"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1.40", features = ["full"] }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "process", "time"] }
 async-trait = "0.1"
 futures = "0.3"
 
@@ -68,7 +70,7 @@ base64 = "0.23"
 libc = "0.2"
 
 # Internal crates
-aur-scanner-core = { version = "2.2.2", path = "crates/aur-scanner-core" }
+aur-scanner-core = { version = "3.0.0", path = "crates/aur-scanner-core" }
 
 [profile.release]
 lto = true

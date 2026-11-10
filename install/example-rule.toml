@@ -1,6 +1,6 @@
-# Community detection rules for aur-scan.
+# Community detection rules for aur-scan: an example to copy.
 #
-# Drop .toml files like this into any of:
+# This file is not loaded. Copy it under a new name ending in .toml into any of:
 #   /usr/share/aur-scanner/rules.d/      (distro/package-shipped)
 #   /etc/aur-scanner/rules.d/            (system administrator)
 #   ~/.config/aur-scanner/rules.d/       (per user)
@@ -17,7 +17,7 @@
 #           data_exfiltration, malicious_code, cryptography, configuration,
 #           dependencies, obfuscation, credential_theft, persistence,
 #           cryptomining, suspicious_metadata
-# file_types: pkgbuild, install_script
+# file_types: pkgbuild, install_script, source_file
 
 [[rule]]
 id = "EXAMPLE-001"
