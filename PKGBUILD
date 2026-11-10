@@ -3,14 +3,15 @@
 # Local/development PKGBUILD: builds and installs aur-scan from THIS checkout.
 # Run `makepkg -si` from the repo root to install your working copy.
 #
-# The published, distributable packages live under aur/ and are what end users
-# install from the AUR:
-#   aur/aur-scanner      - tagged releases (primary)
-#   aur/ks-aur-scanner   - tagged releases (alias)
-#   aur/aur-scanner-git  - rolling, tracks the latest commit
-#   aur/aur-scanner-rc   - opt-in release candidate, builds the signed pre-release tag
+# End users install the published packages from the AUR instead:
+#   aur-scanner      - tagged releases (primary)
+#   ks-aur-scanner   - tagged releases (alias)
+#   aur-scanner-git  - rolling, tracks the latest commit
+#   aur-scanner-rc   - opt-in release candidate, builds the signed pre-release tag
+# aur/aur-scanner-git and aur/aur-scanner-rc are tracked in this repository; the
+# tagged aur-scanner and ks-aur-scanner packages live in their own AUR git repos.
 pkgname=aur-scanner
-pkgver=1.0.3
+pkgver=3.0.0
 pkgrel=1
 pkgdesc="Security scanner for Arch Linux AUR packages - detect malicious PKGBUILDs before installation"
 arch=('x86_64' 'aarch64')
@@ -84,6 +85,10 @@ package() {
     for _rule in install/rules.d/*.toml; do
         install -Dm644 "$_rule" "$pkgdir/usr/share/aur-scanner/rules.d/$(basename "$_rule")"
     done
+
+    # Example community rule, for authors to copy. Installed outside rules.d/
+    # so it is never loaded.
+    install -Dm644 "install/example-rule.toml" "$pkgdir/usr/share/aur-scanner/example-rule.toml"
 
     # pacman hook, shipped as an opt-in example (NOT auto-enabled). It runs after
     # makepkg has already built the package -- prefer the shell integration above.
