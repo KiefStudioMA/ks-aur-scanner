@@ -546,7 +546,7 @@ impl SecurityAnalyzer for SquatAnalyzer {
         let Some(name) = context.package_name() else {
             return Ok(Vec::new());
         };
-        let now = chrono::Utc::now().timestamp();
+        let now = jiff::Timestamp::now().as_second();
         let mut findings = self.analyze_with(name, reg, &context.file_path, now);
         findings.extend(self.check_owned_namespaces(
             name,

@@ -63,7 +63,7 @@ impl ComponentScan {
 
 /// Current timestamp as an ISO-8601/RFC-3339 string for SBOM metadata.
 pub fn now_timestamp() -> String {
-    chrono::Utc::now().to_rfc3339()
+    jiff::Timestamp::now().to_string()
 }
 
 /// A UUID-shaped serial number derived from the current time and process id.

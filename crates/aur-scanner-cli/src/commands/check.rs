@@ -512,7 +512,7 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                         }
                     }
                 }
-                result.findings.sort_by_key(|f| f.severity);
+                aur_scanner_core::sort_findings(&mut result.findings);
                 let scan = ComponentScan::from_findings(&result.findings);
                 total_critical += scan.critical;
                 total_high += scan.high;
@@ -764,7 +764,7 @@ mod tests {
             package_version: format!("{}-{}", parsed.pkgver, parsed.pkgrel),
             findings: vec![],
             scanned_files: vec![],
-            timestamp: chrono::Utc::now(),
+            timestamp: jiff::Timestamp::now(),
             scan_duration_ms: 0,
         };
         diff_against_history(
@@ -850,7 +850,7 @@ mod tests {
             package_version: "1-1".into(),
             findings: vec![],
             scanned_files: vec![],
-            timestamp: chrono::Utc::now(),
+            timestamp: jiff::Timestamp::now(),
             scan_duration_ms: 0,
         };
         assert!(diff_against_history(

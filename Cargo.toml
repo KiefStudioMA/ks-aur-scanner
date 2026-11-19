@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "3.0.0"
+version = "4.0.0-rc.1"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Kief Studio <packages@kief.studio>"]
@@ -53,8 +53,9 @@ clap_complete = "4.5"
 # HTTP client (for threat intel)
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "native-tls"] }
 
-# Dates
-chrono = { version = "0.4", features = ["serde"] }
+# Dates and times
+# UTC timestamps only, so no time zone database is pulled in.
+jiff = { version = "1.0.1", default-features = false, features = ["std", "serde"] }
 
 # Terminal output
 colored = "3.1"
@@ -70,7 +71,7 @@ base64 = "0.23"
 libc = "0.2"
 
 # Internal crates
-aur-scanner-core = { version = "3.0.0", path = "crates/aur-scanner-core" }
+aur-scanner-core = { version = "4.0.0-rc.1", path = "crates/aur-scanner-core" }
 
 [profile.release]
 lto = true

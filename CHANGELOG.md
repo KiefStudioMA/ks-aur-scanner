@@ -6,6 +6,35 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [4.0.0-rc.1] - 2026-11-18
+
+First 4.0.0 release candidate. No new detection codes. It moves timestamps off
+`chrono`, which RustSec marked unmaintained, and makes scan output
+deterministic. The command line and the PKGBUILD don't change; it is a major
+version because the `aur-scanner-core` library changes two public field types.
+Install `aur-scanner-rc`.
+
+### Changed
+
+- Timestamps now come from `jiff` instead of `chrono`, which RustSec marked
+  unmaintained (RUSTSEC-2026-0543). `jiff` is built with no time zone
+  database, since the scanner only records UTC, which drops eleven crates from
+  Cargo.lock and adds five. Scan history written by earlier releases still loads.
+  Timestamps in JSON output and SBOMs stay RFC 3339 in UTC, but they now
+  always end in `Z` and print only the fractional digits they need (SBOMs
+  used `+00:00` before).
+- The library's `ScanResult::timestamp` and `PackageRecord::scanned_at` are
+  now `jiff::Timestamp` instead of `chrono::DateTime<Utc>`.
+
+### Fixed
+
+- The same package now always reports its findings in the same order. Findings
+  of equal severity used to come out in whatever order a hash map gave them, so
+  two runs could print them differently, which broke diffs and SARIF
+  baselines. Findings are now ordered by severity, then rule ID, file, line and
+  column. The set of findings is unchanged; only the order is fixed. Library
+  callers can use the new `sort_findings` for the same order.
+
 ## [3.0.0] - 2026-11-10
 
 3.0.0 closes a set of ways a crafted package could hide code from the scanner
@@ -1064,7 +1093,8 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
-[Unreleased]: https://github.com/KiefStudioMA/ks-aur-scanner/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/KiefStudioMA/ks-aur-scanner/compare/v4.0.0-rc.1...HEAD
+[4.0.0-rc.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v4.0.0-rc.1
 [3.0.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v3.0.0
 [2.2.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.2
 [2.2.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.1

@@ -29,5 +29,5 @@ aur-scanner-core.workspace = true
 colored.workspace = true
 
 [dev-dependencies]
-chrono.workspace = true
+jiff.workspace = true
 serde_json.workspace = true
