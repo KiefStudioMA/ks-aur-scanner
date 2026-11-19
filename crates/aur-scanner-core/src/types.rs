@@ -159,6 +159,29 @@ pub struct Finding {
     pub metadata: serde_json::Value,
 }
 
+/// Put findings in one fixed order: severity (critical first), then rule ID,
+/// file, line, column, and the finding's own text.
+///
+/// The parser keeps functions in a hash map, so analyzers that walk it emit
+/// findings in a different order from run to run. Sorting by severity alone
+/// left equal-severity findings in that order, so the same package could print
+/// differently twice and break diffs and SARIF baselines. This order is total
+/// over everything a finding prints, so identical input gives identical output.
+pub fn sort_findings(findings: &mut [Finding]) {
+    findings.sort_by(|a, b| {
+        a.severity
+            .cmp(&b.severity)
+            .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| a.location.file.cmp(&b.location.file))
+            .then_with(|| a.location.line.cmp(&b.location.line))
+            .then_with(|| a.location.column.cmp(&b.location.column))
+            .then_with(|| a.location.snippet.cmp(&b.location.snippet))
+            .then_with(|| a.title.cmp(&b.title))
+            .then_with(|| a.description.cmp(&b.description))
+            .then_with(|| a.metadata.to_string().cmp(&b.metadata.to_string()))
+    });
+}
+
 /// Finding code emitted when a file the package ships or declares could not be
 /// read, was not a regular file, or was only partly analyzed.
 pub const UNANALYZABLE_CODE: &str = "SCAN-001";
