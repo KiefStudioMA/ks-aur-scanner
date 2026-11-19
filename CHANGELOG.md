@@ -18,6 +18,15 @@ All notable changes to this project are documented here. The format is based on
 - The library's `ScanResult::timestamp` and `PackageRecord::scanned_at` are
   now `jiff::Timestamp` instead of `chrono::DateTime<Utc>`.
 
+### Fixed
+
+- The same package now always reports its findings in the same order. Findings
+  of equal severity used to come out in whatever order a hash map gave them, so
+  two runs could print them differently, which broke diffs and SARIF
+  baselines. Findings are now ordered by severity, then rule ID, file, line and
+  column. The set of findings is unchanged; only the order is fixed. Library
+  callers can use the new `sort_findings` for the same order.
+
 ## [3.0.0] - 2026-11-10
 
 3.0.0 closes a set of ways a crafted package could hide code from the scanner

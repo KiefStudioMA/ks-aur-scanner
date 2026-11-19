@@ -512,7 +512,7 @@ pub async fn run(args: CheckArgs) -> Result<()> {
                         }
                     }
                 }
-                result.findings.sort_by_key(|f| f.severity);
+                aur_scanner_core::sort_findings(&mut result.findings);
                 let scan = ComponentScan::from_findings(&result.findings);
                 total_critical += scan.critical;
                 total_high += scan.high;

@@ -488,7 +488,7 @@ pub async fn run(args: InstallArgs) -> Result<()> {
                 Ok(diff_findings) => result.findings.extend(diff_findings),
                 Err(e) => tracing::debug!("history comparison for {base} failed: {e}"),
             }
-            result.findings.sort_by_key(|f| f.severity);
+            aur_scanner_core::sort_findings(&mut result.findings);
         }
         // A file the scanner could not analyze (SCAN-001) was never reviewed:
         // that is a hard stop, which --force must not override.

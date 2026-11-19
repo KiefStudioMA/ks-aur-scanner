@@ -334,8 +334,10 @@ impl Scanner {
         // setting (see `ScanResult::visible`); every gate must see every
         // finding, or a user-writable config could switch High gates off.
 
-        // Sort by severity (critical first)
-        findings.sort_by_key(|f| f.severity);
+        // One fixed order (critical first), so the same input always prints
+        // the same way. The dedup below keeps the first of each duplicate, so
+        // this also makes the copy it keeps deterministic.
+        types::sort_findings(&mut findings);
 
         // A sidecar is scanned under more than one file type (see
         // `pkgfiles::collect`), so the same rule can match the same line twice.
@@ -1083,5 +1085,76 @@ mod tests {
             .scanned_files
             .iter()
             .any(|p| { p.extension().and_then(|e| e.to_str()) == Some("install") }));
+    }
+
+    #[tokio::test]
+    async fn the_same_package_always_reports_findings_in_the_same_order() {
+        // Regression: equal-severity findings came out in hash map order, so
+        // these fixtures printed two network findings in either order from
+        // run to run. Every parse builds fresh hash maps with a new seed, so
+        // repeating the scan in one process exercises both orders.
+        let scanner = Scanner::with_defaults().unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/malicious");
+        for name in ["comment-continuation", "launcher-shell", "var-indirection"] {
+            let fixture = root.join(name);
+            if !fixture.join("PKGBUILD").exists() {
+                continue; // fixture not present in this checkout
+            }
+            let mut first: Option<Vec<(String, Option<usize>, String)>> = None;
+            for _ in 0..16 {
+                let result = scanner
+                    .scan_directory(&fixture, Registry::None)
+                    .await
+                    .unwrap();
+                let order: Vec<_> = result
+                    .findings
+                    .iter()
+                    .map(|f| (f.id.clone(), f.location.line, f.description.clone()))
+                    .collect();
+                match &first {
+                    None => first = Some(order),
+                    Some(want) => assert_eq!(&order, want, "{name}: order changed between scans"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sort_findings_gives_one_order_for_any_input_order() {
+        let mk = |sev, id: &str, line, desc: &str| Finding {
+            id: id.into(),
+            severity: sev,
+            category: Category::MaliciousCode,
+            title: id.into(),
+            description: desc.into(),
+            location: Location {
+                file: PathBuf::from("PKGBUILD"),
+                line,
+                column: None,
+                snippet: None,
+            },
+            recommendation: String::new(),
+            cwe_id: None,
+            metadata: serde_json::Value::Null,
+        };
+        let want = vec![
+            mk(Severity::Critical, "RCE-001", Some(9), "x"),
+            mk(Severity::High, "NET-001", Some(5), "build curl"),
+            mk(Severity::High, "NET-001", Some(9), "package curl"),
+            mk(Severity::High, "PRIV-002", Some(1), "y"),
+            mk(Severity::Low, "META-001", None, "z"),
+        ];
+        let key = |v: &[Finding]| {
+            v.iter()
+                .map(|f| (f.id.clone(), f.location.line))
+                .collect::<Vec<_>>()
+        };
+        for rotate in 0..want.len() {
+            let mut got = want.clone();
+            got.rotate_left(rotate);
+            got.reverse();
+            sort_findings(&mut got);
+            assert_eq!(key(&got), key(&want), "rotation {rotate}");
+        }
     }
 }
