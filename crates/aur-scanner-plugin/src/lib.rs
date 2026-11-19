@@ -215,7 +215,7 @@ mod tests {
             package_version: "1-1".into(),
             findings,
             scanned_files: vec![],
-            timestamp: chrono::Utc::now(),
+            timestamp: jiff::Timestamp::now(),
             scan_duration_ms: 0,
         }
     }

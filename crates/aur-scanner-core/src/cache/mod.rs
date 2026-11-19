@@ -303,7 +303,7 @@ impl Cache for DiskCache {
         };
 
         // Expired, or the entry does not actually belong to this key.
-        let now = chrono::Utc::now().timestamp();
+        let now = jiff::Timestamp::now().as_second();
         if entry.key != key || now > entry.expires_at {
             let _ = std::fs::remove_file(&path);
             return Ok(None);
@@ -327,7 +327,7 @@ impl Cache for DiskCache {
 
         let entry = CacheEntry {
             key,
-            expires_at: chrono::Utc::now().timestamp() + ttl.as_secs() as i64,
+            expires_at: jiff::Timestamp::now().as_second() + ttl.as_secs() as i64,
             value,
         };
 

@@ -206,7 +206,7 @@ impl Scanner {
                     package_version: String::new(),
                     findings: vec![f],
                     scanned_files: vec![path.to_path_buf()],
-                    timestamp: chrono::Utc::now(),
+                    timestamp: jiff::Timestamp::now(),
                     scan_duration_ms: 0,
                 })
             }
@@ -373,7 +373,7 @@ impl Scanner {
             package_version: format!("{}-{}", pkgbuild.pkgver, pkgbuild.pkgrel),
             findings,
             scanned_files,
-            timestamp: chrono::Utc::now(),
+            timestamp: jiff::Timestamp::now(),
             scan_duration_ms: duration.as_millis() as u64,
         })
     }
