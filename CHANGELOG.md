@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [4.0.0-rc.1] - 2026-11-18
+
+First 4.0.0 release candidate. No new detection codes. It moves timestamps off
+`chrono`, which RustSec marked unmaintained, and makes scan output
+deterministic. The command line and the PKGBUILD don't change; it is a major
+version because the `aur-scanner-core` library changes two public field types.
+Install `aur-scanner-rc`.
+
 ### Changed
 
 - Timestamps now come from `jiff` instead of `chrono`, which RustSec marked
@@ -1085,7 +1093,8 @@ automation, and the validation checklist in the PR before promoting to stable.
 
 See the project history prior to the introduction of this changelog.
 
-[Unreleased]: https://github.com/KiefStudioMA/ks-aur-scanner/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/KiefStudioMA/ks-aur-scanner/compare/v4.0.0-rc.1...HEAD
+[4.0.0-rc.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v4.0.0-rc.1
 [3.0.0]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v3.0.0
 [2.2.2]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.2
 [2.2.1]: https://github.com/KiefStudioMA/ks-aur-scanner/releases/tag/v2.2.1

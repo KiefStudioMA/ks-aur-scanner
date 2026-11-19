@@ -154,9 +154,9 @@ gpg --recv-keys 25631EAE3F43999050B7D7021132BF893C33FB51
 ```
 
 > **Release-candidate channel — [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc):**
-> tracks the next release before it is promoted to stable. Between release
-> candidates it builds the current stable tag (now **`v3.0.0`**), so it never
-> falls behind stable. Most users — and all production systems — should install
+> tracks the next release before it is promoted to stable. It now builds
+> **`v4.0.0-rc.1`**; between release candidates it builds the current stable
+> tag, so it never falls behind stable. Most users — and all production systems — should install
 > the stable `aur-scanner`.
 
 ### From Source

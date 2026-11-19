@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "3.0.0"
+version = "4.0.0-rc.1"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Kief Studio <packages@kief.studio>"]
@@ -71,7 +71,7 @@ base64 = "0.23"
 libc = "0.2"
 
 # Internal crates
-aur-scanner-core = { version = "3.0.0", path = "crates/aur-scanner-core" }
+aur-scanner-core = { version = "4.0.0-rc.1", path = "crates/aur-scanner-core" }
 
 [profile.release]
 lto = true
