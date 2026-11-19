@@ -31,7 +31,7 @@ pub struct PackageRecord {
     /// `pkgver-pkgrel` at the time of the scan.
     pub version: String,
     /// When the scan happened.
-    pub scanned_at: chrono::DateTime<chrono::Utc>,
+    pub scanned_at: jiff::Timestamp,
     /// Maintainer as the registry reported it; `None` means orphaned.
     #[serde(default)]
     pub maintainer: Option<String>,
@@ -705,7 +705,7 @@ pub fn findings_for_changes(
         column: None,
         snippet: None,
     };
-    let since = before.scanned_at.format("%Y-%m-%d");
+    let since = before.scanned_at.strftime("%Y-%m-%d");
 
     // DIFF-001 -- risk that is new since the last time this package was
     // approved. Severity tracks the worst new finding: a package that has
@@ -912,7 +912,7 @@ mod tests {
         PackageRecord {
             package: name.into(),
             version: "1.0-1".into(),
-            scanned_at: chrono::Utc::now(),
+            scanned_at: jiff::Timestamp::now(),
             maintainer: Some("alice".into()),
             pkgbuild_hash: "aaaa".into(),
             scripts_hash: None,
@@ -1114,7 +1114,7 @@ mod tests {
             package_version: parsed.pkgver.clone(),
             findings: vec![],
             scanned_files: vec![],
-            timestamp: chrono::Utc::now(),
+            timestamp: jiff::Timestamp::now(),
             scan_duration_ms: 0,
         };
         PackageRecord::from_scan(&result, &parsed, Some("alice".into()))
@@ -1714,6 +1714,24 @@ mod tests {
         std::fs::write(dir.join("amitools.json"), json).unwrap();
         assert!(h.get("amitools", Scope::Aur).is_none());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn records_written_by_the_chrono_build_still_load() {
+        // Releases up to 3.0.0 stored scanned_at through chrono, which wrote
+        // RFC 3339 with a Z (and older files may carry +00:00). History on
+        // disk must keep loading after the move to jiff.
+        for (stored, secs) in [
+            ("2026-11-17T22:10:05.123456789Z", 1_794_953_405),
+            ("2026-11-17T22:10:05Z", 1_794_953_405),
+            ("2026-11-17T22:10:05.5+00:00", 1_794_953_405),
+        ] {
+            let mut v = serde_json::to_value(rec("tool")).unwrap();
+            v["scanned_at"] = serde_json::Value::String(stored.into());
+            let r: PackageRecord = serde_json::from_value(v).unwrap();
+            assert_eq!(r.scanned_at.as_second(), secs, "{stored}");
+            assert_eq!(r.scanned_at.strftime("%Y-%m-%d").to_string(), "2026-11-17");
+        }
     }
 
     #[test]

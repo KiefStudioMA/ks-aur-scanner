@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- Timestamps now come from `jiff` instead of `chrono`, which RustSec marked
+  unmaintained (RUSTSEC-2026-0543). `jiff` is built with no time zone
+  database, since the scanner only records UTC, which drops eleven crates from
+  Cargo.lock and adds five. Scan history written by earlier releases still loads.
+  Timestamps in JSON output and SBOMs stay RFC 3339 in UTC, but they now
+  always end in `Z` and print only the fractional digits they need (SBOMs
+  used `+00:00` before).
+- The library's `ScanResult::timestamp` and `PackageRecord::scanned_at` are
+  now `jiff::Timestamp` instead of `chrono::DateTime<Utc>`.
+
 ## [3.0.0] - 2026-11-10
 
 3.0.0 closes a set of ways a crafted package could hide code from the scanner

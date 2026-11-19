@@ -185,7 +185,7 @@ pub struct ScanResult {
     /// Files that were scanned
     pub scanned_files: Vec<PathBuf>,
     /// Timestamp of the scan
-    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub timestamp: jiff::Timestamp,
     /// Duration of scan in milliseconds
     pub scan_duration_ms: u64,
 }

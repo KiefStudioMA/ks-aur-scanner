@@ -33,4 +33,4 @@ anyhow.workspace = true
 dirs = "7.0"
 
 [dev-dependencies]
-chrono.workspace = true
+jiff.workspace = true

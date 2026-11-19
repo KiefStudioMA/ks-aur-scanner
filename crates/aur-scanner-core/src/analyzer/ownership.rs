@@ -210,7 +210,7 @@ impl SecurityAnalyzer for OwnershipAnalyzer {
         };
         let has_executable_functions =
             !context.pkgbuild.functions.is_empty() || context.all_scripts().next().is_some();
-        let now = chrono::Utc::now().timestamp();
+        let now = jiff::Timestamp::now().as_second();
         Ok(self.analyze_with(name, reg, has_executable_functions, &context.file_path, now))
     }
 
