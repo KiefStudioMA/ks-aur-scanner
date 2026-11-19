@@ -129,13 +129,12 @@ This scanner implements detection rules based on real-world attacks and security
 
 ### From AUR
 
-All four packages install the same `aur-scan` binary and **conflict with each
+All three packages install the same `aur-scan` binary and **conflict with each
 other — install exactly one**. Pick the channel that fits you:
 
 | Package | Channel | Builds from | Best for |
 |---------|---------|-------------|----------|
 | [`aur-scanner`](https://aur.archlinux.org/packages/aur-scanner) | **Stable** (recommended) | GPG-signed release tag | Most users and production systems |
-| [`ks-aur-scanner`](https://aur.archlinux.org/packages/ks-aur-scanner) | Stable (alias) | GPG-signed release tag | Same as `aur-scanner`, under an alternate name |
 | [`aur-scanner-rc`](https://aur.archlinux.org/packages/aur-scanner-rc) | Release candidate | GPG-signed pre-release tag | Testing the next release before it ships |
 | [`aur-scanner-git`](https://aur.archlinux.org/packages/aur-scanner-git) | Rolling | Latest commit on `main` | Bleeding edge and contributors |
 
@@ -143,7 +142,12 @@ other — install exactly one**. Pick the channel that fits you:
 paru -S aur-scanner        # stable, recommended — or: yay -S aur-scanner
 ```
 
-The tagged packages (`aur-scanner`, `ks-aur-scanner`, `aur-scanner-rc`) build
+> **Had `ks-aur-scanner` installed?** It was the same package under the upstream
+> repo name, and it was merged into `aur-scanner` on 2026-11-18. Install
+> `aur-scanner` and your helper will offer to remove `ks-aur-scanner`; anything
+> that depended on `ks-aur-scanner` keeps working, because `aur-scanner` provides it.
+
+The tagged packages (`aur-scanner`, `aur-scanner-rc`) build
 from a **GPG-signed git tag** and verify it against our signing key
 (`validpgpkeys`), so `makepkg` refuses to build a tag that isn't signed by us —
 integrity comes from the signature, not a tarball hash. If your AUR helper does
